@@ -290,6 +290,16 @@
   "en": "The game normally shows this row only after pressing more than 10 keys at once; enable this to show the maximum on every result screen."
  },
  {
+  "key": "replay.crosseraacc",
+  "zh": "结算显示 3.3.1 口径精准度",
+  "en": "Show ≤3.3.1 accuracy in results"
+ },
+ {
+  "key": "replay.crosseraacc.tip",
+  "zh": "在结算界面精准度行内联 (3.3.1: xx.xx%)，并在回放信息面板额外标注同一局在 ≤3.3.1 官方公式下的 Accuracy / X-Accuracy。关闭后只显示 3.4.0 口径。仅 3.4.0 本机生效。",
+  "en": "Annotates the results accuracy line with the same run scored under the ≤3.3.1 official formula, and adds cross-era rows in the replay info panel. 3.4.0 builds only."
+ },
+ {
   "key": "playback.idle",
   "zh": "还没载入回放。在下面的列表里点「回放」即可。",
   "en": "No replay loaded. Press \"Replay\" on a file below."
@@ -1208,6 +1218,16 @@
   "key": "playback.info.xacc",
   "zh": "X-Accuracy",
   "en": "X-Accuracy"
+ },
+ {
+  "key": "playback.info.acc.legacy",
+  "zh": "Accuracy（3.3.1 口径）",
+  "en": "Accuracy (≤3.3.1)"
+ },
+ {
+  "key": "playback.info.xacc.legacy",
+  "zh": "X-Accuracy（3.3.1 口径）",
+  "en": "X-Accuracy (≤3.3.1)"
  },
  {
   "key": "playback.info.judgments",

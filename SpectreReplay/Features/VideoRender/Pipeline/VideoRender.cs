@@ -73,6 +73,12 @@ internal static class VideoRender
     internal static VideoRenderJob Job { get; private set; }
     internal static bool Active => Job != null;
 
+    // 当前帧源的捕获面。帧源构造时装上、构造失败（CleanupOnConstructionFailure）
+    // 与 Dispose 时清掉，StartRender 的 ResetLeakedPins 兜底复位。渲染期补丁按它
+    // 分流：判定飘字隐藏只拦 CleanCamera——WholeScreen 拍的就是后备缓冲，飘字
+    // 本来就在屏上。放在门面而非帧源实例：补丁拿不到 frames 引用，门面纪律见类注释。
+    internal static VideoSurface? CurrentSurface { get; set; }
+
     // —— 时间钉扎 ——
     // 作业锚定时间线后置位，VideoRenderPatches 把 conductor 的读写都钉在这一个值上，
     // 游戏各系统（轨道推进、判定、回放调度）就按输出帧率逐帧推进，与真实音频时钟脱钩。
@@ -208,6 +214,7 @@ internal static class VideoRender
         UnpinTimeline();
         RenderClockSource.ActiveClock = null;
         SpeedOverrideArmed = false;
+        CurrentSurface = null;   // 上一轮帧源若异常退出没清干净，别让飘字门误判
     }
 
     // 作业结束时的收尾（无论成败），由 VideoRenderJob 调用

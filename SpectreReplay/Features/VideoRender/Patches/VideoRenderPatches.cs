@@ -119,6 +119,24 @@ internal static class Patch_VideoDeferStartMusic
     }
 }
 
+// ——— scrHitTextManager.ShowHitText 隐藏判定飘字 ————————————————————
+// 纯净相机来源默认干净：键显/第三方 UI 不进片（RenderOverlayCapture 的画布
+// opt-in），但游戏的判定飘字不是画布——它是世界空间 TextMeshPro
+//（scrHitTextMesh，sortingOrder 100），由主相机直接画进捕获纹理，画布那套
+// 罩不住它；回放命中会按玩家自己的游戏设置（hitMarginText / hideHitMargin）
+// 重新喷飘字，纯净成片里全是判定文本（2026-11-14 用户报）。
+// 游戏侧所有飘字调用点（scrPlanet 的命中/OverPress、DivineIntervention 与
+// LaserSpawner 的 FailMiss 广播）都汇入 scrHitTextManager.ShowHitText 这一个
+// 入口（RDC.noHud / 编辑器自动播放 / CheckHidden 的既有门都在里面），前缀在此
+// 早退即可。「游戏画面」来源拍的就是后备缓冲，飘字本来就在屏上，不干预。
+// 补丁常驻、体内早退（Patch_VideoLockAsyncAngle 同款姿态）。
+internal static class Patch_VideoHideHitText
+{
+    [SpectrePatch(typeof(scrHitTextManager), nameof(scrHitTextManager.ShowHitText), PatchType.Prefix)]
+    internal static bool Prefix()
+        => !(VideoRender.Active && VideoRender.CurrentSurface == VideoSurface.CleanCamera);
+}
+
 // ——— scnEditor.RemakePath ————————————————————————————————
 // 渲染期把倍速钉回回放记录值。
 //

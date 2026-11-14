@@ -167,6 +167,8 @@ namespace SpectreReplay
                             || Settings.AllowedAsyncSpecialKeys.Count > 0));
                 SpectrePatchHub.SetFeatureToggle(FeatureKeys.AlwaysShowMaxUsedKeys,
                     () => Settings.AlwaysShowMaxUsedKeys);
+                SpectrePatchHub.SetFeatureToggle(FeatureKeys.CrossEraAccuracy,
+                    () => Settings.CrossEraAccuracy);
                 SpectrePatchHub.Refresh();
 
                 SpectreState.SetGetKeyAsyncEnabled(Settings.ReplayOn && Settings.GetDataFromAsyncInput);

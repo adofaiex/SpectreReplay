@@ -1293,6 +1293,104 @@ namespace UiPreview
                     && MethodBody(s, "CleanupOnConstructionFailure") is string cleanup
                     && cleanup.Contains("RestoreTargets()", StringComparison.Ordinal)
                     && cleanup.Contains("texture.Release()", StringComparison.Ordinal));
+            // 判定飘字隐藏（2026-11-14 用户报：纯净相机成片里全是判定文本）。
+            // 游戏判定飘字是世界空间 TMP（sortingOrder 100），主相机直接画进
+            // 捕获纹理——画布 opt-in 罩不住；游戏侧全部调用点汇入
+            // scrHitTextManager.ShowHitText 唯一入口。两处接线缺一就是
+            // 「纯净成片带判定文本」：
+            // ① 常驻前缀 + 体内早退门（只在 CleanCamera 来源生效）；
+            // ② 帧源构造上报 CurrentSurface，构造失败与 Dispose 都清——
+            //    泄漏会误判下一轮渲染的来源。
+            fail += Check(projectRoot,
+                "判定飘字：ShowHitText 前缀常驻早退，且只拦纯净相机来源",
+                "Features\\VideoRender\\Patches\\VideoRenderPatches.cs",
+                s => s.Contains("typeof(scrHitTextManager), nameof(scrHitTextManager.ShowHitText)", StringComparison.Ordinal)
+                    && s.Contains("VideoRender.Active && VideoRender.CurrentSurface == VideoSurface.CleanCamera", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "判定飘字：CurrentSurface 随帧源装/卸（构造上报、失败与 Dispose 都清）",
+                "Features\\VideoRender\\Pipeline\\VideoFrameSource.cs",
+                s => s.Contains("VideoRender.CurrentSurface = surface;", StringComparison.Ordinal)
+                    && MethodBody(s, "CleanupOnConstructionFailure") is string hitTextCleanup
+                    && hitTextCleanup.Contains("VideoRender.CurrentSurface = null;", StringComparison.Ordinal)
+                    && MethodBody(s, "Dispose") is string hitTextDispose
+                    && hitTextDispose.Contains("VideoRender.CurrentSurface = null;", StringComparison.Ordinal));
+            // Legacy（r148）口径公式按反编译校正（2026-11-14，feeed7081
+            // CalculatePercentAcc）：旧 X-Acc 分母 = 全部判定条数（Multipress@0.0
+            // 只进分母）、旧 Accuracy 分子不含多压、1e-4 扣减两版本都在
+            //（r148 扣 deadTiles——不是判定档、无法从分布重建，旧口径缺失已记录）。
+            fail += Check(projectRoot,
+                "Legacy 口径公式按 r148 反编译校正（Multipress 只进分母/分子不含多压/扣减无条件）",
+                "Features\\Compat\\HitMarginCompat.cs",
+                s => s.Contains("Add(0.0, \"Multipress\");", StringComparison.Ordinal)
+                    && s.Contains("Add(1.0, \"XPerfect\", \"PerfectMinus\", \"Perfect\", \"PerfectPlus\", \"Auto\", \"Midspin\");", StringComparison.Ordinal)
+                    && s.Contains("HasXPerfect ? PerfectFamily : LegacyAccuracyFamily", StringComparison.Ordinal)
+                    && s.Contains("        acc -= SumSet(counts, FailedFloorFamily) * 0.0001;", StringComparison.Ordinal)
+                    && s.Contains("return HasXPerfect ? sum + SumSet(counts, FailedFloorFamily) : sum;", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "跨口径精准度：结算详情必须内联另一口径值（仅 3.4.0 展示，同开关，xacc 惩罚与官方同规则）",
+                "Features\\Results\\Patch_CrossEraAccuracy.cs",
+                s => s.Contains("typeof(DetailedResults), \"GenerateResults\", PatchType.Postfix", StringComparison.Ordinal)
+                    && s.Contains("Feature = FeatureKeys.CrossEraAccuracy", StringComparison.Ordinal)
+                    && s.Contains("if (!SpectreReplay.Features.Compat.HitMarginCompat.HasXPerfect)", StringComparison.Ordinal)
+                    && s.Contains("Persistence.showXAccuracy", StringComparison.Ordinal)
+                    && s.Contains("scnEditor.instance == null", StringComparison.Ordinal)
+                    && s.Contains("HitMarginCompat.LegacyXAcc", StringComparison.Ordinal)
+                    && s.Contains("HitMarginCompat.LegacyAccuracy", StringComparison.Ordinal)
+                    && s.Contains("marginTracker.hitMarginsCount", StringComparison.Ordinal)
+                    && s.Contains("text.Insert(pct + 1", StringComparison.Ordinal)
+                    && s.Contains("status.results.xAccuracy", StringComparison.Ordinal)
+                    && s.Contains("ToString(\"0.00\", CultureInfo.InvariantCulture)", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "跨口径精准度：回放摘要必须带跨口径字段（仅 3.4.0 展示，惩罚规则与现役口径行一致）",
+                "Features\\Replay\\Data\\ReplayFileInfo.cs",
+                s => s.Contains("internal double CrossXacc = -1.0;", StringComparison.Ordinal)
+                    && s.Contains("internal double CrossAccuracy = -1.0;", StringComparison.Ordinal)
+                    && s.Contains("if (SpectreReplay.Features.Compat.HitMarginCompat.HasXPerfect)", StringComparison.Ordinal)
+                    && s.Contains("HitMarginCompat.LegacyXAcc(", StringComparison.Ordinal)
+                    && s.Contains("HitMarginCompat.LegacyAccuracy(", StringComparison.Ordinal)
+                    && s.Contains("info.CrossXacc = crossX;", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "跨口径精准度：回放信息面板必须接跨口径行（仅 3.4.0 展示，无分布不画）",
+                "Pages\\ReplayInfoPanel.cs",
+                s => s.Contains("if (Settings.CrossEraAccuracy && (info.CrossAccuracy >= 0.0 || info.CrossXacc >= 0.0))", StringComparison.Ordinal)
+                    && s.Contains("Gui.KeyValueNarrow(CrossAccKey(), AccText(info.CrossAccuracy), Gui.TextCol);", StringComparison.Ordinal)
+                    && s.Contains("Gui.KeyValueNarrow(CrossXaccKey(), XaccText(info.CrossXacc), Gui.TextCol);", StringComparison.Ordinal)
+                    && s.Contains("playback.info.acc.legacy", StringComparison.Ordinal)
+                    && s.Contains("playback.info.xacc.legacy", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "跨口径开关必须注册 FeatureToggle（Main.SetFeatureToggle）",
+                "Main.cs",
+                s => s.Contains("SetFeatureToggle(FeatureKeys.CrossEraAccuracy,", StringComparison.Ordinal)
+                    && s.Contains("() => Settings.CrossEraAccuracy);", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "跨口径开关必须有设置行（回放页 OnGui.Row + Commit）",
+                "Pages\\Pages.cs",
+                s => s.Contains("OnGui.Row(\"replay.crosseraacc\", Settings.CrossEraAccuracy,", StringComparison.Ordinal)
+                    && s.Contains("Settings.CrossEraAccuracy = v; Commit(); });", StringComparison.Ordinal));
+            // 跨版本判定分布重排（2026-11-14 用户追问发现）：分布按录制版本
+    //        枚举顺序存、按当前枚举读，0–3 之外整体错位。两处接线缺一就是
+    //        「升级游戏后旧回放的判定分布/重算精准度/跨口径行全错位」：
+            // ① 兼容层：SpVersion（"r149"）优先、无版本戳按桶数（12=Legacy、
+    //        ≥16=Modern）判录制布局，按名重排到当前枚举（旧 Perfect→
+    //        PerfectMinus；三档落旧枚举并回 Perfect 桶；缺名丢弃计数入日志）；
+            // ② 回放摘要：ParseJudgments 结果必须过 RemapJudgments（带 SpVersion），
+    //        且旧的「不需要转换」过度承诺注释必须已经移除。
+            fail += Check(projectRoot,
+                "跨版本分布重排：兼容层必须按 SpVersion/桶数判布局并按名重排到当前枚举",
+                "Features\\Compat\\HitMarginCompat.cs",
+                s => s.Contains("internal const int XPerfectSinceBuild = 150;", StringComparison.Ordinal)
+                    && s.Contains("DistributionEra", StringComparison.Ordinal)
+                    && s.Contains("RemapJudgments", StringComparison.Ordinal)
+                    && s.Contains("LegacyLayout", StringComparison.Ordinal)
+                    && s.Contains("ModernLayout", StringComparison.Ordinal)
+                    && s.Contains("return build >= XPerfectSinceBuild ? AccEra.Modern : AccEra.Legacy;", StringComparison.Ordinal)
+                    && s.Contains("|| name == \"Midspin\"))", StringComparison.Ordinal)
+                    && s.Contains("判定分布重排：", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "跨版本分布重排：回放摘要必须带 SpVersion 过 RemapJudgments，过度承诺注释已移除",
+                "Features\\Replay\\Data\\ReplayFileInfo.cs",
+                s => s.Contains("HitMarginCompat.RemapJudgments(ParseJudgments(data.JudgmentList ?? \"\"), data.SpVersion)", StringComparison.Ordinal)
+                    && !s.Contains("自动对上本版语义", StringComparison.Ordinal));
             // 渲染健壮性（2026-11-08 他人日志）：① 分辨率中止必须打印新旧尺寸，
             // 否则无法定位是谁改了窗口；② 重锚顶满 4 次 = 游戏时钟没跟上，继续
             // 渲染只会产出冻结画面+黑帧，必须明确中止；③ 黑帧攒到 10 个要给

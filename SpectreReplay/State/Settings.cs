@@ -136,6 +136,10 @@ public static class Settings
 
     public static bool AlwaysShowMaxUsedKeys = false;
 
+    // 结算/回放面板的「3.3.1 口径」精准度标注（默认开：功能本体就是为看这个
+    // 数字而加的）。持久化见 ConfigManager，开关行在回放页。
+    public static bool CrossEraAccuracy = true;
+
     // ── Special keys filter ─────────────────────────────
     public static HashSet<string> AllowedKeyboardSpecialKeys = new();
     public static HashSet<string> AllowedAsyncSpecialKeys = new();

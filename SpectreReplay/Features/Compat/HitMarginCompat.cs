@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using UnityEngine;
 
 namespace SpectreReplay.Features.Compat;
 
@@ -118,6 +119,12 @@ internal static class HitMarginCompat
     // 旧 = {Perfect}；新 = {XPerfect, PerfectMinus, PerfectPlus}——三者都是“最内档”
     private static readonly HitMargin[] InnerPerfectFamily =
         Set("XPerfect", "PerfectMinus", "Perfect", "PerfectPlus");
+
+    // Legacy Accuracy 分子族（跨口径 + r148 本机主行共用）：3.3.1 把中旋命中
+    // 记成 Perfect（用户裁定 + r148 源码 scrPlanet 强制 Perfect），故在 r150
+    // 枚举上 = 三档 Perfect + Auto + Midspin；r148 枚举上解析为 {Perfect, Auto}。
+    private static readonly HitMargin[] LegacyAccuracyFamily =
+        Set("XPerfect", "PerfectMinus", "Perfect", "PerfectPlus", "Auto", "Midspin");
 
     // 带时机语义、可参与自定义分档的命中：
     // 旧 = VeryEarly..VeryLate 五档；新 = 再加 XPerfect / PerfectPlus
@@ -261,16 +268,29 @@ internal static class HitMarginCompat
 
     internal static bool IsPlayerHitMargin(HitMargin margin) => XAccWeights.ContainsKey(margin);
 
-    // ── 原版 xacc 权重表（逐版本）───────────────────────────────
-    // 旧版公式显式列出：1.0×{Perfect, Auto} + 0.75×{Early,LatePerfect}
-    //   + 0.4×{VeryEarly,VeryLate} + 0.2×{TooEarly,TooLate}
-    // 新版改用 HitMarginHelper.PlayerHitMarginWeights：Auto 不再计入，
-    //   1.0×{XPerfect,PerfectMinus,PerfectPlus} + 0.75×{Early,LatePerfect}
-    //   + 0.4×{VeryEarly,VeryLate} + 0.2×{TooEarly,TooLate,FailedFloor}
-    // 两版差异是游戏自身的行为差异，逐版本复刻而不是取其一。
-    private static readonly Dictionary<HitMargin, double> XAccWeights = BuildWeights();
+    // ── 原版 xacc 权重表（逐版本，r148 反编译校正）─────────────
+    // Legacy = r148（adofai-libs feeed7081，scrMarginTracker.CalculatePercentAcc）：
+    //   分子 = 1.0×(Perfect+Auto) + 0.75×(Early,Late) + 0.4×(Very) + 0.2×(Too)
+    //     + 0.2×deadTiles；分母 = hitMargins.Count + deadTiles（多压/Auto/失败
+    //     全在内）；×0.9875^检查点。中旋无独立档、命中被强制记成 Perfect
+    //     （scrPlanet 两处 `if (player.midspinInfiniteMargin)
+    //     hitMargin2 = HitMargin.Perfect`，2026-11-14 与用户记忆互相印证）。
+    //   deadTiles 不是判定档、无法从分布重建 → 旧口径缺 0.2×deadTiles 分子项
+    //     与扣减项（r150 把漏砖变成了 FailedFloor 判定档，Modern 口径才有）。
+    // Modern = r150（HitMarginHelper.PlayerHitMarginWeights）：Auto/中旋/多压
+    //   不计入，1.0×{XPerfect,PerfectMinus,PerfectPlus} + 0.75 + 0.4
+    //   + 0.2×{Too,FailedFloor}；分母 = playerHitMarginCount + FailedFloor
+    //   （官方式子的重复计数）。
+    // 2026-11-14 用户裁定收敛展示范围：跨口径对照**只在 3.4.0 上展示**（3.3.1
+    // 口径，见 Patch_CrossEraAccuracy / 回放信息面板）；3.3.1 本机**不展示**
+    // 3.4.0 口径。Legacy 表同时服务两处：r148 本机的主行 + 3.4.0 上的跨口径行。
+    private static readonly Dictionary<HitMargin, double> LegacyXAccWeights = BuildLegacyWeights();
+    private static readonly Dictionary<HitMargin, double> ModernXAccWeights = BuildModernWeights();
 
-    private static Dictionary<HitMargin, double> BuildWeights()
+    /// <summary>主行口径 = 当前游戏版本的官方公式。</summary>
+    private static Dictionary<HitMargin, double> XAccWeights => HasXPerfect ? ModernXAccWeights : LegacyXAccWeights;
+
+    private static Dictionary<HitMargin, double> BuildModernWeights()
     {
         var map = new Dictionary<HitMargin, double>();
 
@@ -283,22 +303,39 @@ internal static class HitMarginCompat
             }
         }
 
-        if (HasXPerfect)
-        {
-            // r150：对齐 HitMarginHelper.PlayerHitMarginWeights（Auto / 中旋 / 多压无权重）
-            Add(1.0, "XPerfect", "PerfectMinus", "PerfectPlus");
-            Add(0.2, "TooEarly", "TooLate", "FailedFloor");
-        }
-        else
-        {
-            // r141–148：对齐旧 CalculatePercentAcc 的显式集合（Auto 计 1.0）
-            Add(1.0, "Perfect", "Auto");
-            Add(0.2, "TooEarly", "TooLate");
-        }
-
+        // r150：对齐 HitMarginHelper.PlayerHitMarginWeights（Auto / 中旋 / 多压无权重）
+        Add(1.0, "XPerfect", "PerfectMinus", "Perfect", "PerfectPlus");
+        Add(0.2, "TooEarly", "TooLate", "FailedFloor");
         Add(0.75, "EarlyPerfect", "LatePerfect");
         Add(0.4, "VeryEarly", "VeryLate");
         Add(0.0, "FailMiss", "FailOverload");
+        return map;
+    }
+
+    private static Dictionary<HitMargin, double> BuildLegacyWeights()
+    {
+        var map = new Dictionary<HitMargin, double>();
+
+        void Add(double weight, params string[] names)
+        {
+            foreach (var name in names)
+            {
+                if (TryResolve(name, out var value))
+                    map[value] = weight;
+            }
+        }
+
+        // r148：见上。Midspin 计 1.0（3.3.1 把中旋记成 Perfect——r148 源码
+        // scrPlanet 强制 Perfect，跨口径行据此还原）；FailedFloor 计 0.2 =
+        // 旧分子里的 0.2×deadTiles 项（FF≈deadTiles）；Multipress 计 0.0 =
+        // 旧分母按全部判定条数把它算进去（无分子权重）。缺名（r148 本机无
+        // Midspin/FailedFloor）自动缺席。
+        Add(1.0, "XPerfect", "PerfectMinus", "Perfect", "PerfectPlus", "Auto", "Midspin");
+        Add(0.2, "FailedFloor", "TooEarly", "TooLate");
+        Add(0.0, "Multipress");
+        Add(0.0, "FailMiss", "FailOverload");
+        Add(0.75, "EarlyPerfect", "LatePerfect");
+        Add(0.4, "VeryEarly", "VeryLate");
         return map;
     }
 
@@ -346,12 +383,14 @@ internal static class HitMarginCompat
                 sum += counts[index];
         }
 
-        return sum + SumSet(counts, FailedFloorFamily);
+        // FailedFloor 的重复计数只属于 r150 官方式子；r148 分母 = hitMargins.Count
+        // + deadTiles——deadTiles 不是判定档，无法从分布重建，旧版口径缺这一项。
+        return HasXPerfect ? sum + SumSet(counts, FailedFloorFamily) : sum;
     }
 
     /// <summary>
-    /// 原版 xacc 百分比。分母为 0 返回 -1（含义是"这份回放没有判定数据"，
-    /// 界面应显示占位符而不是 0.00%）。
+    /// 原版 xacc 百分比（当前游戏版本的官方口径）。分母为 0 返回 -1（含义是
+    /// "这份回放没有判定数据"，界面应显示占位符而不是 0.00%）。
     /// </summary>
     internal static double XAcc(int[] counts)
     {
@@ -359,6 +398,59 @@ internal static class HitMarginCompat
         if (denominator <= 0.0)
             return -1.0;
         return XAccNumerator(counts) / denominator;
+    }
+
+    // ── Legacy 口径（r148 公式）单独出口：3.4.0 上的跨口径标注用 ──
+    // 分母 = Σ Legacy 桶（FailedFloor 已在表内顶替 deadTiles 进分子/分母、
+    // Multipress@0.0 只进分母），不再额外 + FailedFloor。
+
+    /// <summary>
+    /// Legacy（≤3.3.1）口径的 X-Accuracy：同一份分布在 r148 官方公式下的取值。
+    /// 仅 3.4.0 本机的跨口径标注使用（3.3.1 本机的主行走 <see cref="XAcc"/>）。
+    /// 分母为 0 返回 -1。
+    /// </summary>
+    internal static double LegacyXAcc(int[] counts)
+    {
+        if (counts == null)
+            return -1.0;
+        double numerator = 0.0;
+        double denominator = 0.0;
+        foreach (var pair in LegacyXAccWeights)
+        {
+            int index = (int)pair.Key;
+            if ((uint)index >= (uint)counts.Length)
+                continue;
+            numerator += pair.Value * counts[index];
+            denominator += counts[index];
+        }
+
+        return denominator <= 0.0 ? -1.0 : numerator / denominator;
+    }
+
+    /// <summary>
+    /// Legacy（≤3.3.1）口径的 Accuracy：分子族 = Perfect+Auto（中旋按 Perfect
+    /// 计，见 LegacyAccuracyFamily）；分母与奖励/扣减同 r148 式（FailedFloor
+    /// 顶替 deadTiles 扣减）。
+    /// </summary>
+    internal static double LegacyAccuracy(int[] counts)
+    {
+        if (counts == null)
+            return -1.0;
+        int total = 0;
+        for (int i = 0; i < counts.Length; i++)
+        {
+            total += counts[i];
+        }
+        if (total <= 0)
+            return -1.0;
+
+        int perfect = SumSet(counts, LegacyAccuracyFamily) + SumSet(counts, SemiPerfectFamily);
+        int denominator = total + SumSet(counts, FailFamily);
+        double acc = perfect == denominator ? 1.0 : (double)perfect / denominator;
+        acc += SumSet(counts, LegacyAccuracyFamily) * 0.0001;
+        // 扣减：r148 式为 deadTiles×1e-4，跨口径用 FailedFloor 顶替（≈漏砖数）。
+        acc -= SumSet(counts, FailedFloorFamily) * 0.0001;
+        return acc;
     }
 
     /// <summary>
@@ -398,7 +490,10 @@ internal static class HitMarginCompat
         if (total <= 0)
             return -1.0;
 
-        int perfect = SumSet(counts, PerfectFamily) + SumSet(counts, SemiPerfectFamily);
+        // 分子族：r150 = PerfectHitMargins（三档+Auto+中旋+多压）；r148 =
+        // Perfect + Early + Late + Auto（多压不算完美，r148 反编译）。
+        HitMargin[] perfectFamily = HasXPerfect ? PerfectFamily : LegacyAccuracyFamily;
+        int perfect = SumSet(counts, perfectFamily) + SumSet(counts, SemiPerfectFamily);
         // **不是 total + deaths。** 官方式子 num2 = hitMargins.Count + GetDeaths()，
         // 而 hitMargins 里本来就已经记了每次 FailMiss/FailOverload（AddHitInternal
         // 无条件 Add），GetDeaths() 只是把这两桶再数一遍。照抄即可，
@@ -406,12 +501,11 @@ internal static class HitMarginCompat
         int denominator = total + SumSet(counts, FailFamily);
 
         double acc = perfect == denominator ? 1.0 : (double)perfect / denominator;
-        // 完美奖励：**官方加到的是 PerfectHitMargins，与半完美无关**。
-        // 两版本的 PerfectHitMargins 都恰好等于 PerfectFamily 的按名并集
-        // （旧 = Perfect+Auto；r150 = 三档 Perfect+Auto+中旋+多压），
-        // 缺名会自动忽略，所以直接复用同一集合，不另立一套定义。
-        // 扣 FailedFloor 同样 1e-4/个（旧版无此成员 → 空集，扣 0）。
-        acc += SumSet(counts, PerfectFamily) * 0.0001;
+        // 完美奖励：**官方加到的是 PerfectHitMargins，与半完美无关**（r148：
+        // GetHits(Perfect, Auto)×1e-4；r150：PerfectHitMargins×1e-4）。
+        // 扣减：r150 = FailedFloor×1e-4；r148 = deadTiles×1e-4——deadTiles 不是
+        // 判定档、无法从分布重建，旧版口径缺这一项（见权重表注释）。
+        acc += SumSet(counts, perfectFamily) * 0.0001;
         acc -= SumSet(counts, FailedFloorFamily) * 0.0001;
         return acc;
     }
@@ -442,5 +536,109 @@ internal static class HitMarginCompat
         if (TryResolve("FailOverload", out var overload) && (uint)(int)overload < (uint)counts.Length)
             total += counts[(int)overload];
         return total;
+    }
+
+    // ── 跨版本判定分布重排（SpVersion 驱动，2026-11-14 用户追问发现）──
+    // JudgmentList 是录制时 hitMarginsCount 的原样快照，下标 = 录制版本的
+    // 枚举顺序；两个版本的枚举只有 0–3 保证相同（旧 Perfect = 新 PerfectMinus），
+    // 4 起整体错位（旧 LatePerfect=4 在 r150 上是 XPerfect）。读取端必须先
+    // 重排到**当前枚举**，否则升级游戏后看旧回放：判定分布、重算精准度、
+    // 跨口径行全错位——文件里存的 PercentXacc 反而是那时唯一正确的数。
+    //
+    // 录制版本从文件自带的 SpVersion（Patch_Lifecycle 写入 "r149" 这样的
+    // build 号）读；SpVersion 是后补字段，早期文件为空——此时按桶数判别：
+    // hitMarginsCount 恒为 max(枚举值)+1 全长，两版本长度天然不同（12 vs 16），
+    // 与录制版本一一对应，比"猜"可靠。都判不出才保守地按当前布局解释。
+    //
+    // 重排按名映射到当前枚举：旧 Perfect 在新版由 PerfectMinus 顶替（三档
+    // 拆分不可恢复，兼容层口径本就把三档并回一个槽，见 FilterName）；新版
+    // 的三档与 Midspin 落在旧枚举上并回 Perfect 桶（2026-11-14 用户裁定：
+    // 3.3.1 把中旋记成 Perfect）；FailedFloor 落在旧枚举上无处安放（旧版
+    // 漏砖不是判定档）只能丢弃并计入日志——deadTiles 项随之丢失，是旧枚举
+    // 表达力的硬限制，不是口径选择。
+    internal const int XPerfectSinceBuild = 150;
+
+    private static readonly string[] LegacyLayout =
+    {
+        "TooEarly", "VeryEarly", "EarlyPerfect", "Perfect", "LatePerfect", "VeryLate",
+        "TooLate", "Multipress", "FailMiss", "FailOverload", "Auto", "OverPress",
+    };
+
+    private static readonly string[] ModernLayout =
+    {
+        "TooEarly", "VeryEarly", "EarlyPerfect", "PerfectMinus", "XPerfect", "PerfectPlus",
+        "LatePerfect", "VeryLate", "TooLate", "Multipress", "FailMiss", "FailOverload",
+        "Auto", "OverPress", "Midspin", "FailedFloor",
+    };
+
+    // 录制布局时代（SpVersion/桶数判别用）：Legacy = r141–148 布局、Modern = r150+ 布局。
+    internal enum AccEra { Legacy, Modern }
+
+    /// <summary>
+    /// 文件里的判定分布按哪个布局解释。SpVersion（"r149"）优先；缺失时按
+    /// 桶数判别；都判不出返回 null（调用方按当前布局解释，不重排）。
+    /// </summary>
+    internal static AccEra? DistributionEra(int[] counts, string spVersion)
+    {
+        if (!string.IsNullOrEmpty(spVersion))
+        {
+            string digits = spVersion.Trim();
+            if (digits.StartsWith("r", StringComparison.OrdinalIgnoreCase))
+                digits = digits.Substring(1);
+            if (int.TryParse(digits, out int build) && build > 0)
+                return build >= XPerfectSinceBuild ? AccEra.Modern : AccEra.Legacy;
+        }
+        if (counts != null)
+        {
+            if (counts.Length == LegacyLayout.Length)
+                return AccEra.Legacy;
+            if (counts.Length >= ModernLayout.Length)
+                return AccEra.Modern;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// 把录制版布局的判定分布重排到**当前枚举**。录制口径 == 当前口径（或判
+    /// 不出版本）时原样返回；重排发生时记一条日志（铁律 1：看得见）。
+    /// </summary>
+    internal static int[] RemapJudgments(int[] counts, string spVersion)
+    {
+        if (counts == null)
+            return counts;
+        AccEra? era = DistributionEra(counts, spVersion);
+        // 录制布局 == 当前布局（Modern ⇔ HasXPerfect）时不重排。
+        if (era == null || era == (HasXPerfect ? AccEra.Modern : AccEra.Legacy))
+            return counts;
+
+        string[] layout = era == AccEra.Legacy ? LegacyLayout : ModernLayout;
+        int size = 0;
+        foreach (HitMargin v in Enum.GetValues(typeof(HitMargin)))
+            if ((int)v + 1 > size) size = (int)v + 1;
+        var remapped = new int[size];
+        int dropped = 0;
+        for (int i = 0; i < layout.Length && i < counts.Length; i++)
+        {
+            string name = layout[i];
+            HitMargin target = Resolve(name, Absent);
+            if (target == Absent && name == "Perfect")
+                target = Resolve("PerfectMinus", Absent);   // 旧 Perfect → 新 PerfectMinus
+            // 落在旧枚举上的新版档位并回旧桶（2026-11-14 用户裁定：3.3.1 把
+            // 中旋记成 Perfect）：三档 → Perfect；Midspin → Perfect。
+            if (target == Absent && (name == "PerfectMinus" || name == "XPerfect" || name == "PerfectPlus" || name == "Midspin"))
+                target = Resolve("Perfect", Absent);
+            if (target == Absent)
+            {
+                dropped += counts[i];
+                continue;
+            }
+            remapped[(int)target] += counts[i];
+        }
+
+        Debug.Log("[SpectreReplay] 判定分布重排：录制 "
+            + (era == AccEra.Legacy ? "≤r149（" + layout.Length + " 桶）" : "r150+（" + layout.Length + " 桶）")
+            + " → 当前 r" + SpectreReplay.PatchShared.GameVersion.Release
+            + (dropped > 0 ? "，" + dropped + " 个无对应档位命中丢弃" : ""));
+        return remapped;
     }
 }

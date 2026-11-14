@@ -1032,6 +1032,94 @@ switch ($Which) {
         Backup 'Features\Replay\Runtime\ManagedInput.cs'
         ReplaceExact 'Features\Replay\Runtime\ManagedInput.cs' 'if (state == ButtonState.IsDown && _heldCount == 0) return 0;' ''
     }
+    'MUT-U117' {
+        # 判定飘字隐藏被拆——前缀恒放行，纯净相机成片里全是判定文本
+        # （2026-11-14 用户报的原缺陷）。UiLogicShapeCheck「判定飘字」第 1 条钉的形状。
+        Backup 'Features\VideoRender\Patches\VideoRenderPatches.cs'
+        ReplaceExact 'Features\VideoRender\Patches\VideoRenderPatches.cs' ('        => !(VideoRender.Active && VideoRender.CurrentSurface == VideoSurface.CleanCamera);') ('        => true;')
+    }
+    'MUT-U118' {
+        # 判定飘字门失去输入——帧源不再上报捕获面，CurrentSurface 恒 null，
+        # 飘字前缀永远放行（与 U117 同症状，断的是另一段接线）。
+        Backup 'Features\VideoRender\Pipeline\VideoFrameSource.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoFrameSource.cs' ('        VideoRender.CurrentSurface = surface;') ('')
+    }
+    'MUT-U120' {
+        # 跨口径展示范围回归：HasXPerfect 门被拆——3.3.1 本机也会显示 3.4.0
+        # 口径（用户裁定明确不展示的方向）。跨口径② 钉的形状。
+        Backup 'Features\Results\Patch_CrossEraAccuracy.cs'
+        ReplaceExact 'Features\Results\Patch_CrossEraAccuracy.cs' ('        if (!SpectreReplay.Features.Compat.HitMarginCompat.HasXPerfect)') ('')
+    }
+    'MUT-U121' {
+        # 跨口径展示回归：回放摘要不再赋值 CrossXacc——面板画成 0.00% 而不是
+        # 真实 3.3.1 口径值（「看起来在算，其实是死的」）。跨口径③ 钉的形状。
+        Backup 'Features\Replay\Data\ReplayFileInfo.cs'
+        ReplaceExact 'Features\Replay\Data\ReplayFileInfo.cs' ('            info.CrossXacc = crossX;') ('            _ = crossX;')
+    }
+    'MUT-U122' {
+        # 跨口径展示回归：面板跨口径行拆掉一半——Accuracy 列消失，只剩 X-ACC。
+        # 跨口径④ 钉的形状。
+        Backup 'Pages\ReplayInfoPanel.cs'
+        ReplaceExact 'Pages\ReplayInfoPanel.cs' ('                Gui.KeyValueNarrow(CrossAccKey(), AccText(info.CrossAccuracy), Gui.TextCol);') ('')
+    }
+    'MUT-U127' {
+        # 结算跨口径行显示回归：中段插入被拆——行不再进入 GenerateResults 的
+        # 返回块（2026-11-14 实测：末尾追加会落到 TMP 可见区外，等于没显示；
+        # 玩家报「结算界面里没看到 3.3.1 的准度」）。跨口径② 钉的形状。
+        Backup 'Features\Results\Patch_CrossEraAccuracy.cs'
+        ReplaceExact 'Features\Results\Patch_CrossEraAccuracy.cs' ('        text = text.Insert(pct + 1, " (3.3.1: " + value + ")");') ('        _ = pct;')
+    }
+    'MUT-U128' {
+        # 跨口径开关接线回归：Main 的 FeatureToggle 注册被拆——开关行拨了也
+        # 不再挂/卸补丁（「画了行但没接线」）。UiLogicShapeCheck
+        # 「跨口径开关必须注册 FeatureToggle」钉的形状。
+        Backup 'Main.cs'
+        ReplaceExact 'Main.cs' ('                    () => Settings.CrossEraAccuracy);') ('                    () => false);')
+    }
+    'MUT-U129' {
+        # 跨口径开关接线回归：回放页的设置行被拆——开关整个消失，玩家无法
+        # 控制显示。UiLogicShapeCheck「跨口径开关必须有设置行」钉的形状。
+        Backup 'Pages\Pages.cs'
+        ReplaceExact 'Pages\Pages.cs' ('                OnGui.Row("replay.crosseraacc", Settings.CrossEraAccuracy,') ('                OnGui.Row("replay.crosseraacc", false,')
+    }
+    'MUT-U119' {
+        # Legacy 口径公式 r148 校正回归：FailedFloor 重复计数泄漏进旧分母——
+        # r148 分母 = hitMargins.Count + deadTiles（deadTiles 不是判定档、
+        # 无法从分布重建，旧口径没有这一项）。UiLogicShapeCheck
+        # 「Legacy 口径 r148 校正」钉的形状。
+        Backup 'Features\Compat\HitMarginCompat.cs'
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('        return HasXPerfect ? sum + SumSet(counts, FailedFloorFamily) : sum;') ('        return sum + SumSet(counts, FailedFloorFamily);')
+    }
+    'MUT-U123' {
+        # 跨版本分布重排：SpVersion 判据失效——恒判 Modern，Legacy 布局的
+        # 旧文件不再重排，升级游戏后判定分布/重算精准度/跨口径行全错位
+        # （2026-11-14 用户追问发现的原缺陷）。UiLogicShapeCheck
+        # 「跨版本分布重排」① 钉的形状。
+        Backup 'Features\Compat\HitMarginCompat.cs'
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('                return build >= XPerfectSinceBuild ? AccEra.Modern : AccEra.Legacy;') ('                return AccEra.Modern;')
+    }
+    'MUT-U124' {
+        # 跨版本分布重排：回放摘要不再重排——分布按录制版布局直接喂给
+        # 当前枚举的解析（与 U123 同症状，断的是另一段接线）。同上 ② 钉的形状。
+        Backup 'Features\Replay\Data\ReplayFileInfo.cs'
+        ReplaceExact 'Features\Replay\Data\ReplayFileInfo.cs' ('        info.JudgmentCounts = SpectreReplay.Features.Compat.HitMarginCompat.RemapJudgments(ParseJudgments(data.JudgmentList ?? ""), data.SpVersion);') ('        info.JudgmentCounts = ParseJudgments(data.JudgmentList ?? "");')
+    }
+    'MUT-U125' {
+        # 分布重排中旋裁定回归：modern 文件落旧枚举时 Midspin 不再并回
+        # Perfect——「3.3.1 把中旋记成 Perfect」的用户裁定被拆（r148 源码：
+        # scrPlanet 两处 `if (player.midspinInfiniteMargin)
+        # hitMargin2 = HitMargin.Perfect`）。重排① 钉的形状。
+        Backup 'Features\Compat\HitMarginCompat.cs'
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('        Add(1.0, "XPerfect", "PerfectMinus", "Perfect", "PerfectPlus", "Auto", "Midspin");') ('        Add(1.0, "XPerfect", "PerfectMinus", "Perfect", "PerfectPlus", "Auto");')
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('            if (target == Absent && (name == "PerfectMinus" || name == "XPerfect" || name == "PerfectPlus" || name == "Midspin"))') ('            if (target == Absent && (name == "PerfectMinus" || name == "XPerfect" || name == "PerfectPlus"))')
+    }
+    'MUT-U126' {
+        # Legacy 口径公式 r148 校正回归：Multipress 退出旧分母——r148 分母按
+        # 全部判定条数（hitMargins.Count）把多压算进去（无分子权重）。
+        # UiLogicShapeCheck「Legacy 口径 r148 校正」钉的形状。
+        Backup 'Features\Compat\HitMarginCompat.cs'
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('            Add(0.0, "Multipress");') ('')
+    }
     'MUT-U25' {
         # ⑫i：把已删除的「界面语言跟随游戏」开关加回来（防回归变异）。
         #      用单引号字符串拼出双引号，避免在 here-string 外层写转义。

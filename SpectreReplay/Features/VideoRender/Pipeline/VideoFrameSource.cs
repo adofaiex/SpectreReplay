@@ -106,6 +106,10 @@ internal sealed class VideoFrameSource
     internal VideoFrameSource(VideoSurface surface, int width, int height)
     {
         this.surface = surface;
+        // 上报捕获面给渲染期补丁（判定飘字隐藏只拦 CleanCamera，见
+        // Patch_VideoHideHitText）。构造失败由 CleanupOnConstructionFailure 清，
+        // 正常收尾由 Dispose 清。
+        VideoRender.CurrentSurface = surface;
         try
         {
             // 雨滴时钟换轨：JRP 的 CurrentTicks 吃墙钟，渲染慢放时两种来源的
@@ -183,6 +187,7 @@ internal sealed class VideoFrameSource
 
     private void CleanupOnConstructionFailure()
     {
+        VideoRender.CurrentSurface = null;   // 构造失败：捕获面上报一并回滚
         try
         {
             RestoreTargets();
@@ -487,6 +492,7 @@ internal sealed class VideoFrameSource
     internal void Dispose()
     {
         RestoreTargets();
+        VideoRender.CurrentSurface = null;   // 会话结束：飘字门随帧源一起撤
         flights.Clear();
         while (spares.TryDequeue(out _)) { } // net47 的 ConcurrentQueue 没有 Clear()
         if (texture != null)

@@ -23,4 +23,9 @@ internal static class FeatureKeys
     // 结算详情的「最大同时按键数」默认只在 >10 时显示；打开后无条件显示。
     // 与回放/录制相互独立，所以谓词只看它自己的设置。
     public const string AlwaysShowMaxUsedKeys = "AlwaysShowMaxUsedKeys";
+    // 结算/回放信息面板的「3.3.1 口径」精准度标注：打开后 3.4.0 本机额外标注
+    // 同一局在 ≤3.3.1 官方公式下的取值（3.3.1 本机不标注 3.4.0 口径——
+    // Patch_CrossEraAccuracy 的 HasXPerfect 门 + 面板字段 -1 双重收敛）。
+    // 与回放/录制相互独立，所以谓词只看它自己的设置。
+    public const string CrossEraAccuracy = "CrossEraAccuracy";
 }

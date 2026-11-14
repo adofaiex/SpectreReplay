@@ -455,6 +455,11 @@ namespace SpectreReplay.Pages
                 // 这里找「为什么我这一局没看到最大按键数」。
                 OnGui.Row("replay.maxusedkeys", Settings.AlwaysShowMaxUsedKeys,
                     v => { Settings.AlwaysShowMaxUsedKeys = v; Commit(); });
+                // 结算/回放面板的「3.3.1 口径」精准度标注开关：打开后 3.4.0 本机
+                // 在结算精准度行内联 (3.3.1: xx.xx%) 并在回放信息面板加跨口径行
+                //（Patch_CrossEraAccuracy 的 Feature 门 + ReplayInfoPanel）。
+                OnGui.Row("replay.crosseraacc", Settings.CrossEraAccuracy,
+                    v => { Settings.CrossEraAccuracy = v; Commit(); });
             });
 
             var files = ReplayList();

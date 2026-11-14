@@ -72,6 +72,7 @@ public static class ConfigManager
         public bool EffectRemoverSetCameraZoom { get; set; }
 
         public bool AlwaysShowMaxUsedKeys { get; set; }
+        public bool CrossEraAccuracy { get; set; }
         public bool TimelineOn { get; set; }
         public float TimelinePosX { get; set; }
         public float TimelinePosY { get; set; }
@@ -198,6 +199,7 @@ public static class ConfigManager
                 EffectRemoverSetCameraZoom = Settings.EffectRemoverSetCameraZoom,
 
                 AlwaysShowMaxUsedKeys = Settings.AlwaysShowMaxUsedKeys,
+                CrossEraAccuracy = Settings.CrossEraAccuracy,
                 TimelineOn = Settings.TimelineOn,
                 TimelinePosX = Settings.TimelinePosX,
                 TimelinePosY = Settings.TimelinePosY,
@@ -482,6 +484,7 @@ public static class ConfigManager
                     Settings.EffectRemoverResetTrackColor = sets.Value<bool?>("EffectRemoverResetTrackColor") ?? Settings.EffectRemoverResetTrackColor;
                     Settings.EffectRemoverSetCameraZoom = sets.Value<bool?>("EffectRemoverSetCameraZoom") ?? Settings.EffectRemoverSetCameraZoom;
                     Settings.AlwaysShowMaxUsedKeys = sets.Value<bool?>("AlwaysShowMaxUsedKeys") ?? Settings.AlwaysShowMaxUsedKeys;
+                    Settings.CrossEraAccuracy = sets.Value<bool?>("CrossEraAccuracy") ?? Settings.CrossEraAccuracy;
                     Settings.TimelineOn = sets.Value<bool?>("TimelineOn") ?? Settings.TimelineOn;
                     Settings.TimelinePosX = sets.Value<float?>("TimelinePosX") ?? Settings.TimelinePosX;
                     Settings.TimelinePosY = sets.Value<float?>("TimelinePosY") ?? Settings.TimelinePosY;

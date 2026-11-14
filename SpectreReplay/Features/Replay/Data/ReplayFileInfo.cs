@@ -58,6 +58,16 @@ internal sealed class ReplayFileInfo
     /// </summary>
     internal double Xacc;
 
+    /// <summary>
+    /// Legacy（≤3.3.1）口径的 X-Accuracy：同一份判定分布在 r148 官方公式下
+    /// 的取值。**只在 3.4.0 本机展示**（3.3.1 本机不展示 3.4.0 口径——
+    /// 2026-11-14 用户裁定）；无判定分布时 -1（界面不画，而不是画成 0%）。
+    /// </summary>
+    internal double CrossXacc = -1.0;
+
+    /// <summary>Legacy（≤3.3.1）口径的 Accuracy。规则与 <see cref="CrossXacc"/> 相同。</summary>
+    internal double CrossAccuracy = -1.0;
+
     internal int KeyCount;
     internal int HitCount;
     /// <summary>回放时长（秒，按键事件的最后时刻）。取不到就是 0。</summary>
@@ -195,7 +205,10 @@ internal sealed class ReplayFileInfo
         info.KeyCount = data.KeyEvents != null ? data.KeyEvents.Count : 0;
         info.HitCount = data.HitSnapshots != null ? data.HitSnapshots.Count : 0;
         info.DurationSeconds = LastKeyPosition(data);
-        info.JudgmentCounts = ParseJudgments(data.JudgmentList ?? "");
+        // 分布下标 = 录制版本的枚举顺序，读取端按当前枚举解释——录制版本跨
+        // 重排点（r150）时必须先重排：SpVersion 驱动、无版本戳按桶数判别，
+        // 见 HitMarginCompat.RemapJudgments（2026-11-14 用户追问发现的错位）。
+        info.JudgmentCounts = SpectreReplay.Features.Compat.HitMarginCompat.RemapJudgments(ParseJudgments(data.JudgmentList ?? ""), data.SpVersion);
         info.Accuracy = SpectreReplay.Features.Compat.HitMarginCompat.Accuracy(info.JudgmentCounts);
         // 判定分布缺失（老文件）时才信文件里存的那个数：它是录制时的口径，
         // 早期版本分母错、全完美局会显示成 96%。能重算就重算。
@@ -206,6 +219,19 @@ internal sealed class ReplayFileInfo
         if (recomputed >= 0.0 && data.CheckpointsUsed is int used && used > 0)
             recomputed *= System.Math.Pow(0.9875, used);
         info.Xacc = recomputed >= 0.0 ? recomputed : info.PercentXacc;
+
+        // 跨口径（2026-11-14 用户裁定收敛：只在 3.4.0 本机展示 3.3.1 口径；
+        // 3.3.1 本机不展示 3.4.0 口径）。惩罚规则与现役口径行一致（次数在场才乘）。
+        if (SpectreReplay.Features.Compat.HitMarginCompat.HasXPerfect)
+        {
+            info.CrossAccuracy = SpectreReplay.Features.Compat.HitMarginCompat.LegacyAccuracy(
+                info.JudgmentCounts);
+            double crossX = SpectreReplay.Features.Compat.HitMarginCompat.LegacyXAcc(
+                info.JudgmentCounts);
+            if (crossX >= 0.0 && data.CheckpointsUsed is int crossUsed && crossUsed > 0)
+                crossX *= System.Math.Pow(0.9875, crossUsed);
+            info.CrossXacc = crossX;
+        }
     }
 
     /// <summary>按键流里最晚的那个时间点。没有按键就是 0。</summary>
@@ -226,6 +252,8 @@ internal sealed class ReplayFileInfo
 
     /// <summary>
     /// 解析录制时写下的 <c>JudgmentList</c>（形如 <c>[0,3,17,…]</c>）。
+    /// <para>**下标是录制版本的枚举顺序**，不是当前版本的——重排由
+    /// <c>HitMarginCompat.RemapJudgments</c> 负责（见 <see cref="Apply"/>）。</para>
     ///
     /// **必须容错**：这个字符串来自玩家可编辑的文件，缺失、截断、含非数字
     /// 都会出现。解析失败返回 null（界面据此不画判定分布），而不是抛异常
@@ -318,9 +346,11 @@ internal sealed class ReplayFileInfo
     ///
     /// <para>**3.3.1 兼容**：旧版没有 XPerfect / PerfectPlus / PerfectMinus /
     /// Midspin / FailedFloor 这些成员，TryResolve 返回 false，对应桶自动跳过
-    /// （与 <see cref="JudgmentRow"/> 同一套逻辑）。老回放里的判定数据按旧
-    /// 枚举顺序存（Perfect=3 就是旧 Perfect），新代码读到的索引在
-    /// HitMarginCompat 按名解析下自动对上本版语义，不需要转换。</para>
+    /// （与 <see cref="JudgmentRow"/> 同一套逻辑）。老回放的分布按**录制版本**
+    /// 的枚举顺序存，<see cref="Apply"/> 已按 SpVersion/桶数把它重排到当前
+    /// 枚举（<c>HitMarginCompat.RemapJudgments</c>，2026-11-14 修正——旧注释
+    /// 声称"不需要转换"，对下标 0–3 成立、对 4+ 不成立），这里的按名解析
+    /// 只在重排后的数组上取值。</para>
     /// </summary>
     internal bool JudgmentRowVisual(int row, out string localeKey, out int count,
         out Color tone)

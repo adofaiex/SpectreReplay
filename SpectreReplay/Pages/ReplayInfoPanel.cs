@@ -294,12 +294,22 @@ namespace SpectreReplay.Pages
 
             GUILayout.BeginHorizontal();
             Gui.KeyValueNarrow("playback.info.duration", DurationText(info), Gui.TextCol);
-            Gui.KeyValueNarrow("playback.info.acc", AccText(info), Gui.TextCol);
+            Gui.KeyValueNarrow("playback.info.acc", AccText(info.Accuracy), Gui.TextCol);
             GUILayout.EndHorizontal();
 
             GUILayout.BeginHorizontal();
-            Gui.KeyValueNarrow("playback.info.xacc", XaccText(info), Gui.TextCol);
+            Gui.KeyValueNarrow("playback.info.xacc", XaccText(info.Xacc), Gui.TextCol);
             GUILayout.EndHorizontal();
+
+            // 跨口径行（2026-11-14 用户裁定收敛：只在 3.4.0 本机展示 3.3.1 口径；
+            // 3.3.1 本机不展示）。无判定分布时不画：一行「—」比缺一行更吵。
+            if (Settings.CrossEraAccuracy && (info.CrossAccuracy >= 0.0 || info.CrossXacc >= 0.0))
+            {
+                GUILayout.BeginHorizontal();
+                Gui.KeyValueNarrow(CrossAccKey(), AccText(info.CrossAccuracy), Gui.TextCol);
+                Gui.KeyValueNarrow(CrossXaccKey(), XaccText(info.CrossXacc), Gui.TextCol);
+                GUILayout.EndHorizontal();
+            }
         }
 
         /// <summary>
@@ -377,9 +387,8 @@ namespace SpectreReplay.Pages
                 : ts.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s";
         }
 
-        private static string XaccText(ReplayFileInfo info)
+        private static string XaccText(double x)
         {
-            double x = info.Xacc;
             return x > 0.0 ? (x * 100.0).ToString("0.00", CultureInfo.InvariantCulture) + "%"
                         : Loc.T("playback.info.na");
         }
@@ -387,12 +396,17 @@ namespace SpectreReplay.Pages
         /// <summary>普通 Accuracy。-1 = 这份回放没有判定分布（老文件或失败局）。
         /// 不钳上限：官方公式的 1e-4 奖励能让满分局算出 100.05%，游戏界面
         /// 同样显示成 100.05%，钳成 100 反而与游戏对不上。</summary>
-        private static string AccText(ReplayFileInfo info)
+        private static string AccText(double a)
         {
-            double a = info.Accuracy;
             return a < 0.0 ? Loc.T("playback.info.na")
                            : (a * 100.0).ToString("0.00", CultureInfo.InvariantCulture) + "%";
         }
+
+        /// <summary>跨口径行的文案键：只在 3.4.0 本机展示（3.3.1 口径）——
+        /// 3.3.1 本机不展示 3.4.0 口径（2026-11-14 用户裁定）。</summary>
+        private static string CrossAccKey() => "playback.info.acc.legacy";
+
+        private static string CrossXaccKey() => "playback.info.xacc.legacy";
 
         internal static string SizeText(long bytes)
         {
