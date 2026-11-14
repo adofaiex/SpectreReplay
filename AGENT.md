@@ -23,7 +23,7 @@
 | 目标框架 | `netstandard2.1`，`LangVersion preview`，`Deterministic` | 运行时是 Unity 的 Mono；语言特性可以用新的，API 不行 |
 | 游戏基线 | ADOFAI `3.4.0`（build r150），Unity `6000.3.25f1`，UMM `0.33` | `info.json` 的 `GameVersion` |
 | 构建工具 | .NET SDK 10（`SpectreReplay.slnx` 只有新版 SDK 能开） | 仓库用 slnx |
-| 游戏依赖 | `D:/Projects/adofai-libs`（放在**仓库的上一层**，`..\..\adofai-libs`） | csproj 的 `HintPath` 全是相对路径；可用 `ADOFAI_LIBS` 覆盖 |
+| 游戏依赖 | `D:/Projects/adofai-libs`（放在**仓库的上一层**，`..\..\adofai-libs`） | csproj 的 `HintPath` 全是相对路径；可用 `ADOFAI_LIBS` 覆盖。**git 历史按官方更新存旧版反编译**：查 3.4.0 之前的游戏代码用 `git show <hash>:source/...` 逐提交看枚举时代（`feeed7081` = r148，`releaseNumber=148`） |
 | 上游参照 | `D:/Projects/Spectre` | 闸门会核对它没被污染。**只作参照，不做内容比对**（2026-10-30 起）：两库已大幅分叉 |
 | 引用 | **全部 `Private=false`** | 输出目录只允许 `SpectreReplay.dll(+pdb)`；多一个 dll 会污染游戏 |
 | 产物 | `SpectreReplay.dll` + `info.json` | UMM 用 `info.json` 的 `EntryMethod` 找入口 |
@@ -149,7 +149,7 @@ powershell -File tools/i18n/gen-locdata.ps1   # 从 source.json 重新生成 Loc
 4. **工作区干净。** 有未提交改动时跑不出可归因的结论——要下「某个修复/回归」的因果结论，先提交或 stash。
 5. **改了产品代码，就得有一条会因此变红的断言**；只改文档另说。
 
-### 5.1 五种「假绿」（都真实发生过）
+### 5.1 六种「假绿」（都真实发生过）
 
 | 假绿 | 长什么样 | 怎么破 |
 |---|---|---|
@@ -158,12 +158,14 @@ powershell -File tools/i18n/gen-locdata.ps1   # 从 source.json 重新生成 Loc
 | 把注释里的例子算进去 | grep 到注释中的 `[SpectrePatch]` 示例 | 用仓库自带注释剥离器 |
 | 只验一侧 | 预览器绿 ≠ 主项目编得过（编的不是同一套源码） | 两边都跑 |
 | 环境缺失静默返回 0 | `PatchTargetCheck` 拿不到游戏程序集就直接 0 | 看它有没有打印「跳过」 |
+| 增量构建复用上次结果 | 改完只重编译了部分文件（或文件没变直接「最新」），上一轮的警告/错误不再重发，「0 警告」可能是没重编译 | 判真假用 `--no-incremental` 重建，或先读实际源码/警告内容再下结论（2026-11-15 实测：CS0162 被增量编译静默吞掉一轮） |
 
 ### 5.2 断言纪律
 
 - **新增检查必须同时加一条变异**证明它能红。
 - **变异要退回真实的 bug 形状**，不能只做 `true→false` 这种必然红的偷懒改法。
 - **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**（已同步 verify.md / 两份 README / i18n README）；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**（新增回放按键 API 契约与 RainingKeys 推桥两组检查/变异，已同步 verify.md）。引用前先跑，或直接写「以实跑为准」。
+- **判据锚点与变异模式从当前文件实读，不凭记忆写。** 闸门的 Check 先经 `SrcUtil.Clean` 剥注释再跑判据——锚点带 `//` 尾巴必失配；行首缩进/文本要逐字一致；源码重构后旧模式会命中 0 次（2026-11-15 实测两起：FF 行锚点带注释尾巴、U125 模式缩进过时）。
 
 ## 6. 架构
 
@@ -272,6 +274,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 - **本地/云端两套列表同口径**：`Pages.cs:543 FilterReplays` 与 `:568 FilterCloudReplays` 是两份实现、一条口径（注释明写「一模一样」）。改筛选/命名/排序要两边一起改，否则云端会先分叉。
 - **云端列表只读字节**：点文件名只就地展开详情，读云端字节、**不装载也不落盘**——看一眼不会顶掉正在放的那一局；播放只走显式按钮。搜索框与本地共用一份实现、两个独立实例，筛选词互不影响。
 - **兼容层**（`Features/Compat/`）：`GameCompat` / `HitMarginCompat` 抹平各 build 的命中时机与区间表示差异；补丁目标按版本分叉（见 §6.1）。别把 r150 的形状当成唯一真相。
+- **精准度双口径**（2026-11-14）：`HitMarginCompat` 含 Legacy（r148 反编译校正：Multipress@0.0 只进旧分母、FailedFloor@0.2 顶替 deadTiles、Midspin 计 1.0=r148 强制 Perfect）与 Modern（对齐 `PlayerHitMarginWeights`）双权重表 + `RemapJudgments`（按 SpVersion/桶数把旧回放分布重排到当前枚举——修跨版本读取错位）；`LegacyXAcc/LegacyAccuracy` 供结算内联与回放面板标注 ≤3.3.1 口径（开关 `replay.crosseraacc`，仅 3.4.0 本机展示）。已知近似：r148 的 deadTiles 项无法从分布重建。
 - **去特效**（`Features/EffectRemover/`）：在**解码期**改内存里的关卡数据（一次性摘事件，不动磁盘文件）；保存拦截只挂 `SaveLevelEditorAction`（Ctrl+S → `SaveLevel`），`SaveLevelAs` **故意不补**——「另存为」仍写带特效的原文件。别把这个当 bug 修，先读注释。
 
 ## 7. 变更配方（照着做，别自创流程）
@@ -423,6 +426,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 16. `OnGui.cs` 的成员注释引用「类注释第 3/4 条规则」，但类注释已不在文件里——别去找不存在的规则原文。
 17. 用 `Measure-Object -Line` 数行会跳过空行，行号会漂；以 read 工具/编辑器的物理行号为准。
 18. 本仓库的工作区经常带着**未提交的改动**（本次写作期间 `Pages.cs` 就被本团队之外的人改过、dll 也被重新构建）。动工前后各看一眼 `git status`，别把别人的半成品算成自己的，也别顺手 revert。
+19. **`mutate.ps1` 的 Backup/Restore 会把源码 `LastWriteTime` 顶到当下**——还原后的 mtime 是脚本行为，不是「有人改过」的信号；反过来它也会让增量构建跳过重编译。
 
 ## 10. 风格与提交
 
