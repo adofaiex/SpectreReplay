@@ -369,6 +369,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 
 - 录制时间戳 = `songposition_minusi`；回放刻意不读它。
 - 泵在 **Prefix**；单帧 64 事件 / 256 命中上限；角度闸不能删。
+- **命中推进的角度源 = 本帧现算**（`GetAngleThisFrame`，与 `Update_RefreshAngles` 同式同常数）：星球角度是歌曲位置的导出值、刷新跑在 controller Postfix 之后，直读 `chosenPlanet.angle` 字段拿到的是上一帧旧值 → 命中固定晚一帧 → 越界帧先冲过砖块再弹回录制角度（成片「新球飘移」）。禁止改判定、禁止给星球另设时间源（六版实测全败，`MUT-U130~U134` 守）。
 - `ManagedInput.Active` 只等于 `is_playing`。
 - `holdKeys` 单一来源；`Append` 必须用 `AsyncKeyCode`。
 - `Stop` 顺序：快照 → 翻标志 → 发松开；难度/`noFail`/`hitMarginLimit` 必须在所有校验之后接管，并在 Stop 与两条失败路径都还原。
