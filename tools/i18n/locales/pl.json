@@ -400,8 +400,6 @@
     "render.tail.tip": "Dodatkowe sekundy nagrywane po zakończeniu poziomu, aby zachować animację wyjściową.",
     "render.surface.tip": "Źródło klatek. Czysta kamera nie ma UI i ma dowolną rozdzielczość; ekran gry zawiera UI i zależy od okna.",
     "render.cursor.tip": "Rysuje kursor myszy w wideo. Nowo nagrane replaye zapisują także trajektorię kursora, odtwarzaną wzdłuż osi czasu utworu — zsynchronizowaną z obrazem i niezależną od szybkości renderowania. Starsze replaye nie mają trajektorii i używają żywego kursora z czasu renderowania (jego tempo zależy od szybkości renderowania). Ukryty kursor nie jest rysowany.",
-    "render.homui": "Galeria luster obejmuje interfejs",
-    "render.homui.tip": "Gdy galeria luster jest aktywna, interfejs gry (tytuł, pasek postępu, miernik oceny) również wchodzi w smugę, odbijając się razem ze światem gry. Działa w rozgrywce i podczas renderowania; przy przechwytywaniu czystej kamery interfejs jest już rysowany w kumulowanym obrazie, więc nie jest potrzebny. Interfejs samego moda nie jest objęty.",
     "render.codec.tip": "Wybór kodera. Najszybciej preferuje kodowanie GPU i wraca do CPU, gdy wykrywanie się nie powiedzie; wiersz poniżej pokazuje, który jest faktycznie używany.",
     "render.quality.tip": "Jakość kodowania. Wyższa daje większe pliki i nieco dłuższe renderowanie.",
     "render.format.tip": "Kontener pliku wyjściowego. mp4 jest najbardziej kompatybilny; webm jest mniejszy, ale wymaga ponownego kodowania.",
@@ -493,5 +491,20 @@
     "subtab.render.start": "Renderowanie",
     "subtab.render.output": "Wyjście",
     "subtab.about.info": "Informacje"
+  },
+  "subtab.record.basics": {
+    "zh-CN": "录制设置",
+    "zh-TW": "錄製設定",
+    "en": "Recording",
+    "ja": "録画設定",
+    "ko": "녹화 설정",
+    "es": "Grabación",
+    "pt": "Gravação",
+    "fr": "Enregistrement",
+    "de": "Aufnahme",
+    "pl": "Nagrywanie",
+    "cs": "Nahrávání",
+    "ru": "Запись",
+    "vi": "Ghi hình"
   }
 }

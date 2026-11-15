@@ -1130,14 +1130,6 @@ switch ($Which) {
         ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' ('float angle = GetAngleThisFrame(__instance);') ('float angle = GetAngle(__instance);')
         ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' ('                angle = GetAngleThisFrame(__instance);') ('                angle = GetAngle(__instance);')
     }
-    'MUT-U135' {
-        # 镜厅罩 UI 的专属相机清屏方式被换回 SolidColor：相机每帧清掉颜色，
-        # 累积（拖尾）不会发生，「镜厅罩 UI」静默变成空操作——UI 永远清晰，
-        # 玩家拨了开关却看不到任何效果。UiLogicShapeCheck「镜厅罩 UI」判据的
-        # 不变量②（clearFlags 必须 Depth）钉的形状。
-        Backup 'Features\VideoRender\Patches\Patch_HallOfMirrorsUI.cs'
-        ReplaceExact 'Features\VideoRender\Patches\Patch_HallOfMirrorsUI.cs' ('_homCam.clearFlags = CameraClearFlags.Depth;') ('_homCam.clearFlags = CameraClearFlags.SolidColor;')
-    }
     'MUT-U130' {
         # 渲染钉扎被加上相位偏移：等步长被破坏（这正是两版补偿的形态，
         # 第二版还形成了「扣残差→事件推迟→残差更大」的反馈回路，把回放整体

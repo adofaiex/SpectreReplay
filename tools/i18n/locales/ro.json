@@ -400,8 +400,6 @@
     "render.tail.tip": "Secunde suplimentare înregistrate după terminarea nivelului, pentru a păstra animația de final.",
     "render.surface.tip": "Sursa cadrelor. Camera curată nu are UI și are orice rezoluție; ecranul jocului include UI și urmează fereastra.",
     "render.cursor.tip": "Desenează cursorul mouse-ului în videoclip. Replay-urile înregistrate recent salvează și traiectoria cursorului, reprodusă de-a lungul liniei de timp a piesei — sincronizată cu imaginea și independentă de viteza de randare. Replay-urile mai vechi nu au traiectorie și revin la cursorul live din momentul randării (ritmul urmează viteza de randare). Un cursor ascuns nu este desenat.",
-    "render.homui": "Sala oglinzilor acoperă interfața",
-    "render.homui.tip": "Când sala oglinzilor este activă, interfața jocului (titlu, bară de progres, contor de evaluare) intră și ea în dâră, reflectându-se împreună cu lumea jocului. Funcționează în joc și la randare; la captura cu cameră curată interfața este deja desenată în cadrul cumulat, deci nu este necesară. Interfața propriului mod nu este afectată.",
     "render.codec.tip": "Alegerea codificatorului. Cel mai rapid preferă codificarea pe GPU și revine la CPU când detectarea eșuează; rândul de mai jos arată care este folosit efectiv.",
     "render.quality.tip": "Calitatea codificării. Mai ridicată dă fișiere mai mari și randări puțin mai lungi.",
     "render.format.tip": "Containerul fișierului de ieșire. mp4 este cel mai compatibil; webm e mai mic, dar necesită recodificare.",
@@ -493,5 +491,20 @@
     "subtab.render.start": "Randare",
     "subtab.render.output": "Ieșire",
     "subtab.about.info": "Informații"
+  },
+  "subtab.record.basics": {
+    "zh-CN": "录制设置",
+    "zh-TW": "錄製設定",
+    "en": "Recording",
+    "ja": "録画設定",
+    "ko": "녹화 설정",
+    "es": "Grabación",
+    "pt": "Gravação",
+    "fr": "Enregistrement",
+    "de": "Aufnahme",
+    "pl": "Nagrywanie",
+    "cs": "Nahrávání",
+    "ru": "Запись",
+    "vi": "Ghi hình"
   }
 }

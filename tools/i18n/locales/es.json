@@ -400,8 +400,6 @@
     "render.tail.tip": "Segundos extra grabados tras terminar el nivel, para conservar la animación final.",
     "render.surface.tip": "Fuente de imagen. La cámara limpia no tiene UI y admite cualquier resolución; la pantalla del juego incluye la UI y sigue la ventana.",
     "render.cursor.tip": "Dibuja el cursor del ratón en el vídeo. Los replays recién grabados también guardan la trayectoria del cursor, que se reproduce siguiendo la línea de tiempo de la canción: sincronizada con la imagen e independiente de la velocidad de renderizado. Los replays antiguos no tienen trayectoria y usan el cursor en vivo del momento del render (su ritmo sigue la velocidad de renderizado). Un cursor oculto no se dibuja.",
-    "render.homui": "La sala de espejos cubre la interfaz",
-    "render.homui.tip": "Cuando la sala de espejos está activa, la interfaz del juego (título, barra de progreso, medidor de juicio) también entra en el efecto de estela, reflejándose junto con el mundo del juego. Funciona en juego real y en renderizado; con la captura de cámara limpia la interfaz ya se dibuja en el fotograma acumulado, así que no es necesaria. La interfaz propia del mod no se ve afectada.",
     "render.codec.tip": "Elección de codificador. «Más rápido» prefiere la codificación por GPU y recurre a la CPU si la detección falla; la fila de abajo muestra cuál se está usando realmente.",
     "render.quality.tip": "Calidad de codificación. Más alta da archivos más grandes y renderizados algo más lentos.",
     "render.format.tip": "Contenedor del archivo de salida. mp4 es el más compatible; webm ocupa menos pero necesita recodificar.",
@@ -493,5 +491,20 @@
     "subtab.render.start": "Render",
     "subtab.render.output": "Salida",
     "subtab.about.info": "Información"
+  },
+  "subtab.record.basics": {
+    "zh-CN": "录制设置",
+    "zh-TW": "錄製設定",
+    "en": "Recording",
+    "ja": "録画設定",
+    "ko": "녹화 설정",
+    "es": "Grabación",
+    "pt": "Gravação",
+    "fr": "Enregistrement",
+    "de": "Aufnahme",
+    "pl": "Nagrywanie",
+    "cs": "Nahrávání",
+    "ru": "Запись",
+    "vi": "Ghi hình"
   }
 }

@@ -195,11 +195,6 @@ public static class Settings
     public static int ConvertTarget = 0;       // 转换目标容器：0 mp4 1 mkv 2 webm 3 mov
     public static float RenderTailSeconds = 3f;
     public static bool RenderCursorOn = false;
-    // 镜厅（Hall of Mirrors）开启时把游戏 UI 画布迁移到一台不清屏的专属相机上，
-    // 让 UI 与游戏世界一起进入累积拖尾（ScreenSpaceOverlay 不经过任何相机，
-    // 罩不到它）。**默认关**（理由与 RenderCursorOn 同一类）：它会改变成片
-    // 与实机画面里 UI 的观感，属于画面增强而非默认语义。
-    public static bool HallOfMirrorsUIOn = false;
     // 是否允许在渲染途中按一个快捷键**提前结束**，把「从开始渲染到按键那一刻」
     // 的画面导出——也就是渲染不再受回放文件长度限制。
     //

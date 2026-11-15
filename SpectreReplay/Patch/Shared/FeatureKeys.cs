@@ -28,7 +28,4 @@ internal static class FeatureKeys
     // Patch_CrossEraAccuracy 的 HasXPerfect 门 + 面板字段 -1 双重收敛）。
     // 与回放/录制相互独立，所以谓词只看它自己的设置。
     public const string CrossEraAccuracy = "CrossEraAccuracy";
-    // 镜厅罩 UI：镜厅开启时把游戏 UI 画布迁到不清屏的专属相机上。与回放/录制
-    // 相互独立，所以谓词只看它自己的设置。
-    public const string HallOfMirrorsUI = "HallOfMirrorsUI";
 }

@@ -1860,8 +1860,6 @@ namespace SpectreReplay.Pages
                     ? "render.surface.screen_note" : "render.surface.clean_note");
                 OnGui.Row("render.cursor", RenderCursorOn,
                     v => { RenderCursorOn = v; Commit(); });
-                OnGui.Row("render.homui", HallOfMirrorsUIOn,
-                    v => { HallOfMirrorsUIOn = v; Commit(); });
             }, RenderOn);
 
             Gui.Section("render.codec", Gui.Accent, () =>

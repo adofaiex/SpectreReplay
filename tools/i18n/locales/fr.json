@@ -400,8 +400,6 @@
     "render.tail.tip": "Secondes supplémentaires enregistrées après la fin du niveau, pour conserver l'animation de fin.",
     "render.surface.tip": "Source de l'image. La caméra propre n'a pas d'UI et accepte n'importe quelle résolution ; l'écran de jeu inclut l'UI et suit la fenêtre.",
     "render.cursor.tip": "Dessine le curseur de la souris dans la vidéo. Les replays nouvellement enregistrés mémorisent aussi la trajectoire du curseur, rejouée le long de la timeline de la chanson — synchronisée avec l'image et indépendante de la vitesse de rendu. Les anciens replays n'ont pas de trajectoire et retombent sur le curseur live du moment du rendu (son rythme suit la vitesse de rendu). Un curseur masqué n'est pas dessiné.",
-    "render.homui": "La salle des miroirs couvre l'UI",
-    "render.homui.tip": "Quand la salle des miroirs est active, l'interface du jeu (titre, barre de progression, jauge de jugement) rejoint aussi la traînée, se reflétant avec le monde du jeu. Fonctionne en jeu et en rendu ; avec la capture caméra propre l'UI est déjà dessinée dans l'image cumulée, donc inutile ici. L'interface du mod n'est pas concernée.",
     "render.codec.tip": "Choix de l'encodeur. « Le plus rapide » privilégie l'encodage GPU et retombe sur le CPU si la détection échoue ; la ligne ci-dessous indique lequel est réellement utilisé.",
     "render.quality.tip": "Qualité d'encodage. Plus haute donne des fichiers plus gros et des rendus un peu plus longs.",
     "render.format.tip": "Conteneur du fichier de sortie. mp4 est le plus compatible ; webm est plus petit mais nécessite un réencodage.",
@@ -493,5 +491,20 @@
     "subtab.render.start": "Rendu",
     "subtab.render.output": "Sortie",
     "subtab.about.info": "Infos"
+  },
+  "subtab.record.basics": {
+    "zh-CN": "录制设置",
+    "zh-TW": "錄製設定",
+    "en": "Recording",
+    "ja": "録画設定",
+    "ko": "녹화 설정",
+    "es": "Grabación",
+    "pt": "Gravação",
+    "fr": "Enregistrement",
+    "de": "Aufnahme",
+    "pl": "Nagrywanie",
+    "cs": "Nahrávání",
+    "ru": "Запись",
+    "vi": "Ghi hình"
   }
 }

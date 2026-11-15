@@ -104,7 +104,6 @@ public static class ConfigManager
         public float render_tail { get; set; }
         public bool render_on { get; set; }
         public bool render_cursor_on { get; set; }
-        public bool hall_of_mirrors_ui_on { get; set; }
         public bool render_stop_on { get; set; }
         public int render_stop_key { get; set; }
         /// <summary>音画偏移毫秒（见 Settings.RenderAudioOffsetMs）。</summary>
@@ -230,7 +229,6 @@ public static class ConfigManager
                 render_tail = Settings.RenderTailSeconds,
                 render_on = Settings.RenderOn,
                 render_cursor_on = Settings.RenderCursorOn,
-                hall_of_mirrors_ui_on = Settings.HallOfMirrorsUIOn,
                 render_stop_on = Settings.RenderStopOn,
                 render_stop_key = Settings.RenderStopKey,
                 render_audio_offset_ms = Settings.RenderAudioOffsetMs,
@@ -528,7 +526,6 @@ public static class ConfigManager
                     Settings.RenderTailSeconds = Mathf.Clamp(ints.Value<float?>("render_tail") ?? Settings.RenderTailSeconds, 0f, 15f);
                     Settings.RenderOn = ints.Value<bool?>("render_on") ?? Settings.RenderOn;
                     Settings.RenderCursorOn = ints.Value<bool?>("render_cursor_on") ?? Settings.RenderCursorOn;
-                    Settings.HallOfMirrorsUIOn = ints.Value<bool?>("hall_of_mirrors_ui_on") ?? Settings.HallOfMirrorsUIOn;
                     Settings.RenderStopOn = ints.Value<bool?>("render_stop_on") ?? Settings.RenderStopOn;
                     // 键值不 Clamp：它是 KeyCode 数值域，合法集合由 Enum.IsDefined
                     // 在轮询处把关（见 VideoRenderJob.StopRequestedByHotkey）。

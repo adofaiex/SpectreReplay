@@ -400,8 +400,6 @@
     "render.tail.tip": "Số giây ghi thêm sau khi màn kết thúc, để giữ hoạt ảnh kết.",
     "render.surface.tip": "Nguồn khung hình. Camera sạch không có UI và độ phân giải tùy ý; màn hình game có UI và theo cửa sổ.",
     "render.cursor.tip": "Vẽ con trỏ chuột vào video. Các replay ghi mới cũng lưu cả quỹ đạo con trỏ, phát lại theo dòng thời gian của bài hát — đồng bộ với hình ảnh và không bị ảnh hưởng bởi tốc độ render. Replay cũ không có quỹ đạo nên dùng con trỏ thực tại thời điểm render (nhịp đi theo tốc độ render). Con trỏ bị ẩn sẽ không được vẽ.",
-    "render.homui": "Phòng gương bao phủ giao diện",
-    "render.homui.tip": "Khi Phòng gương bật, giao diện game (tiêu đề, thanh tiến độ, đồng hồ đánh giá) cũng vào vệt sách, phản chiếu cùng thế giới game. Hiệu quả cả khi chơi trực tiếp và khi kết xuất; ở chế độ ghi bằng camera sạch, giao diện vốn đã được vẽ vào khung tích lũy nên không cần. Giao diện của mod không bị ảnh hưởng.",
     "render.codec.tip": "Chọn bộ mã hóa. Nhanh nhất ưu tiên mã hóa GPU và quay về CPU khi dò thất bại; dòng bên dưới cho biết cái nào đang thực sự dùng.",
     "render.quality.tip": "Chất lượng mã hóa. Cao hơn cho tệp lớn hơn và kết xuất lâu hơn một chút.",
     "render.format.tip": "Vật chứa của tệp đầu ra. mp4 tương thích nhất; webm nhỏ hơn nhưng cần mã hóa lại.",
@@ -493,5 +491,20 @@
     "subtab.render.start": "Kết xuất",
     "subtab.render.output": "Đầu ra",
     "subtab.about.info": "Thông tin"
+  },
+  "subtab.record.basics": {
+    "zh-CN": "录制设置",
+    "zh-TW": "錄製設定",
+    "en": "Recording",
+    "ja": "録画設定",
+    "ko": "녹화 설정",
+    "es": "Grabación",
+    "pt": "Gravação",
+    "fr": "Enregistrement",
+    "de": "Aufnahme",
+    "pl": "Nagrywanie",
+    "cs": "Nahrávání",
+    "ru": "Запись",
+    "vi": "Ghi hình"
   }
 }
