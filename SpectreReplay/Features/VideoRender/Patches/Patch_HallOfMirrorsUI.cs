@@ -54,6 +54,19 @@ internal static class Patch_HallOfMirrorsUI
         else Restore();
     }
 
+    // 动态画布补扫：键位显示这类模组 UI 会在 HOM 激活期间**重建自己的画布**
+    //（实测：Jipper 的键显画布在两次扫描之间被销毁重建，名字都换了）——重建后
+    // 的新画布以 Overlay 出现，逃逸单次扫描，要等下一个 HOM 事件才被补迁，
+    // 窗口期内它就是干净的。挂导体 Update 每半秒补扫一次（幂等增量，
+    // FindObjectsByType 的代价每 0.5s 一次可接受），新画布出现后半个周期内
+    // 进入拖尾。
+    [SpectrePatch(typeof(scrConductor), "Update", PatchType.Postfix, Feature = FeatureKeys.HallOfMirrorsUI)]
+    internal static void Rescan()
+    {
+        if (!_migrated || (Time.frameCount & 31) != 0) return;
+        Apply();
+    }
+
     private static void Apply()
     {
         // 纯净相机渲染期：画布归 RenderOverlayCapture 管，这里绝不插手
