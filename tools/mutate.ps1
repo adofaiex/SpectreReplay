@@ -1173,7 +1173,14 @@ switch ($Which) {
         # 全部判定条数（hitMargins.Count）把多压算进去（无分子权重）。
         # UiLogicShapeCheck「Legacy 口径 r148 校正」钉的形状。
         Backup 'Features\Compat\HitMarginCompat.cs'
-        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('            Add(0.0, "Multipress");') ('')
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('        Add(0.0, "Multipress");') ('')
+    }
+    'MUT-U135' {
+        # Legacy X-Acc 分母回归：OverPress 退出旧分母——r148 的 X-Acc 分母是
+        # hitMargins.Count（全部判定条数），无权重档位必须只进分母。
+        # UiLogicShapeCheck「X-Acc 分母必须含无权重判定档」钉的形状。
+        Backup 'Features\Compat\HitMarginCompat.cs'
+        ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('        Add(0.0, "OverPress");') ('')
     }
     'MUT-U25' {
         # ⑫i：把已删除的「界面语言跟随游戏」开关加回来（防回归变异）。

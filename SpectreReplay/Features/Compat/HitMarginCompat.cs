@@ -327,12 +327,22 @@ internal static class HitMarginCompat
 
         // r148：见上。Midspin 计 1.0（3.3.1 把中旋记成 Perfect——r148 源码
         // scrPlanet 强制 Perfect，跨口径行据此还原）；FailedFloor 计 0.2 =
-        // 旧分子里的 0.2×deadTiles 项（FF≈deadTiles）；Multipress 计 0.0 =
-        // 旧分母按全部判定条数把它算进去（无分子权重）。缺名（r148 本机无
-        // Midspin/FailedFloor）自动缺席。
+        // 旧分子里的 0.2×deadTiles 项（FF≈deadTiles）。
+        // Multipress 计 0.0 不是为了"算它"：它和 OverPress 一样只走 ShowHitText，
+        // 从不 AddHit（scrPlanet 赋给 hitMargin3/hitMargin4 的只是飘字值，真正记账
+        // 的是 hitMargin2），桶恒为 0。这一行与下面 OverPress 那行只是把分母补齐成
+        // 「全部判定槽」——r148 分母就是 hitMargins.Count，不按权重筛桶；哪天游戏真
+        // 开始记这两档，也不会把它们漏出分母。缺名（r148 本机无 Midspin/FailedFloor）
+        // 自动缺席。
         Add(1.0, "XPerfect", "PerfectMinus", "Perfect", "PerfectPlus", "Auto", "Midspin");
         Add(0.2, "FailedFloor", "TooEarly", "TooLate");
         Add(0.0, "Multipress");
+        // OverPress 同理：r148 的 X-Acc 分母是 hitMargins.Count（全部判定条数），
+        // 无权重档位只进分母。当前两版 OverPress 只走 ShowHitText、从不 AddHit
+        // （scrPlanet 里赋给 hitMargin3/hitMargin4 的只是飘字值，真正记账的是
+        // hitMargin2），桶恒为 0——这一行让分母恒等于 hitMargins.Count，未来
+        // 版本若开始记账也仍然对。
+        Add(0.0, "OverPress");
         Add(0.0, "FailMiss", "FailOverload");
         Add(0.75, "EarlyPerfect", "LatePerfect");
         Add(0.4, "VeryEarly", "VeryLate");
@@ -429,8 +439,9 @@ internal static class HitMarginCompat
 
     /// <summary>
     /// Legacy（≤3.3.1）口径的 Accuracy：分子族 = Perfect+Auto（中旋按 Perfect
-    /// 计，见 LegacyAccuracyFamily）；分母与奖励/扣减同 r148 式（FailedFloor
-    /// 顶替 deadTiles 扣减）。
+    /// 计，见 LegacyAccuracyFamily）；分母 = 非漏砖判定条数 + 失败数（r148 的
+    /// hitMargins.Count 里没有漏砖）；FailedFloor 只顶替 deadTiles 的 1e-4 扣减项，
+    /// <b>不进分母</b>。
     /// </summary>
     internal static double LegacyAccuracy(int[] counts)
     {
@@ -441,6 +452,13 @@ internal static class HitMarginCompat
         {
             total += counts[i];
         }
+
+        // 漏砖不进分母：r148 的 num2 = hitMargins.Count + 失败数，而漏砖在那边不是
+        // 判定——RegisterDeadTiles 只累加 deadTiles 字段（scrMarginTracker.cs:69-80），
+        // hitMarginsCount 的唯一自增点是 AddHit。3.4.0 把漏砖变成了真实判定档
+        // FailedFloor，它本来就在 hitMargins 里；照搬 total 会让同一批漏砖被罚两次
+        // （分母一次 + 下面 1e-4 一次），无失败判定却有漏砖的局会被压到 100% 以下。
+        total -= SumSet(counts, FailedFloorFamily);
         if (total <= 0)
             return -1.0;
 

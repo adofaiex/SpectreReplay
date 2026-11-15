@@ -1327,6 +1327,11 @@ namespace UiPreview
                     && s.Contains("        acc -= SumSet(counts, FailedFloorFamily) * 0.0001;", StringComparison.Ordinal)
                     && s.Contains("return HasXPerfect ? sum + SumSet(counts, FailedFloorFamily) : sum;", StringComparison.Ordinal));
             fail += Check(projectRoot,
+                "Legacy 口径：X-Acc 分母必须含无权重判定档（OverPress 同 Multipress，只进分母）",
+                "Features\\Compat\\HitMarginCompat.cs",
+                s => s.Contains("Add(0.0, \"OverPress\");", StringComparison.Ordinal)
+                    && s.Contains("foreach (var pair in LegacyXAccWeights)", StringComparison.Ordinal));
+            fail += Check(projectRoot,
                 "跨口径精准度：结算详情必须内联另一口径值（仅 3.4.0 展示，同开关，xacc 惩罚与官方同规则）",
                 "Features\\Results\\Patch_CrossEraAccuracy.cs",
                 s => s.Contains("typeof(DetailedResults), \"GenerateResults\", PatchType.Postfix", StringComparison.Ordinal)
