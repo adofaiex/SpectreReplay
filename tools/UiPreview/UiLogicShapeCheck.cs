@@ -1417,6 +1417,22 @@ namespace UiPreview
                     && !s.Contains("PinResidual", StringComparison.Ordinal)
                     && !s.Contains("AlignPinToKeyEvent", StringComparison.Ordinal)
                     && !s.Contains("TryPeekNextEventTime", StringComparison.Ordinal));
+            // 镜厅罩 UI（2026-11-15）：镜厅 = 背景相机不清屏逐帧累积；UI 画布是
+            // ScreenSpaceOverlay、不经过任何相机，累积罩不到它。新判据钉住迁移器的
+            // 四个不变量：① 挂点必须是 EnableHallOfMirrors 的 Postfix（镜厅开/关
+            // 是唯一的状态翻转点）；② 专属相机必须 clearFlags=Depth（不清屏——
+            // 拖尾的整个机制所在，用 SolidColor 就什么都不会发生）；③ 还原必须
+            // 把画布 mode/worldCamera 两端都恢复（只还原 mode 会把画布留在
+            // ScreenSpaceCamera + 旧相机上）；④ 纯净相机渲染期必须跳过（画布
+            // 归 RenderOverlayCapture 管，双重接管会把画布抢来抢去）。
+            fail += Check(projectRoot,
+                "镜厅罩 UI：挂点/不清屏相机/两端还原/纯净渲染跳过 四个不变量",
+                "Features\\VideoRender\\Patches\\Patch_HallOfMirrorsUI.cs",
+                s => s.Contains("typeof(scrController), \"EnableHallOfMirrors\", PatchType.Postfix", StringComparison.Ordinal)
+                    && s.Contains("_homCam.clearFlags = CameraClearFlags.Depth;", StringComparison.Ordinal)
+                    && s.Contains("c.renderMode = _oldModes[i];", StringComparison.Ordinal)
+                    && s.Contains("c.worldCamera = _oldWorldCameras[i];", StringComparison.Ordinal)
+                    && s.Contains("VideoRender.CurrentSurface == VideoSurface.CleanCamera", StringComparison.Ordinal));
             // 渲染健壮性（2026-11-08 他人日志）：① 分辨率中止必须打印新旧尺寸，
             // 否则无法定位是谁改了窗口；② 重锚顶满 4 次 = 游戏时钟没跟上，继续
             // 渲染只会产出冻结画面+黑帧，必须明确中止；③ 黑帧攒到 10 个要给

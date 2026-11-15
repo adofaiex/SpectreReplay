@@ -169,6 +169,8 @@ namespace SpectreReplay
                     () => Settings.AlwaysShowMaxUsedKeys);
                 SpectrePatchHub.SetFeatureToggle(FeatureKeys.CrossEraAccuracy,
                     () => Settings.CrossEraAccuracy);
+                SpectrePatchHub.SetFeatureToggle(FeatureKeys.HallOfMirrorsUI,
+                    () => Settings.HallOfMirrorsUIOn);
                 SpectrePatchHub.Refresh();
 
                 SpectreState.SetGetKeyAsyncEnabled(Settings.ReplayOn && Settings.GetDataFromAsyncInput);

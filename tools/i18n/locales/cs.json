@@ -400,6 +400,8 @@
     "render.tail.tip": "Další sekundy nahrávané po konci úrovně, aby se zachovala závěrečná animace.",
     "render.surface.tip": "Zdroj snímků. Čistá kamera nemá UI a má libovolné rozlišení; obrazovka hry obsahuje UI a sleduje okno.",
     "render.cursor.tip": "Kreslí kurzor myši do videa. Nově nahrané replayy ukládají i dráhu kurzoru, která se při renderu přehrává podle časové osy skladby — je synchronní s obrazem a nezávislá na rychlosti renderu. Starší replayy dráhu nemají a použijí živý kurzor z doby renderu (jeho tempo odpovídá rychlosti renderu). Skrytý kurzor se nekreslí.",
+    "render.homui": "Sál zrcadel zahrnuje rozhraní",
+    "render.homui.tip": "Když je sál zrcadel aktivní, rozhraní hry (titul, ukazatel průběhu, meter hodnocení) vstupuje také do stopové effekty, odráží se spolu se světem hry. Funguje ve hře i při vykreslování; při zachytávání čistou kamerou je rozhraní již kresleno do kumulované snímky, takže není potřeba. Rozhraní samotného modu není ovlivněno.",
     "render.codec.tip": "Volba kodéru. Nejrychlejší preferuje kódování na GPU a při neúspěšné kontrole se vrací k CPU; řádek níže ukazuje, který se skutečně používá.",
     "render.quality.tip": "Kvalita kódování. Vyšší dává větší soubory a mírně delší vykreslování.",
     "render.format.tip": "Kontejner výstupního souboru. mp4 je nejkompatibilnější; webm je menší, ale vyžaduje překódování.",
@@ -491,20 +493,5 @@
     "subtab.render.start": "Vykreslení",
     "subtab.render.output": "Výstup",
     "subtab.about.info": "Informace"
-  },
-  "subtab.record.basics": {
-    "zh-CN": "录制设置",
-    "zh-TW": "錄製設定",
-    "en": "Recording",
-    "ja": "録画設定",
-    "ko": "녹화 설정",
-    "es": "Grabación",
-    "pt": "Gravação",
-    "fr": "Enregistrement",
-    "de": "Aufnahme",
-    "pl": "Nagrywanie",
-    "cs": "Nahrávání",
-    "ru": "Запись",
-    "vi": "Ghi hình"
   }
 }

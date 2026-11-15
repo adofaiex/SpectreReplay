@@ -605,6 +605,16 @@
   "en": "Mouse cursor"
  },
  {
+  "key": "render.homui",
+  "zh": "镜厅罩住界面",
+  "en": "Hall of Mirrors covers UI"
+ },
+ {
+  "key": "render.homui.tip",
+  "zh": "镜厅开启时让游戏界面（标题、进度条、判定盘）也进入拖尾，与游戏画面一起镜像。实机与渲染都生效；纯净相机渲染下界面本就画进累积画面，无需此项。模组自己的界面不参与。",
+  "en": "When Hall of Mirrors is active, game UI (title, progress bar, error meter) joins the trailing effect together with the game world. Works in live play and rendering; under clean-camera capture the UI is already drawn into the accumulating frame, so this is not needed there. Mod-owned UI is not affected."
+ },
+ {
   "key": "render.codec.auto",
   "zh": "自动",
   "en": "Auto"
