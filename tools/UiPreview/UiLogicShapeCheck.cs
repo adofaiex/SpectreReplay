@@ -1391,6 +1391,32 @@ namespace UiPreview
                 "Features\\Replay\\Data\\ReplayFileInfo.cs",
                 s => s.Contains("HitMarginCompat.RemapJudgments(ParseJudgments(data.JudgmentList ?? \"\"), data.SpVersion)", StringComparison.Ordinal)
                     && !s.Contains("自动对上本版语义", StringComparison.Ordinal));
+            // 星球读值修正（2026-11-15，第六版 = 全部回退，星球读钉扎原值）。
+            // 同曲同段 A/B 实测：旧成片（无补丁）星球贴砖；v4/v5（提前一帧+判定
+            // 钳制）星球恒定前冲一个可视步长（60fps/快图一帧 16°+）再叠「停一帧
+            // 跳两帧」，观感上就是飘移。判定走 hitTick 与星球无相位冲突，快歌
+            // 单帧大步进是帧率量化（物理上限），时钟层无解。本判据钉住：
+            // ① 星球读值就是钉扎原值（不许任何提前/钳制/偏移）；
+            // ② 星球补丁类已删除（不许复活）；
+            // ③ 钉扎纯等步长（v1/v2 的教训）。
+            fail += Check(projectRoot,
+                "星球读值必须等于钉扎原值（五版补偿全部实测有害，不许任何提前/钳制）",
+                "Features\\VideoRender\\Pipeline\\VideoRender.cs",
+                s => !s.Contains("PlanetSongPosition", StringComparison.Ordinal)
+                    && !s.Contains("PinnedFrameLength", StringComparison.Ordinal)
+                    && !s.Contains("PlanetClampTick", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "星球时钟补丁必须保持删除（提前一帧 A/B 实测导致星球前冲飘移）",
+                "Features\\Replay\\Runtime\\ReplayPlayer.cs",
+                s => !s.Contains("TryPeekNextHitTime", StringComparison.Ordinal)
+                    && !s.Contains("PlanetClampTick", StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "渲染钉扎必须纯等步长（相位补偿两版均实测失败，不许再加回时钟调制）",
+                "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
+                s => s.Contains("VideoRender.PinnedSongPosition = anchorSongPosition + (elapsed - pinnedElapsed) * pitch;", StringComparison.Ordinal)
+                    && !s.Contains("PinResidual", StringComparison.Ordinal)
+                    && !s.Contains("AlignPinToKeyEvent", StringComparison.Ordinal)
+                    && !s.Contains("TryPeekNextEventTime", StringComparison.Ordinal));
             // 渲染健壮性（2026-11-08 他人日志）：① 分辨率中止必须打印新旧尺寸，
             // 否则无法定位是谁改了窗口；② 重锚顶满 4 次 = 游戏时钟没跟上，继续
             // 渲染只会产出冻结画面+黑帧，必须明确中止；③ 黑帧攒到 10 个要给

@@ -63,7 +63,11 @@ function Backup([string]$rel) {
 function Lines([string]$rel) { [IO.File]::ReadAllLines((PathOf $rel)) }
 
 function SetLines([string]$rel, [string[]]$out) {
-    [IO.File]::WriteAllLines((PathOf $rel), $out, $utf8)
+    # **必须自己拼行尾，不能用 WriteAllLines。** 它按 Environment.NewLine 写，
+    # Windows 上把整文件 LF 改成 CRLF；而仓库 .gitattributes 强制 eol=lf，
+    # 多行锚点判据（Contains 带 "\n"）随即假红——2026-11-15 实测：MUT-U130
+    # 改 VideoRenderJob.cs 后，毫不相干的 ㊴g 一起变红。
+    [IO.File]::WriteAllText((PathOf $rel), ($out -join "`n") + "`n", $utf8)
 }
 
 function ReplaceExact([string]$rel, [string]$old, [string]$new) {
@@ -1081,6 +1085,57 @@ switch ($Which) {
         # 控制显示。UiLogicShapeCheck「跨口径开关必须有设置行」钉的形状。
         Backup 'Pages\Pages.cs'
         ReplaceExact 'Pages\Pages.cs' ('                OnGui.Row("replay.crosseraacc", Settings.CrossEraAccuracy,') ('                OnGui.Row("replay.crosseraacc", false,')
+    }
+    'MUT-U131' {
+        # 星球读值被加回「提前一帧」：v4/v5 的形态，同曲同段 A/B 实测星球恒定
+        # 前冲一个可视步长、观感上就是飘移。判据「星球读值必须等于钉扎原值」。
+        Backup 'Features\VideoRender\Pipeline\VideoRender.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRender.cs' ('    // —— 渲染期倍速钉扎 ——') ('    internal static double PlanetSongPosition(scrConductor conductor)
+    {
+        return conductor.songposition_minusi + 0.0167;
+    }
+
+    // —— 渲染期倍速钉扎 ——')
+    }
+    'MUT-U132' {
+        # 星球专用时间源（PlanetSongPosition 桥）被加回：星球补丁链路复活第一步。
+        # 判据「星球时钟补丁必须保持删除」。
+        Backup 'Features\VideoRender\Pipeline\VideoRender.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRender.cs' ('    // —— 渲染期倍速钉扎 ——') ('    internal static double PlanetSongPosition(scrConductor conductor)
+    {
+        return conductor.songposition_minusi;
+    }
+
+    // —— 渲染期倍速钉扎 ——')
+    }
+    'MUT-U133' {
+        # 判定钳制点接线被加回（按抬起钳制的错误形态）：星球链路复活第一步，
+        # 每次松键让星球停一帧。判据「星球时钟补丁必须保持删除」。
+        Backup 'Features\Replay\Runtime\ReplayPlayer.cs'
+        ReplaceExact 'Features\Replay\Runtime\ReplayPlayer.cs' ('    private static void PumpInput(double songPosition, scrConductor conductor)') ('    internal static bool TryPeekNextHitTime(out double tick)
+    {
+        tick = 0.0;
+        tick = data.KeyEvents[KeyEventIndex].SongPosition;
+        return !data.KeyEvents[KeyEventIndex].IsPressed;
+    }
+
+    private static void PumpInput(double songPosition, scrConductor conductor)')
+    }
+    'MUT-U134' {
+        # 命中判定回退直读星球角度字段：字段是上一帧刷新的旧值（角度刷新跑在
+        # controller 之后），命中固定晚一帧——越界帧先把旧轨道「冲过砖块」渲染
+        # 出去、下一帧才命中弹回录制角度，快歌成片里就是「新球飘移」——命中固定晚一帧所致。
+        # CrossPlatformInputCheck ⑬ 的「禁字段直读 / 必须现算」两条判据钉的形状。
+        Backup 'Features\Replay\Patches\Patch_Playback.cs'
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' ('float angle = GetAngleThisFrame(__instance);') ('float angle = GetAngle(__instance);')
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' ('                angle = GetAngleThisFrame(__instance);') ('                angle = GetAngle(__instance);')
+    }
+    'MUT-U130' {
+        # 渲染钉扎被加上相位偏移：等步长被破坏（这正是两版补偿的形态，
+        # 第二版还形成了「扣残差→事件推迟→残差更大」的反馈回路，把回放整体
+        # 推迟一帧）。UiLogicShapeCheck「渲染钉扎必须纯等步长」钉的形状。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' ('                    VideoRender.PinnedSongPosition = anchorSongPosition + (elapsed - pinnedElapsed) * pitch;') ('                    VideoRender.PinnedSongPosition = anchorSongPosition + (elapsed - pinnedElapsed) * pitch - 0.02;')
     }
     'MUT-U119' {
         # Legacy 口径公式 r148 校正回归：FailedFloor 重复计数泄漏进旧分母——

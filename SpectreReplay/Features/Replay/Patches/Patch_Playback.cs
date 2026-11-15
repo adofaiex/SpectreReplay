@@ -53,6 +53,44 @@ internal class Patch_HoldKeysCrashGuard
 // 多目标：同一方法挂三个 [SpectrePatch]
 internal class Patch_PlayerControlUpdate
 {
+    // —— 命中判定的角度源：本帧将要渲染的角度（越界帧判定） ——
+    //
+    // 星球角度不是逐帧积分值，而是歌曲位置的导出值（scrPlanet.Update_RefreshAngles，
+    // scrPlanet.cs:379，与游戏逐字同式）：
+    //   angle = snappedLastAngle + (songposition − player.lastHit) / crotchetAtStart
+    //           × π × speed × (isCW ? 1 : −1)
+    // 这次刷新跑在 scrController.Update 之后（渲染期子帧回拨正是靠它生效），所以在
+    // Update 的 Postfix 里读 chosenPlanet.angle 拿到的是**上一帧**写入的旧值：命中
+    // 固定晚一帧触发——越界帧先把旧轨道「冲过砖块」渲染出去，下一帧才命中弹回录制
+    // 角度，快歌成片里就是肉眼可见的「新球飘移」。
+    //
+    // 这里按同一公式、用本帧歌曲位置现算刷新将要写入的值，命中恰好在越界那一帧触发。
+    // 渲染期 songposition_minusi 是钉扎等步长值，导出式零估计误差，pitch ≠ 1 也不偏；
+    // 若用 deltaTime 差分近似预测，会在 pitch ≠ 1 时整体偏移，故不采用。
+    // 判定、砖块、钉扎的读值关系一概不动——U131~U133 守的「星球专用时钟 / 判定钳制 /
+    // 钉扎偏移」三种形态都不在这里，本方法只把命中的触发帧对齐到越界帧。
+    //
+    // 回退条件与游戏刷新的早退一致：crotchetAtStart == 0 或 d_stationary 时游戏本帧
+    // 不刷新角度，字段旧值就是本帧渲染值；组件缺失同样回退，行为与旧读法相同。
+    private static float GetAngleThisFrame(scrController controller)
+    {
+        scrPlanet planet = controller?.chosenPlanet;
+        scrConductor conductor = ADOBase.conductor;
+        if (planet == null || planet.player == null || planet.planetarySystem == null
+            || conductor == null || conductor.crotchetAtStart == 0.0 || GCS.d_stationary)
+        {
+            return GetAngle(controller);
+        }
+        bool isCW = planet.planetarySystem.isCW;
+        double dir = isCW ? 1.0 : -1.0;
+        // 常数取游戏刷新用的同一个字面值（float π 提升为 double），不是 Math.PI——
+        // 现算值必须与刷新写入值逐位同源，差一个常数就是一次可察觉的相位漂移
+        double raw = planet.snappedLastAngle
+            + (conductor.songposition_minusi - planet.player.lastHit) / conductor.crotchetAtStart
+              * 3.1415927410125732 * planet.planetarySystem.speed * dir;
+        return (float)((raw - planet.targetExitAngle) * dir);
+    }
+
     [SpectrePatch(typeof(scrController), "PlayerControl_Update", PatchType.Postfix, Feature = FeatureKeys.Replay)]
     [SpectrePatch(typeof(scrController), "Countdown_Update", PatchType.Postfix, Feature = FeatureKeys.Replay)]
     [SpectrePatch(typeof(scrController), "Checkpoint_Update", PatchType.Postfix, Feature = FeatureKeys.Replay)]
@@ -136,7 +174,11 @@ internal class Patch_PlayerControlUpdate
 
             // **必须传 __instance**，不能用无参 GetAngle()：后者读静态 scrController.instance，
             // 与这里判定砖块的 __instance 在编辑器/场景切换中间态可能不是同一个对象。
-            float angle = GetAngle(__instance);
+            // 取的是**本帧将要渲染**的角度（GetAngleThisFrame）：星球角度是歌曲位置的
+            // 导出值、刷新跑在本 Postfix 之后，读字段拿到的是上一帧的旧值——命中固定
+            // 晚一帧，越界帧先把旧轨道冲过砖块渲染出去、下一帧才弹回录制角度
+            // （快歌成片的「新球飘移」），详见 GetAngleThisFrame 的注释。
+            float angle = GetAngleThisFrame(__instance);
             // ── 单帧命中上限 + 角度健全性检查 ─────────────────────────
             // 这个 while 是**不可逆**的：每轮 PlayIndex++，一旦某一帧角度算坏
             // （Infinity 会让 `angle >= CurrAngle` 恒真），整份命中快照会在**一帧内**
@@ -184,7 +226,9 @@ internal class Patch_PlayerControlUpdate
                 PlayIndex++;
                 drainedThisFrame++;
                 if (PlayIndex >= hitSnapshots.Count) break;
-                angle = GetAngle(__instance);
+                // 重读同样取本帧现算值：命中后段锚点已切到新砖、回拨已把钉扎位置
+                // 移到录制命中时刻，字段值既旧也不是本帧渲染值
+                angle = GetAngleThisFrame(__instance);
                 hc = hitSnapshots[PlayIndex];
                 if (__instance.currFloor.seqID != hc.CurrentFloorID
                     || __instance.curFreeRoamSection > hc.curFreeRoamSection)

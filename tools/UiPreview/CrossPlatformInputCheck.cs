@@ -338,11 +338,22 @@ namespace UiPreview
             //     还有一处更隐蔽的错源：循环用 __instance 判砖块，却用无参 GetAngle()
             //     取角度。后者读静态 scrController.instance；场景切换/编辑器里两者
             //     可以不是同一个对象，角度就来自另一个星球。
+            //
+            //     第三处是「新球飘移」（命中固定晚一帧所致）：
+            //     星球角度是歌曲位置的导出值（scrPlanet.cs:379
+            //     Update_RefreshAngles），刷新跑在 controller Postfix 之后——直接读
+            //     chosenPlanet.angle 字段拿到的是上一帧的旧值，命中固定晚一帧：越界帧
+            //     先把旧轨道冲过砖块渲染出去、下一帧才弹回录制角度。判据：推进必须用
+            //     GetAngleThisFrame（与刷新同式同常数的本帧现算值，钉扎歌曲位置下零
+            //     估计误差），且不许再出现「float angle = GetAngle(__instance);」的
+            //     字段直读形态。
             string playback = SrcUtil.Source(projectRoot, "Features/Replay/Patches/Patch_Playback.cs");
             Expect(!Has(playback, @"float angle = GetAngle\(\);"),
                 "⑬ 命中推进用无参 GetAngle() 取角度 —— 与判砖块的 __instance 可能不同源，角度会跑飞");
-            Expect(playback.Contains("GetAngle(__instance)"),
-                "⑬ 命中推进没有显式传入 __instance 取角度");
+            Expect(playback.Contains("GetAngleThisFrame(__instance)"),
+                "⑬ 命中推进没有显式传入 __instance 取本帧角度");
+            Expect(!Has(playback, @"float angle = GetAngle\(__instance\);"),
+                "⑬ 命中推进直读星球角度字段（上一帧旧值）—— 命中固定晚一帧：越界帧先冲过砖块再弹回录制角度，成片即「新球飘移」");
             Expect(playback.Contains("MaxHitsPerFrame"),
                 "⑬ 命中推进没有单帧上限 —— 角度一旦异常，整份 HitSnapshots 会在一帧内吃完");
             Expect(playback.Contains("ReplayAngleGuard.IsSane("),

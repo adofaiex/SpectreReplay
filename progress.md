@@ -269,6 +269,19 @@
 ### Actions Taken
 - 移除：Patch_CrossEraAccuracy.cs（结算内联补丁）、ReplayFileInfo 的 CrossXacc/CrossAccuracy 字段与 Apply 计算、ReplayInfoPanel 跨口径行与 CrossAccKey/CrossXaccKey、4 个 loc 键（playback.info.acc/xacc 的 .legacy/.modern，LocData 重生成 486 键 × 14 语言）。
 - 兼容层收敛回单表结构（去掉 AccEra 参数化重载/CurrentEra/CrossEra/EraWeights），**保留全部源码实证校正**：r148 公式（Legacy 分母含 Multipress@0.0、Accuracy 分子族不含多压）、中旋强制 Perfect 的裁定落在重排并桶（scrPlanet 源码实锤）、SpVersion 分布重排。跨口径显示的对照价值消失后，era 参数化 API 成死代码，一并清理。
+
+## Session: 2026-11-15
+
+### Current Status
+- **Task:** 修 bug：渲染成片「新球飘移」（命中判定改用越界帧触发）
+- **Result:** 已实现，待实机 A/B 复验
+
+### Actions Taken
+- 根因（游戏源码实锤，scrPlanet.cs:379）：星球角度是**歌曲位置的导出值**（`angle = snappedLastAngle + (songposition − player.lastHit)/crotchetAtStart × π × speed × 方向`，Update_RefreshAngles），且刷新跑在 scrController.Update 之后——命中排水在 Postfix 里读 `chosenPlanet.angle` 字段拿到的是**上一帧**旧值，命中固定晚一帧：越界帧先把旧轨道「冲过砖块」渲染出去、下一帧才命中弹回录制角度，快歌下就是成片里肉眼可见的新球飘移。
+- 修法（越界帧判定）：新增 `Patch_PlayerControlUpdate.GetAngleThisFrame`，按与游戏刷新**同式同常数**（含 float π 字面值 3.1415927410125732）用本帧歌曲位置现算将要渲染的角度，排水两处读点（初读+重读）换用之——命中恰好在越界帧触发，越界帧画面由既有子帧回拨钉到录制角度，冲出→弹回消失。渲染期 songposition_minusi 是钉扎等步长值，导出式零估计误差，pitch≠1 也不偏（deltaTime 差分近似做不到）。
+- 刻意不做：判定替换（FeatureParityCheck 禁）、星球专用时钟（MUT-U131/U132 守）、判定钳制（MUT-U133 守）、钉扎相位偏移（MUT-U130 守）——本改动只对齐命中触发帧，不碰这些形状；子帧回拨保留（它把命中帧渲染钉到录制角度的角色不变）。
+- 闸门：⑬ 更新（锚点 `GetAngleThisFrame(__instance)` + 新增「禁 `float angle = GetAngle(__instance);` 字段直读」判据）+ MUT-U134 变异；verify.md CrossPlatformInputCheck 行登记。
+
 - 过程坑两处：① 收敛时误删 AccEra 枚举（DistributionEra 还在用，CS0246 已补回重排区）；② 修复 CurrentEra 残留时把 if 整行换成了注释，重排被无条件跳过且 CS0162 被增量编译掩盖——直跑 UiPreview/读文件核对后修正（教训：增量构建的 0 警告可能是没重编译，锚点编辑后必须核对实际文件内容）。
 - 闸门重整：删 4 条跨口径判据，新增 1 条「Legacy 口径公式按 r148 反编译校正」（Multipress 只进分母/分子不含多压/扣减无条件/分母时代规则）+ MUT-U126 重定向实测变红；U119 重定向（分母 HasXPerfect 规则）、U125 收敛（只钉重排并桶）、U120/U121/U122/U127 删除；verify.md 措辞同步（显示裁定注明「公式校正保留」）。
 - 部署：游戏未运行，deploy.ps1 EXIT=0，清理后 DLL（1348096B）已入 Mods\SpectreReplay。

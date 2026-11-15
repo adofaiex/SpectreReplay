@@ -155,6 +155,40 @@ internal sealed class VideoRenderJob : MonoBehaviour
     // 锚点自愈的已重锚次数（见捕获循环里的锚点自愈段）
     private int reAnchors;
     private int failedReadbacks;
+
+
+    // 判定与星球的时间源关系：判定走 hitTick（精确事件时刻），星球角度读
+    // get_songposition_minusi（钉扎等步长值，帧末时刻）。钉扎在这里保持纯等步长、
+    // 不做任何相位补偿；命中触发帧与越界帧的对齐由
+    // Patch_PlayerControlUpdate.GetAngleThisFrame 负责（本帧现算）。
+    // 历代补偿方案（钉扎赋值上补相位、按事件残差扣相位、星球读值处另设时间源）
+    // 均实测形成反馈回路或前冲假象，已全部回退——详见 VideoRender 顶部结论。
+
+    // ── 星球平滑度记账（只读诊断）────────
+    // 必须先用数据区分两种成因，否则修法完全相反：
+    //   · 匀速但每帧转角大（60fps/BPM200 约 12°/帧）= 帧率量化，属物理上限，
+    //     只能靠提高输出帧率或成片运动模糊改善；
+    //   · 「零位移帧」与「双倍位移帧」交替 = 真的丢帧/重复帧，60fps 可修。
+    // 记账本身不改任何行为：只采样 chosenPlanet.angle 的帧间差分。
+    private double lastSampleAngle;
+    private bool hasSampleAngle;
+    private int angleSamples;
+    private int angleZeroFrames;
+    private double angleMaxDelta;
+    private double angleLastDelta;
+    private int angleSpikeFrames;
+    private int angleDiscontinuities;
+    private double angleDeltaSum;
+
+    // ── 星球「是否还在当前砖的弧段上」（判决性探针）──────────
+    // 星球角度 = snappedLastAngle + 进度×(angleLength×方向)，所以对任何一帧，
+    // prog = (angle − snappedLastAngle)×(isCW?1:−1) **必须**落在 [0, angleLength]。
+    // 若星球相位被改写（lastHit 基准错、时钟与砖不同步），prog 会冲出这条带；
+    // 若星球始终在带内，则几何完全正确，剩下的差异只可能是采样密度。
+    // 这一段只读，不改任何行为。
+    private double trackDevMin;
+    private double trackDevMax;
+    private int trackDevFrames;
     // 捕获就绪时的真实 dspTime（trampoline 探针基值）与是否已确认推进。
     // 游戏时钟被钉成虚拟值后，只有探针能回答"音频系统整体是否停摆"。
     private double realDspBase = double.NaN;
@@ -718,8 +752,13 @@ internal sealed class VideoRenderJob : MonoBehaviour
                 // 随后与阈值巡检打架（attempt 2 又拉回去）。正确的修法是起锚直接
                 // 取 dsp 公式值（见 audioAnchor），锚对了就不再需要任何进拍修正。
 
+                // 纯等步长钉扎：每帧固定推进 pitch/fps，不做任何相位补偿。
+                // 两版补偿都被实测否掉（见 VideoRender 里「星球越过真实判定点」的
+                // 结论），其中按残差扣除那版会形成反馈回路、把回放整体推迟一帧。
                 if (timelinePinned)
+                {
                     VideoRender.PinnedSongPosition = anchorSongPosition + (elapsed - pinnedElapsed) * pitch;
+                }
                 // 视频背景确定性化：按渲染时钟/真实耗时比值连续调速（VideoPlayer
                 // 原生走实时时钟，渲染慢于实时时背景视频会跑 ahead）
                 StepPinnedVideos(clock.Time);
@@ -737,6 +776,64 @@ internal sealed class VideoRenderJob : MonoBehaviour
             mixdown.CaptureFrame();
             frames.Grab(frameIndex);
             frameIndex++;
+
+            // 星球平滑度记账（见字段注释）：采样本帧星球角度与上一帧求差。
+            // 取不到（结算转场/未进游玩态）就跳过，不把 null 当 0。
+            try
+            {
+                scrPlanet sampled = scrController.instance != null
+                    && scrController.instance.playerOne != null
+                    && scrController.instance.playerOne.planetarySystem != null
+                    ? scrController.instance.playerOne.planetarySystem.chosenPlanet : null;
+                if (sampled != null)
+                {
+                    double a = sampled.angle;
+                    if (hasSampleAngle)
+                    {
+                        double d = Math.Abs(a - lastSampleAngle);
+                        if (d > Math.PI)
+                        {
+                            // **跳变，不是运动。** HandlePause 里 scrMisc.mod(angle, 2π)
+                            // 会把绝对角折回一圈内，换砖时的基准差异也会产生这种大跳；
+                            // 把它当运动量统计会得出「35864°/帧」这种荒谬数字。
+                            angleDiscontinuities++;
+                        }
+                        else
+                        {
+                            angleSamples++;
+                            if (d < 1e-6) angleZeroFrames++;
+                            if (d > angleMaxDelta) angleMaxDelta = d;
+                            // 尖峰判据：比前一帧位移大一倍以上且超过 0.05rad（约 3°），
+                            // 且仍在 π 以内——说明这一帧把上一帧该转的量补上了（丢帧形态）。
+                            if (angleLastDelta > 1e-6 && d > angleLastDelta * 2.0 && d > 0.05)
+                                angleSpikeFrames++;
+                            angleDeltaSum += d;
+                            angleLastDelta = d;
+                        }
+                    }
+
+                    lastSampleAngle = a;
+                    hasSampleAngle = true;
+
+                    // 弧段内进度探针（见字段注释）：算星球跑出 [0, angleLength]
+                    // 多远。freeroam 砖的 angleLength 可为 0，无需排除——那种帧
+                    // 本来就没有弧段约束，出现偏离正是要看见的东西。
+                    if (sampled.currfloor != null)
+                    {
+                        double dir = sampled.planetarySystem.isCW ? 1.0 : -1.0;
+                        double prog = (a - sampled.snappedLastAngle) * dir;
+                        double len = sampled.currfloor.angleLength;
+                        double dev = prog < 0.0 ? prog : ((prog > len ? prog - len : 0.0));
+                        if (dev < trackDevMin) trackDevMin = dev;
+                        if (dev > trackDevMax) trackDevMax = dev;
+                        if (Math.Abs(dev) > 0.05) trackDevFrames++;
+                    }
+                }
+            }
+            catch
+            {
+                // 诊断不该影响渲染：取不到角度就算了
+            }
 
             // 音频游标（真实捕获进度）单独记账：它是 drift 巡检的**唯一权威指标**。
             // 时钟（clockSeconds）无论来自确定性时钟还是音频游标，都不能兼作诊断基准
@@ -909,6 +1006,22 @@ internal sealed class VideoRenderJob : MonoBehaviour
             Debug.Log("[SpectreReplay] 回读顶替统计：重复上一帧 "
                 + frames.SubstituteCount + " 帧，黑帧 " + (failedReadbacks + frames.SubstituteMissing)
                 + " 帧（回读 hasError 共 " + (frames.SubstituteCount + frames.SubstituteMissing + failedReadbacks) + " 次）");
+        }
+        // 钉扎本身不做任何相位补偿（纯等步长），这里没有偏移量可报。
+        // 星球平滑度记账结果：零位移帧 = 画面冻住（该转没转），尖峰帧 = 补转
+        // （丢帧形态）。两者都接近 0 而最大位移很大，就是纯帧率量化——那种
+        // 情况下 60fps 的观感上限由物理决定，只能靠提帧率或成片插帧。
+        if (angleSamples > 0)
+        {
+            Debug.Log("[SpectreReplay] 星球弧段探针：越界帧 " + trackDevFrames + " 帧"
+                + "，越界最小 " + (trackDevMin * 180.0 / Math.PI).ToString("0.00") + "°"
+                + "，最大 " + (trackDevMax * 180.0 / Math.PI).ToString("0.00") + "°");
+            double avgDeg = angleSamples > 0 ? angleDeltaSum / angleSamples * 180.0 / Math.PI : 0.0;
+            Debug.Log("[SpectreReplay] 星球平滑度记账：有效采样 " + angleSamples
+                + " 帧（另跳变 " + angleDiscontinuities + " 帧，属换砖折角/复位，不计入）"
+                + "，零位移 " + angleZeroFrames + " 帧，尖峰 " + angleSpikeFrames
+                + " 帧，平均帧间位移 " + avgDeg.ToString("0.0") + "°"
+                + "，最大 " + (angleMaxDelta * 180.0 / Math.PI).ToString("0.0") + "°");
         }
         Debug.Log("[SpectreReplay] replay video complete: " + outputPath);
         ReportEnd(SpectreAPI.RenderEndStatus.Completed, outputPath, null);
