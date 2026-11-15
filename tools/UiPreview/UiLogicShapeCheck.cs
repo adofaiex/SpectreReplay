@@ -1426,12 +1426,15 @@ namespace UiPreview
             // ScreenSpaceCamera + 旧相机上）；④ 纯净相机渲染期必须跳过（画布
             // 归 RenderOverlayCapture 管，双重接管会把画布抢来抢去）。
             fail += Check(projectRoot,
-                "镜厅罩 UI：挂点/不清屏相机/两端还原/纯净渲染跳过 四个不变量",
+                "镜厅罩 UI：挂点/不清屏相机/两端还原/排序抬升/纯净渲染跳过 不变量",
                 "Features\\VideoRender\\Patches\\Patch_HallOfMirrorsUI.cs",
                 s => s.Contains("typeof(scrController), \"EnableHallOfMirrors\", PatchType.Postfix", StringComparison.Ordinal)
                     && s.Contains("_homCam.clearFlags = CameraClearFlags.Depth;", StringComparison.Ordinal)
                     && s.Contains("c.renderMode = _oldModes[i];", StringComparison.Ordinal)
                     && s.Contains("c.worldCamera = _oldWorldCameras[i];", StringComparison.Ordinal)
+                    && s.Contains("c.sortingOrder = _oldOrders[i];", StringComparison.Ordinal)
+                    && s.Contains("c.sortingOrder < SortOrderBoost", StringComparison.Ordinal)
+                    && s.Contains("c.isRootCanvas", StringComparison.Ordinal)
                     && s.Contains("VideoRender.CurrentSurface == VideoSurface.CleanCamera", StringComparison.Ordinal));
             // 渲染健壮性（2026-11-08 他人日志）：① 分辨率中止必须打印新旧尺寸，
             // 否则无法定位是谁改了窗口；② 重锚顶满 4 次 = 游戏时钟没跟上，继续

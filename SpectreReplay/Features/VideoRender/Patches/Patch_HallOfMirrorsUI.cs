@@ -12,31 +12,39 @@ namespace SpectreReplay.Features.VideoRender;
 // 镜厅（Hall of Mirrors）的本体机制（scrController.EnableHallOfMirrors，
 // scrController.cs:3096）：把 Bgcamstatic 的 clearFlags 从 Color 换成 Depth——
 // **相机不清屏，画面逐帧累积**，被这几台相机渲染的内容全部留下拖尾。
-// 游戏的 UI 画布（scrUIController.canvas）是 ScreenSpaceOverlay：不经过任何
-// 相机，直接画在最终画面最上层，所以累积罩不到它——镜厅开着时 UI 永远清晰
-// 浮在拖尾之上，与游戏世界的镜像观感割裂。
+// 游戏与模组的 UI 画布是 ScreenSpaceOverlay：不经过任何相机，直接画在最终
+// 画面最上层，所以累积罩不到它们——镜厅开着时 UI 永远清晰浮在拖尾之上。
 //
-// 本补丁在镜厅开启时把全部 ScreenSpaceOverlay 根画布迁到一台**同样不清屏**
-// 的专属相机上（ScreenSpaceCamera + clearFlags=Depth），UI 每帧画在上一次的
-// 残留上——UI 与游戏世界一起进入镜厅。镜厅关闭或离开关卡时完整还原。
+// 本补丁在镜厅开启时把**全部根画布**迁到一台**同样不清屏**的专属相机上，
+// UI 每帧画在上一次的残留上——UI 与游戏世界一起进入镜厅。镜厅关闭或离开
+// 关卡时逐画布完整还原。
 //
-// 范围裁定（实测后放宽）：迁**当前全部 ScreenSpaceOverlay 根画布**——游戏
-// UI 与模组 UI（键位显示等）一起进镜厅；初版只迁游戏画布，用户带键位显示
-// 实测后明确要求模组 UI 也进拖尾。IMGUI（UMM 设置面板）不走相机，技术上
-// 罩不到，属硬限制。
+// 三个实现要点（对照参照实现的同款行为语义，用更稳的手段达成）：
+//   ① 无条件接管全部根画布：包括已经是 ScreenSpaceCamera 的模组画布——
+//      只迁 Overlay 会漏掉它们（实测教训）；isRootCanvas 过滤嵌套画布
+//      （嵌套画布没有自己的 renderMode，跟随根）。
+//   ② 相机遮罩 = 每棵画布子树的层并集：UGUI 的剔除按**每个子节点的 layer**
+//      逐个走，只看画布根的层会漏渲染子树里层不一致的元素（实测教训）。
+//      收集并集而不是把子树改层——零改动、还原零成本。
+//   ③ sortingOrder 抬升：迁入同一台相机后画布间按 sortingOrder 排序，
+//      <10000 的统一 += 10000（保持相对前后关系，且压过游戏世界元素）。
 //
 // 与纯净相机渲染的互斥：渲染期 RenderOverlayCapture 已把画布接管到捕获相机
 // （CleanCamera 下 RT 本来就逐帧累积，UI 拖尾天然成立），此时本补丁**跳过**，
 // 避免双重接管打架；「游戏画面」(WholeScreen) 来源拍的是后备缓冲，实机迁移
-// 的结果直接进片，无需特判。
+// 的结果直接进片，无需特判。IMGUI（UMM 设置面板）不走相机，技术上罩不到。
 internal static class Patch_HallOfMirrorsUI
 {
     private const string CamName = "SpectreReplay HOM UI Cam";
+    // 画布间排序抬升阈值：低于它的统一抬到它上面（参照实现同款数值语义），
+    // 保证迁入相机后「游戏 UI 在上、各模组 UI 相对顺序不变」。
+    private const int SortOrderBoost = 10000;
 
     private static Camera _homCam;
     private static readonly List<Canvas> _canvases = new List<Canvas>();
     private static readonly List<RenderMode> _oldModes = new List<RenderMode>();
     private static readonly List<Camera> _oldWorldCameras = new List<Camera>();
+    private static readonly List<int> _oldOrders = new List<int>();
     private static bool _migrated;
 
     [SpectrePatch(typeof(scrController), "EnableHallOfMirrors", PatchType.Postfix, Feature = FeatureKeys.HallOfMirrorsUI)]
@@ -52,25 +60,25 @@ internal static class Patch_HallOfMirrorsUI
         // 纯净相机渲染期：画布归 RenderOverlayCapture 管，这里绝不插手
         if (VideoRender.Active && VideoRender.CurrentSurface == VideoSurface.CleanCamera)
             return;
-        // 迁移**当前所有** ScreenSpaceOverlay 根画布——游戏 UI 与模组 UI
-        // （键位显示等）一起进镜厅。范围应实测裁定放宽：用户带键位显示
-        // 测试后明确要求模组 UI 也进拖尾。IMGUI（UMM 面板）不走相机，
-        // 技术上罩不到，属硬限制。
-        Canvas[] overlays = UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+
+        // 收集全部**根**画布（含已是 ScreenSpaceCamera 的——只迁 Overlay 会
+        // 漏掉模组画布，实测教训），同时累计每棵子树的层并集。
+        Canvas[] all = UnityEngine.Object.FindObjectsByType<Canvas>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
         List<Canvas> targets = new List<Canvas>();
         List<RenderMode> modes = new List<RenderMode>();
         List<Camera> cams = new List<Camera>();
-        int layers = 0;
-        foreach (Canvas c in overlays)
+        List<int> orders = new List<int>();
+        int mask = 0;
+        foreach (Canvas c in all)
         {
-            // 只取根画布（无父 Canvas）：嵌套画布跟随根的模式，单独迁会打架
-            if (c.transform.parent != null && c.transform.parent.GetComponentInParent<Canvas>() != null)
-                continue;
-            if (c.renderMode != RenderMode.ScreenSpaceOverlay) continue;
+            if (!c.isRootCanvas) continue;
             targets.Add(c);
             modes.Add(c.renderMode);
             cams.Add(c.worldCamera);
-            layers |= 1 << c.gameObject.layer;
+            orders.Add(c.sortingOrder);
+            Transform[] tree = c.transform.GetComponentsInChildren<Transform>(false);
+            foreach (Transform t in tree)
+                mask |= 1 << t.gameObject.layer;
         }
         if (targets.Count == 0) return;
 
@@ -81,8 +89,8 @@ internal static class Patch_HallOfMirrorsUI
             _homCam = new GameObject(CamName).AddComponent<Camera>();
             // 不清屏 = 拖尾的整个机制所在。Depth 只清深度，颜色残留逐帧累积。
             _homCam.clearFlags = CameraClearFlags.Depth;
-            // 遮罩 = 全部被迁画布层的并集
-            _homCam.cullingMask = layers;
+            // 遮罩 = 全部被迁画布子树的层并集（要点②）
+            _homCam.cullingMask = mask;
             _homCam.orthographic = true;
             _homCam.orthographicSize = 5f;
             _homCam.transform.position = Vector3.zero;
@@ -91,19 +99,22 @@ internal static class Patch_HallOfMirrorsUI
             // 读不到时取大值兜底（Overlay 相机惯例是任意大的正 depth）。
             _homCam.depth = (main != null ? main.depth : 0f) + 100f;
 
-            _canvases.Clear(); _oldModes.Clear(); _oldWorldCameras.Clear();
+            _canvases.Clear(); _oldModes.Clear(); _oldWorldCameras.Clear(); _oldOrders.Clear();
             for (int i = 0; i < targets.Count; i++)
             {
-                _canvases.Add(targets[i]);
+                Canvas c = targets[i];
+                _canvases.Add(c);
                 _oldModes.Add(modes[i]);
                 _oldWorldCameras.Add(cams[i]);
+                _oldOrders.Add(orders[i]);
                 // 先指相机再切模式：与 RenderOverlayCapture 同款顺序——切到
                 // ScreenSpaceCamera 的瞬间若 worldCamera 为空，画布会闪到世界原点。
-                targets[i].worldCamera = _homCam;
-                targets[i].renderMode = RenderMode.ScreenSpaceCamera;
+                c.worldCamera = _homCam;
+                c.renderMode = RenderMode.ScreenSpaceCamera;
+                if (c.sortingOrder < SortOrderBoost) c.sortingOrder += SortOrderBoost;
             }
             _migrated = true;
-            Debug.Log("[SpectreReplay] 镜厅罩 UI 已接管 " + targets.Count + " 个画布（层并集 0x" + layers.ToString("X") + "）");
+            Debug.Log("[SpectreReplay] 镜厅罩 UI 已接管 " + targets.Count + " 个根画布（层并集 0x" + mask.ToString("X") + "）");
         }
         catch (Exception ex)
         {
@@ -125,6 +136,7 @@ internal static class Patch_HallOfMirrorsUI
                 if (c == null) continue;
                 c.renderMode = _oldModes[i];
                 c.worldCamera = _oldWorldCameras[i];
+                c.sortingOrder = _oldOrders[i];
             }
         }
         catch (Exception ex)
@@ -144,6 +156,7 @@ internal static class Patch_HallOfMirrorsUI
         _canvases.Clear();
         _oldModes.Clear();
         _oldWorldCameras.Clear();
+        _oldOrders.Clear();
         _homCam = null;
     }
 }
