@@ -364,3 +364,24 @@
 | MUT-U129 | 设置行判据变红 | ✓ 被检出（失败 1 条） | pass |
 | verify -Ci | 非 0 断言且 0 失败 | 206 条 ✓（界面形状汇总 191 条），0 失败，全部通过 | pass |
 | 部署 | EXIT=0 且目标目录有效 | deployed: Mods\SpectreReplay，DLL 1356800B | pass |
+
+## Session: 2026-11-15 (2)
+
+### Current Status
+- **Task:** 0.3.2 版本发布——修成片「新球飘移」
+- **Result:** 已发布（commit 4c62f79，tag v0.3.2，已推送触发 CI）
+
+### Actions Taken
+- 修复：命中判定改按本帧歌曲位置现算星球角度（GetAngleThisFrame，与刷新同式同常数），越界帧当帧触发 + 子帧回拨钉到录制角度——成片「新球飘移」消除；闸门⑬同步（禁字段直读/必须现算）+ MUT-U134。
+- 新增星球平滑度记账/弧段探针（渲染完成打日志，验证修复的量化仪）；沉淀六版时钟实验终局（星球读钉扎原值、钉扎纯等步长）+ MUT-U130~U134 防复活。
+- 附带实现过「镜厅罩 UI」功能（对照参照实现的越界帧判定语义），实测效果不达预期后整体 revert（58131b7），技术结论留档：ScreenSpaceOverlay 不经相机、镜厅累积罩不到 UI；迁 UI 需不清屏专属相机 + 子树层覆盖 + 动态画布补扫。
+- 发布流程照 §7.8：三处版本文件 0.3.2 → 构建 0 警告 → 部署 + verify 全绿（含部署一致性与上游检查）→ 纯版本提交 4c62f79 → 附注 tag v0.3.2 → push origin master v0.3.2。
+
+### Test Results
+| Test | Expected | Actual | Status |
+|------|----------|--------|--------|
+| Release 构建 | 0 警告 0 错误 | 0 警告 0 错误 | pass |
+| verify 全量 | 全绿含部署一致 | 全部通过 | pass |
+| MUT-U130~U135 | 各自实测变红 | 全部检出 | pass |
+| tag v0.3.2 | 附注+SSH 签名 | HitMargin 签名附注 tag | pass |
+| 推送 | master + tag | 58131b7..4c62f79、[new tag] v0.3.2 | pass |
