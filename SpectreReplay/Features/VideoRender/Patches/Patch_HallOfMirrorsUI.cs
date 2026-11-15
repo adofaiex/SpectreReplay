@@ -56,10 +56,15 @@ internal static class Patch_HallOfMirrorsUI
 
     private static void Apply()
     {
-        if (_migrated) return;
         // 纯净相机渲染期：画布归 RenderOverlayCapture 管，这里绝不插手
         if (VideoRender.Active && VideoRender.CurrentSurface == VideoSurface.CleanCamera)
             return;
+
+        // 谱面 HOM 事件是逐段触发的（enabled=true 反复出现，中间可能穿插
+        // false），EnableHallOfMirrors 会被反复调用——游戏侧幂等（反复设同值
+        // 无害），本迁移器也必须幂等：已迁移时**只补迁新出现的画布**，绝不
+        // 整体还原再重来（每次还原都会把已累积的拖尾断掉一帧，反复开关时
+        // 观感就是「UI 时而有拖尾时而没有」）。
 
         // 收集全部**根**画布（含已是 ScreenSpaceCamera 的——只迁 Overlay 会
         // 漏掉模组画布，实测教训），同时累计每棵子树的层并集。
@@ -72,34 +77,47 @@ internal static class Patch_HallOfMirrorsUI
         foreach (Canvas c in all)
         {
             if (!c.isRootCanvas) continue;
+            // 已被本迁移器接管过的画布跳过：它们的快照已在册，重复入册会把
+            // 「迁移后的状态」当原状存下来，还原就回不去了。
+            if (_canvases.Contains(c))
+            {
+                Transform[] tree = c.transform.GetComponentsInChildren<Transform>(false);
+                foreach (Transform t in tree)
+                    mask |= 1 << t.gameObject.layer;
+                continue;
+            }
             targets.Add(c);
             modes.Add(c.renderMode);
             cams.Add(c.worldCamera);
             orders.Add(c.sortingOrder);
-            Transform[] tree = c.transform.GetComponentsInChildren<Transform>(false);
-            foreach (Transform t in tree)
+            Transform[] tree2 = c.transform.GetComponentsInChildren<Transform>(false);
+            foreach (Transform t in tree2)
                 mask |= 1 << t.gameObject.layer;
         }
-        if (targets.Count == 0) return;
+
+        // 相机还没建且没有新目标：无事可做
+        if (targets.Count == 0 && _homCam == null) return;
 
         try
         {
-            Camera main = scrController.instance != null && scrController.instance.camy != null
-                ? scrController.instance.camy.camobj : null;
-            _homCam = new GameObject(CamName).AddComponent<Camera>();
-            // 不清屏 = 拖尾的整个机制所在。Depth 只清深度，颜色残留逐帧累积。
-            _homCam.clearFlags = CameraClearFlags.Depth;
-            // 遮罩 = 全部被迁画布子树的层并集（要点②）
-            _homCam.cullingMask = mask;
-            _homCam.orthographic = true;
-            _homCam.orthographicSize = 5f;
-            _homCam.transform.position = Vector3.zero;
-            _homCam.transform.rotation = Quaternion.identity;
-            // 排在游戏相机之后渲染：相机按 depth 升序出画；主相机的 depth
-            // 读不到时取大值兜底（Overlay 相机惯例是任意大的正 depth）。
-            _homCam.depth = (main != null ? main.depth : 0f) + 100f;
+            if (_homCam == null)
+            {
+                Camera main = scrController.instance != null && scrController.instance.camy != null
+                    ? scrController.instance.camy.camobj : null;
+                _homCam = new GameObject(CamName).AddComponent<Camera>();
+                // 不清屏 = 拖尾的整个机制所在。Depth 只清深度，颜色残留逐帧累积。
+                _homCam.clearFlags = CameraClearFlags.Depth;
+                // 遮罩在下方随新画布并入后统一更新（要点②）。
+                _homCam.orthographic = true;
+                _homCam.orthographicSize = 5f;
+                _homCam.transform.position = Vector3.zero;
+                _homCam.transform.rotation = Quaternion.identity;
+                // 排在游戏相机之后渲染：相机按 depth 升序出画；主相机的 depth
+                // 读不到时取大值兜底（Overlay 相机惯例是任意大的正 depth）。
+                _homCam.depth = (main != null ? main.depth : 0f) + 100f;
+            }
 
-            _canvases.Clear(); _oldModes.Clear(); _oldWorldCameras.Clear(); _oldOrders.Clear();
+            int fresh = 0;
             for (int i = 0; i < targets.Count; i++)
             {
                 Canvas c = targets[i];
@@ -107,14 +125,26 @@ internal static class Patch_HallOfMirrorsUI
                 _oldModes.Add(modes[i]);
                 _oldWorldCameras.Add(cams[i]);
                 _oldOrders.Add(orders[i]);
+                fresh++;
                 // 先指相机再切模式：与 RenderOverlayCapture 同款顺序——切到
                 // ScreenSpaceCamera 的瞬间若 worldCamera 为空，画布会闪到世界原点。
                 c.worldCamera = _homCam;
                 c.renderMode = RenderMode.ScreenSpaceCamera;
                 if (c.sortingOrder < SortOrderBoost) c.sortingOrder += SortOrderBoost;
             }
-            _migrated = true;
-            Debug.Log("[SpectreReplay] 镜厅罩 UI 已接管 " + targets.Count + " 个根画布（层并集 0x" + mask.ToString("X") + "）");
+            // 已迁画布子树的层可能变化（模组动态改层），每次都把并集刷新进遮罩
+            _homCam.cullingMask = mask;
+            _migrated = _canvases.Count > 0;
+            if (fresh > 0)
+            {
+                // 逐画布诊断：键位显示这类第三方画布接没接管、当时是什么模式，
+                // 只有把名单打出来才能定位「没被投影」是没扫到还是没渲染。
+                string names = string.Join(" | ", System.Linq.Enumerable.Select(targets,
+                    (Func<Canvas, string>)(c => c.name + " (L" + c.gameObject.layer
+                    + ", S" + c.sortingOrder + ")")));
+                Debug.Log("[SpectreReplay] 镜厅罩 UI 新接管 " + fresh + " 个根画布（累计 "
+                    + _canvases.Count + "）：" + names + "（层并集 0x" + mask.ToString("X") + "）");
+            }
         }
         catch (Exception ex)
         {
