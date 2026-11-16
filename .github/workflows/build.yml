@@ -200,6 +200,20 @@ jobs:
           Get-ChildItem -Path ffmpeg_extract -Recurse -Filter ffmpeg.exe |
             Select-Object -First 1 | Move-Item -Destination .
 
+      # 能力断言只针对发布包里的 ffmpeg；玩家自备的旧 ffmpeg 由运行时
+      # EncoderCatalog 处理，两者不能互相替代。失败时把 -encoders 清单存 artifact。
+      - name: Check ffmpeg capabilities
+        shell: pwsh
+        run: |
+          & tools/ffmpeg-capability.ps1 -Ffmpeg .\ffmpeg.exe -OutFile ffmpeg-encoders.txt
+
+      - name: Upload ffmpeg capability report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ffmpeg-capability
+          path: ffmpeg-encoders.txt
+
       - name: Create release
         uses: softprops/action-gh-release@v3
         with:

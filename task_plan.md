@@ -91,9 +91,10 @@ Phase 6（加固）
     - [x] 特征表只认强特征，排除 `Invalid argument` / `not supported` 等 stderr 噪声
     - [x] 重跑钩子挂在 `RaiseRenderFinished` 之后、`Destroy` 之前，Job 已清空
     - [x] 只重试一次；UI 显示整段重来原因；重跑期间仍可取消；不重复上报
-  - [ ] 2A-6 CI ffmpeg 能力断言 + 变异 + 文档
-    - [ ] `tools/ffmpeg-capability.ps1` 校验期望集合；失败时把 `-encoders` 输出存 artifact，升级时能看出少哪个变体
-    - [ ] 断言只管**发布包里那份 ffmpeg**；玩家游戏目录自备的仍靠运行时 `EncoderCatalog`，两者不能互相替代
+  - [x] 2A-6 CI ffmpeg 能力断言 + 变异 + 文档
+    - [x] `tools/ffmpeg-capability.ps1` 校验期望集合；失败时把 `-encoders` 输出存 artifact
+    - [x] 断言只管**发布包里那份 ffmpeg**；玩家自备的仍靠运行时 `EncoderCatalog`
+    - [x] `MUT-CI22` 钉住 `libx265` 不得从期望集合漏掉
 - [ ] 2B-0 颜色先导实验（ARGB64 抓一帧 + 同帧 SDR 对照，测通道最大值与 banding 差异；只看最大值不足以证明收益）
 - [ ] 2B 10-bit 精度（优先）/ HDR10 容器（可选，需 SDR→PQ 或 HLG）
   - [ ] `RenderTextureFormat.ARGB64` + `GraphicsFormat.R16G16B16A16_UNorm` + `AsyncGPUReadback` GraphicsFormat 重载（现有回读用的是 TextureFormat 重载）

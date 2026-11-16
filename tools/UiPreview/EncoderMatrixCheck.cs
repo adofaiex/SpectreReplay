@@ -17,6 +17,8 @@ internal static class EncoderMatrixCheck
         int total = 0, failed = 0;
         string enc = Read("Features/VideoRender/Pipeline/VideoEncoder.cs");
         string catalog = Read("Features/VideoRender/Pipeline/EncoderCatalog.cs");
+        string cap = Read("../tools/ffmpeg-capability.ps1");
+        string wf = Read("../.github/workflows/build.yml");
         string job = Read("Features/VideoRender/Pipeline/VideoRenderJob.cs");
         string settings = Read("State/Settings.cs");
         string cfg = Read("State/ConfigManager.cs");
@@ -162,6 +164,23 @@ internal static class EncoderMatrixCheck
             && enc.Contains("return \"-global_quality \" + crf;", StringComparison.Ordinal)
             && enc.Contains("return \"-global_quality \" + cqp;", StringComparison.Ordinal),
             "⑦ QSV/AMF 编码分支与 QSV 质量参数在");
+
+        Check(cap.Contains("'libx264'", StringComparison.Ordinal)
+            && cap.Contains("'libx265'", StringComparison.Ordinal)
+            && cap.Contains("'libvpx-vp9'", StringComparison.Ordinal)
+            && cap.Contains("'aac'", StringComparison.Ordinal)
+            && cap.Contains("'libopus'", StringComparison.Ordinal),
+            "⑧ CI 能力断言覆盖核心编码器");
+        Check(cap.Contains("'libsvtav1'", StringComparison.Ordinal)
+            && cap.Contains("'libaom-av1'", StringComparison.Ordinal)
+            && cap.Contains("'av1_nvenc'", StringComparison.Ordinal)
+            && cap.Contains("'av1_qsv'", StringComparison.Ordinal)
+            && cap.Contains("'av1_amf'", StringComparison.Ordinal),
+            "⑧ CI 能力断言覆盖 AV1 变体");
+        Check(cap.Contains("ffmpeg-encoders.txt", StringComparison.Ordinal)
+            && wf.Contains("ffmpeg-capability.ps1", StringComparison.Ordinal)
+            && wf.Contains("upload-artifact", StringComparison.Ordinal),
+            "⑧ CI 失败时保存 -encoders 输出");
 
         Console.WriteLine($"  视频编码器矩阵：{(total == 0 ? "已检查" : "")} {total} 条，失败 {failed}");
         return (total, failed);
