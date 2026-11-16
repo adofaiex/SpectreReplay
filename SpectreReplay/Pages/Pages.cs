@@ -1867,8 +1867,38 @@ namespace SpectreReplay.Pages
                 OnGui.RowDropdown("render.codec", new[]
                 {
                     Loc.T("render.codec.auto"), Loc.T("render.codec.fastest"),
-                    Loc.T("render.codec.quality"), Loc.T("render.codec.cpu"),
+                    Loc.T("render.codec.quality"),
                 }, RenderEncoderMode, i => { RenderEncoderMode = i; Commit(); });
+                OnGui.RowDropdown("render.video_codec", new[] { "H264", "H265" },
+                    RenderVideoCodec, i => { RenderVideoCodec = i; Commit(); });
+                OnGui.RowDropdown("render.rate_control", new[] { "ABR", "CRF", "CQP", "CBR" },
+                    RenderRateControl, i => { RenderRateControl = i; Commit(); });
+                if (RenderRateControl == 1)
+                {
+                    OnGui.RowSlider("render.crf", RenderCrf, 0f, 51f,
+                        v => ((int)v).ToString(), v => { RenderCrf = (int)v; Commit(); });
+                }
+                else if (RenderRateControl == 2)
+                {
+                    OnGui.RowSlider("render.cqp", RenderCqp, 0f, 51f,
+                        v => ((int)v).ToString(), v => { RenderCqp = (int)v; Commit(); });
+                }
+                else
+                {
+                    OnGui.RowSlider("render.bitrate", RenderBitrateMbps, 0f, 160f,
+                        v =>
+                        {
+                            int mbps = (int)v;
+                            return mbps <= 0 ? Loc.T("render.codec.auto") : mbps + " Mbps";
+                        },
+                        v => { RenderBitrateMbps = (int)v; Commit(); });
+                }
+                OnGui.RowDropdown("render.preset", new[]
+                {
+                    Loc.T("render.codec.auto"),
+                    "ultrafast", "superfast", "veryfast", "faster", "fast",
+                    "medium", "slow", "slower", "veryslow", "placebo",
+                }, RenderPreset, i => { RenderPreset = i; Commit(); });
                 OnGui.RowDropdown("render.quality", new[]
                 {
                     Loc.T("render.quality.low"), Loc.T("render.quality.standard"),
@@ -1889,7 +1919,8 @@ namespace SpectreReplay.Pages
         /// 必须落到界面上：选「最快」时若 NVENC 探测失败，编码器会静默落到
         /// libx264(CPU)，渲染速度差一个数量级，而界面上看不到任何差别——
         /// 玩家只会觉得"这台机器跑不动"，去改画质/帧率那些无关的设置。
-        /// 编码器那行只读状态、不起探测进程（DescribeEncoder 复用 NVENC 的已缓存结论）；
+        /// 编码器那行复用已缓存的目录/探测结论；首次可能触发后台加载 + preflight，
+        /// 但不会每帧起进程（WarmUp 会提前焐热）。
         /// ffmpeg 那行会**在首次且仅当模组目录没有 exe 时**探一次系统 PATH，
         /// 但结果带 30s 冷却缓存（VideoEncoder.Cooling），不会每帧拉进程。
         /// </summary>
@@ -1899,7 +1930,9 @@ namespace SpectreReplay.Pages
             {
                 var container = (VideoEncoder.OutContainer)Mathf.Clamp(RenderOutputFormat, 0, 3);
                 string name = VideoEncoder.DescribeEncoder(
-                    (VideoEncoder.Quality)Mathf.Clamp(RenderEncoderMode, 0, 3), container);
+                    container,
+                    (VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 1),
+                    (VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4));
                 Gui.KeyValue("render.codec.current", name, Gui.DimCol);
 
                 string exe = VideoEncoder.LocateEncoder();
@@ -2197,6 +2230,9 @@ namespace SpectreReplay.Pages
                     Commit();
                     if (!v)
                     {
+                        // 先还原原始谱面，再刷新按钮：还原成功后 LevelDataStripped
+                        // 归零，保存按钮才会真正恢复可用。
+                        EffectRemover.RestoreOriginalLevelData();
                         EffectRemover.RestoreEditorSaveButtons();
                     }
                     else

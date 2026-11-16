@@ -15,7 +15,23 @@ namespace SpectreReplay.Features.VideoRender;
 // 帧队列有界形成反压 —— 编码跟不上时渲染自然等待，不影响成片时间轴。
 internal sealed class VideoEncoder : IDisposable
 {
-    internal enum Quality { Balanced = 0, Fastest = 1, Sharpest = 2, CpuOnly = 3 }
+    // 速度/画质档：只决定 preset 与码率系数，不决定后端。
+    // 后端由 HardwareBackend 单独决定，避免旧版 Quality.CpuOnly 那种
+    // 「一个枚举同时表达后端和速度」的歧义。
+    internal enum Quality { Balanced = 0, Fastest = 1, Sharpest = 2 }
+
+    // 硬件后端：Auto 按能力回退，Cpu 强制软件编码。
+    // QSV/AMF 由 EncoderCatalog + preflight 选择；AV1 在 2A-3 接入。
+    internal enum HardwareBackend { Auto = 0, Nvenc = 1, Qsv = 2, Amf = 3, Cpu = 4 }
+
+    // 视频编码：H.264 是默认（旧成片/播放器兼容性最好），H.265 是可选的
+    // 高压缩比路径。WebM 容器会无视这个值，固定 VP9。
+    internal enum VideoCodec { H264 = 0, H265 = 1 }
+
+    // 码率控制：ABR = 目标码率；CRF = 恒定质量；CQP = 恒定量化；
+    // CBR = 恒定码率。x264/x265 全支持；NVENC 用 -cq/-qp/-rc 映射；
+    // VP9 只支持 ABR/CRF，其余退回 ABR。
+    internal enum RateControlMode { Abr = 0, Crf = 1, Cqp = 2, Cbr = 3 }
 
     // 输出容器。webm 只认 VP8/VP9 视频 + Vorbis/Opus 音频，走 libvpx-vp9 重编码；
     // 其余容器沿用 H.264（NVENC 探测可用时）+ AAC。
@@ -39,16 +55,13 @@ internal sealed class VideoEncoder : IDisposable
 
     private const int ProbeRetryMs = 30_000;
     private static readonly object ProbeLock = new object();
-    // 异步探测状态：UI 调 NvencWorksFor 时如果还没探测过，先起后台线程，
-    // 本帧返回 false（退回 libx264）不让 OnGUI 卡住。探测完后下一帧走缓存。
-    private static volatile bool _nvencProbeRunning;
-    // 探测缓存策略（设置页每个 IMGUI 帧都会询问，冷却期挡住反复拉起探测进程）：
-    // - PATH 定位 / PATH 探测：负结果（没找到/超时）冷却 ProbeRetryMs 后重试，
-    //   用户中途安装 ffmpeg 无需重启游戏；正结果会话内有效
-    // - NVENC：结果与 exePath 绑定，换编码器路径自动失效。负结果不设冷却重试——
-    //   它意味着当前驱动没有硬件编码能力，会话内不会改变
-    private static bool nvencWorks;
-    private static string nvencProbedExe;
+    // 异步探测状态：UI 调 DescribeEncoder 时如果还没探测过，先起后台线程，
+    // 本帧返回 null（退回软件编码）不让 OnGUI 卡住。探测完后下一帧走缓存。
+    // 缓存键是 exe|encoderName；值：-1 未知/探测中，0 不可用，1 可用。
+    private static readonly Dictionary<string, int> encoderProbeCache =
+        new Dictionary<string, int>(StringComparer.Ordinal);
+    private static readonly HashSet<string> encoderProbing =
+        new HashSet<string>(StringComparer.Ordinal);
     // File.Exists 定位缓存（调用方均在主线程）：具体路径是正结果直接复用；
     // "ffmpeg" 是 PATH 回退的负结果，进冷却期
     private static string locatedEncoder;
@@ -68,6 +81,13 @@ internal sealed class VideoEncoder : IDisposable
     private readonly int qualityTier;
     private readonly bool flipRows;
     private readonly OutContainer container;
+    private readonly VideoCodec videoCodec;
+    private readonly HardwareBackend hardware;
+    private readonly RateControlMode rateControl;
+    private readonly int crf;
+    private readonly int cqp;
+    private readonly int bitrateMbps;
+    private readonly int preset;
 
     private Process pipe;
     private BlockingCollection<PendingFrame> queue;
@@ -88,7 +108,10 @@ internal sealed class VideoEncoder : IDisposable
 
     internal VideoEncoder(string exePath, string rawVideoPath, string finalVideoPath,
         int width, int height, int fps, Quality quality, int qualityTier, bool flipRows,
-        OutContainer container = OutContainer.Mp4)
+        OutContainer container = OutContainer.Mp4,
+        VideoCodec videoCodec = VideoCodec.H264, RateControlMode rateControl = RateControlMode.Abr,
+        int crf = 20, int cqp = 23, int bitrateMbps = 0, int preset = 0,
+        HardwareBackend hardware = HardwareBackend.Auto)
     {
         this.exePath = exePath;
         this.rawVideoPath = rawVideoPath;
@@ -100,6 +123,13 @@ internal sealed class VideoEncoder : IDisposable
         this.qualityTier = Math.Max(0, Math.Min(3, qualityTier));
         this.flipRows = flipRows;
         this.container = container;
+        this.videoCodec = videoCodec;
+        this.hardware = hardware;
+        this.rateControl = rateControl;
+        this.crf = Math.Max(0, Math.Min(51, crf));
+        this.cqp = Math.Max(0, Math.Min(51, cqp));
+        this.bitrateMbps = Math.Max(0, Math.Min(160, bitrateMbps));
+        this.preset = Math.Max(0, Math.Min(10, preset));
     }
 
     // 依次探测模组目录、游戏根目录；找不到再交给系统 PATH（结果缓存，见 locatedEncoder）
@@ -141,7 +171,7 @@ internal sealed class VideoEncoder : IDisposable
     // 损坏）会被选定为编码器，直到重开关卡、劫持相机之后才在渲染中途失败
     // ——用户白等一场。VerifyEncoder 跑一次 `-version`（成本 <100ms），
     // 成功永久缓存；失败按 Cooling 模式 30s 冷却重试（用户装好 ffmpeg 不
-    // 用重启游戏）。输出必须排空（与 NvencWorksFor 同理），否则坏 ffmpeg
+    // 用重启游戏）。输出必须排空（与 EncoderStateFor 同理），否则坏 ffmpeg
     // 的错误刷屏会把管道写满，探测自己先死锁。
     private static readonly Dictionary<string, bool> verifyCache = new Dictionary<string, bool>();
     private static readonly Dictionary<string, int> verifyFailTick = new Dictionary<string, int>();
@@ -221,8 +251,13 @@ internal sealed class VideoEncoder : IDisposable
             try
             {
                 string exe = LocateEncoder();
-                if (exe != null)
-                    NvencWorksFor(exe);
+                if (exe == null) return;
+                EncoderCatalog.EnsureLoaded(exe);
+                // 预热当前设置会选中的编码器；ResolveCodec 会在需要时起 1 帧 preflight。
+                var container = (OutContainer)Mathf.Clamp(SpectreReplay.Settings.RenderOutputFormat, 0, 3);
+                var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 1);
+                var hardware = (HardwareBackend)Mathf.Clamp(SpectreReplay.Settings.RenderHardware, 0, 4);
+                ResolveCodec(container, codec, hardware);
             }
             catch { /* 预热失败不影响后续按需探测 */ }
         });
@@ -458,22 +493,143 @@ internal sealed class VideoEncoder : IDisposable
     /// <summary>本次渲染会用到的编解码器。**唯一判定来源**：
     /// EncoderArguments 拼参数与 DescribeEncoder 给 UI 显示都从这里取，
     /// 两边各写一份判定的话，将来加编码器只改一处会让 UI 显示出错的档位。</summary>
-    private enum Codec { Vp9, Nvenc, X264 }
-
-    private static Codec PickCodec(Quality quality, OutContainer container)
+    private enum Codec
     {
-        // webm 容器只认 VP8/VP9 + Vorbis/Opus：NVENC 无 VP9 编码器，固定走 libvpx-vp9。
-        if (container == OutContainer.WebM) return Codec.Vp9;
-        if (quality != Quality.CpuOnly && NvencWorksFor(LocateEncoder())) return Codec.Nvenc;
-        return Codec.X264;
+        Vp9,
+        NvencH264, NvencH265,
+        QsvH264, QsvH265,
+        AmfH264, AmfH265,
+        X264, X265
     }
 
-    internal static string DescribeEncoder(Quality quality, OutContainer container)
+    private static int hardwareFallbackLogged;
+
+    private static Codec SoftwareCodec(VideoCodec videoCodec)
+        => videoCodec == VideoCodec.H265 ? Codec.X265 : Codec.X264;
+
+    private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware)
     {
-        switch (PickCodec(quality, container))
+        bool h265 = videoCodec == VideoCodec.H265;
+        switch (hardware)
+        {
+            case HardwareBackend.Cpu:
+                return new[] { h265 ? Codec.X265 : Codec.X264 };
+            case HardwareBackend.Nvenc:
+                return new[] { h265 ? Codec.NvencH265 : Codec.NvencH264, h265 ? Codec.X265 : Codec.X264 };
+            case HardwareBackend.Qsv:
+                return new[] { h265 ? Codec.QsvH265 : Codec.QsvH264, h265 ? Codec.X265 : Codec.X264 };
+            case HardwareBackend.Amf:
+                return new[] { h265 ? Codec.AmfH265 : Codec.AmfH264, h265 ? Codec.X265 : Codec.X264 };
+            default:
+                return new[]
+                {
+                    h265 ? Codec.NvencH265 : Codec.NvencH264,
+                    h265 ? Codec.QsvH265 : Codec.QsvH264,
+                    h265 ? Codec.AmfH265 : Codec.AmfH264,
+                    h265 ? Codec.X265 : Codec.X264
+                };
+        }
+    }
+
+    private static string EncoderName(Codec codec)
+    {
+        switch (codec)
+        {
+            case Codec.NvencH264: return "h264_nvenc";
+            case Codec.NvencH265: return "hevc_nvenc";
+            case Codec.QsvH264: return "h264_qsv";
+            case Codec.QsvH265: return "hevc_qsv";
+            case Codec.AmfH264: return "h264_amf";
+            case Codec.AmfH265: return "hevc_amf";
+            case Codec.X264: return "libx264";
+            case Codec.X265: return "libx265";
+            default: return "libvpx-vp9";
+        }
+    }
+
+    /// <summary>
+    /// 返回 -1：未探测/正在探测；0：不可用；1：可用。
+    /// 未加载 -encoders 目录时先异步加载，本轮返回 -1（调用方退回软件）。
+    /// </summary>
+    private static int EncoderStateFor(string exe, string encoderName)
+    {
+        if (!EncoderCatalog.IsLoaded(exe))
+        {
+            EncoderCatalog.EnsureLoaded(exe);
+            return -1;
+        }
+        if (!EncoderCatalog.Supports(exe, encoderName))
+            return 0;
+
+        string key = exe + "|" + encoderName;
+        lock (ProbeLock)
+        {
+            if (encoderProbeCache.TryGetValue(key, out int state))
+                return state;
+            if (encoderProbing.Contains(key))
+                return -1;
+            encoderProbing.Add(key);
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            bool ok = ProbeEncoderSync(exe, encoderName);
+            lock (ProbeLock)
+            {
+                encoderProbeCache[key] = ok ? 1 : 0;
+                encoderProbing.Remove(key);
+            }
+        });
+        return -1;
+    }
+
+    private static Codec ResolveCodec(OutContainer container, VideoCodec videoCodec,
+        HardwareBackend hardware)
+    {
+        // webm 容器只认 VP8/VP9 + Vorbis/Opus；H.264/H.265 都不能进 WebM。
+        if (container == OutContainer.WebM) return Codec.Vp9;
+
+        string exe = LocateEncoder();
+        Codec software = SoftwareCodec(videoCodec);
+        foreach (Codec candidate in Candidates(videoCodec, hardware))
+        {
+            // 软件编码永远可用；硬件候选失败时最终落在这里。
+            if (candidate == Codec.X264 || candidate == Codec.X265)
+                return candidate;
+
+            int state = EncoderStateFor(exe, EncoderName(candidate));
+            if (state == 1)
+                return candidate;
+            if (state == 0
+                && hardware != HardwareBackend.Auto
+                && hardware != HardwareBackend.Cpu
+                && Interlocked.Exchange(ref hardwareFallbackLogged, 1) == 0)
+            {
+                Debug.LogWarning("[SpectreReplay] 硬件后端 " + hardware + " 不可用，回退软件编码。");
+            }
+            // 目录/探测还没准备好：本轮先用软件，探测完成后下一帧自动走硬件。
+            if (state < 0)
+                return software;
+        }
+        return software;
+    }
+
+    private Codec PickCodec(OutContainer container)
+        => ResolveCodec(container, videoCodec, hardware);
+
+    internal static string DescribeEncoder(OutContainer container,
+        VideoCodec videoCodec = VideoCodec.H264, HardwareBackend hardware = HardwareBackend.Auto)
+    {
+        switch (ResolveCodec(container, videoCodec, hardware))
         {
             case Codec.Vp9: return "libvpx-vp9 (CPU)";
-            case Codec.Nvenc: return "h264_nvenc (GPU)";
+            case Codec.NvencH265: return "hevc_nvenc (GPU)";
+            case Codec.QsvH265: return "hevc_qsv (GPU)";
+            case Codec.AmfH265: return "hevc_amf (GPU)";
+            case Codec.X265: return "libx265 (CPU)";
+            case Codec.NvencH264: return "h264_nvenc (GPU)";
+            case Codec.QsvH264: return "h264_qsv (GPU)";
+            case Codec.AmfH264: return "h264_amf (GPU)";
             default: return "libx264 (CPU)";
         }
     }
@@ -481,36 +637,93 @@ internal sealed class VideoEncoder : IDisposable
     private string EncoderArguments()
     {
         int gop = Math.Max(1, fps * 2);
-        // cpu-used 档位映射画质档（越大越快越糙）；-row-mt 多线程编码，不开会慢数倍。
-        // 直出有意走码率模式而非转换器的 crf 质量模式：逐帧喂流的场景下
-        // 码率三件套让体积/耗时可控可预估，且随画质档与帧率同比缩放
-        switch (PickCodec(quality, container))
+        // 直出默认 ABR（码率可控、体积可预估）；玩家选了 CRF/CQP/CBR 时，
+        // 参数由 RateControl 按编码器类型映射。preset 只作用于软件编码；
+        // NVENC 用自己的 p1..p7，VP9 用 cpu-used。
+        Codec selected = PickCodec(container);
+        switch (selected)
         {
             case Codec.Vp9:
                 {
                     string cpuUsed = quality == Quality.Fastest ? "5" : quality == Quality.Sharpest ? "2" : "4";
+                    // VP9 只支持 ABR/CRF；CQP 退回 ABR，CBR 走通用 -b:v/-minrate/-maxrate。
+                    // libvpx-vp9 没有 -qp 私有选项，直接把 CQP 传下去会让 ffmpeg 退出。
+                    // libvpx-vp9 的 CRF 必须配 -b:v 0 才是恒定质量；否则会退回默认码率。
+                    string rc;
+                    if (rateControl == RateControlMode.Crf)
+                        rc = "-crf " + crf + " -b:v 0";
+                    else if (rateControl == RateControlMode.Cqp)
+                        rc = BuildAbrRateControl(false);
+                    else
+                        rc = BuildRateControl(false);
                     return "-c:v libvpx-vp9 -deadline good -cpu-used " + cpuUsed + " -row-mt 1 "
-                        + RateControl(false) + " -g " + gop;
+                        + rc + " -g " + gop;
                 }
-            case Codec.Nvenc:
+            case Codec.NvencH265:
+                {
+                    string nvPreset = quality == Quality.Fastest ? "p1" : quality == Quality.Sharpest ? "p6" : "p4";
+                    return "-c:v hevc_nvenc -preset " + nvPreset
+                        + " " + BuildRateControl(true) + " -g " + gop;
+                }
+            case Codec.NvencH264:
                 {
                     string nvPreset = quality == Quality.Fastest ? "p1" : quality == Quality.Sharpest ? "p6" : "p4";
                     string tune = quality == Quality.Fastest ? "ll" : "hq";
                     return "-c:v h264_nvenc -preset " + nvPreset + " -tune " + tune
-                        + " " + RateControl(true) + " -g " + gop;
+                        + " " + BuildRateControl(true) + " -g " + gop;
+                }
+            case Codec.QsvH265:
+            case Codec.QsvH264:
+                {
+                    string qPreset = quality == Quality.Fastest ? "veryfast"
+                        : quality == Quality.Sharpest ? "slow" : "medium";
+                    return "-c:v " + EncoderName(selected)
+                        + " -preset " + qPreset
+                        + " " + BuildQsvRateControl() + " -g " + gop;
+                }
+            case Codec.AmfH265:
+            case Codec.AmfH264:
+                {
+                    string aQuality = quality == Quality.Fastest ? "speed"
+                        : quality == Quality.Sharpest ? "quality" : "balanced";
+                    return "-c:v " + EncoderName(selected)
+                        + " -quality " + aQuality
+                        + " " + BuildAmfRateControl() + " -g " + gop;
+                }
+            case Codec.X265:
+                {
+                    string x265Preset = SoftwarePreset();
+                    return "-c:v libx265 -preset " + Quote(x265Preset)
+                        + " " + BuildRateControl(false) + " -g " + gop;
                 }
             default:
                 {
-                    string x264Preset = quality == Quality.Fastest ? "ultrafast" : quality == Quality.Sharpest ? "fast" : "veryfast";
-                    return "-c:v libx264 -preset " + Quote(x264Preset) + " " + RateControl(false) + " -g " + gop;
+                    string x264Preset = SoftwarePreset();
+                    return "-c:v libx264 -preset " + Quote(x264Preset) + " " + BuildRateControl(false) + " -g " + gop;
                 }
         }
     }
 
-    // 码率按像素量估算（1080p60 标准档约 20 Mbps），画质档位乘系数（低0.5/标准1/高1.6/极致2.4），
-    // 低帧率打七五折；极致档上限放宽到 160M
-    private string RateControl(bool nvenc)
+    /// <summary>软件编码预设：玩家显式选择优先；0 按画质档映射。</summary>
+    private string SoftwarePreset()
     {
+        string[] presets =
+        {
+            "ultrafast", "superfast", "veryfast", "faster", "fast",
+            "medium", "slow", "slower", "veryslow", "placebo"
+        };
+        if (preset >= 1 && preset <= presets.Length)
+            return presets[preset - 1];
+        return quality == Quality.Fastest ? "ultrafast"
+            : quality == Quality.Sharpest ? "fast"
+            : "veryfast";
+    }
+
+    // 码率按像素量估算（1080p60 标准档约 20 Mbps），画质档位乘系数（低0.5/标准1/高1.6/极致2.4），
+    // 低帧率打七五折；极致档上限放宽到 160M。玩家显式填了目标码率时直接覆盖。
+    private int TargetBitrateMbps()
+    {
+        if (bitrateMbps > 0) return bitrateMbps;
         double megapixels = width * (double)height / 1000000.0;
         double scale = qualityTier == 0 ? 0.5 : qualityTier == 2 ? 1.6 : qualityTier == 3 ? 2.4 : 1.0;
         int target = (int)Math.Round(megapixels * 10.0 * scale);
@@ -518,7 +731,38 @@ internal sealed class VideoEncoder : IDisposable
         else if (fps > 60) target = target * fps / 60; // 高帧率码率同比放大，保持单帧画质
         int floor = qualityTier == 0 ? 4 : 8;
         int cap = qualityTier == 3 ? 160 : 100;
-        target = Math.Max(floor, Math.Min(cap, target));
+        return Math.Max(floor, Math.Min(cap, target));
+    }
+
+    private string BuildRateControl(bool nvenc)
+    {
+        int target = TargetBitrateMbps();
+        int ceiling = target * 3 / 2;
+        int bucket = target * 2;
+        switch (rateControl)
+        {
+            case RateControlMode.Crf:
+                // NVENC 没有 -crf；用 -cq + VBR，效果最接近 CRF。
+                if (nvenc)
+                    return "-rc vbr -cq " + crf + " -b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
+                return "-crf " + crf;
+            case RateControlMode.Cqp:
+                if (nvenc)
+                    return "-rc constqp -qp " + cqp;
+                return "-qp " + cqp;
+            case RateControlMode.Cbr:
+                if (nvenc)
+                    return "-rc cbr -b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
+                return "-b:v " + target + "M -minrate " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
+            default:
+                return BuildAbrRateControl(nvenc);
+        }
+    }
+
+    /// <summary>ABR：目标码率 + 上限/缓冲。VP9 的 CQP 回退也走这里。</summary>
+    private string BuildAbrRateControl(bool nvenc)
+    {
+        int target = TargetBitrateMbps();
         int ceiling = target * 3 / 2;
         int bucket = target * 2;
         if (nvenc)
@@ -529,45 +773,53 @@ internal sealed class VideoEncoder : IDisposable
         return "-b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
     }
 
-    /// <summary>按 ffmpeg 路径探测 NVENC。静态版供 UI 侧 DescribeEncoder 复用同一份缓存，
-    /// 避免为了显示一行提示就起第二个探测（探测本身要起进程、等最多 5 秒）。</summary>
-    private static bool NvencWorksFor(string exe)
+    /// <summary>QSV 码率：CRF/CQP 用 -global_quality；ABR/CBR 用通用码率参数。</summary>
+    private string BuildQsvRateControl()
     {
-        lock (ProbeLock)
+        int target = TargetBitrateMbps();
+        int ceiling = target * 3 / 2;
+        int bucket = target * 2;
+        switch (rateControl)
         {
-            // 缓存命中：已探测过同一个 exe
-            if (nvencProbedExe == exe)
-                return nvencWorks;
-            // 异步探测已在跑：本轮先退回 CPU（探测完了下一帧走缓存）
-            if (_nvencProbeRunning)
-                return false;
-            // 起后台线程探测，不在 OnGUI 里阻塞
-            _nvencProbeRunning = true;
-            System.Threading.ThreadPool.QueueUserWorkItem(_ =>
-            {
-                bool result = ProbeNvencSync(exe);
-                lock (ProbeLock)
-                {
-                    nvencWorks = result;
-                    nvencProbedExe = exe;
-                    _nvencProbeRunning = false;
-                }
-            });
-            return false;
+            case RateControlMode.Crf:
+                return "-global_quality " + crf;
+            case RateControlMode.Cqp:
+                return "-global_quality " + cqp;
+            case RateControlMode.Cbr:
+                return "-b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
+            default:
+                return "-b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
         }
     }
 
-    /// <summary>同步 NVENC 探测（后台线程调用）。与原实现相同，但从 OnGUI 移到这里。</summary>
-    private static bool ProbeNvencSync(string exe)
+    /// <summary>AMF 目前只保证 ABR/CBR；CRF/CQP 回 ABR，避免传它不认的私有选项。</summary>
+    private string BuildAmfRateControl()
+    {
+        int target = TargetBitrateMbps();
+        int ceiling = target * 3 / 2;
+        int bucket = target * 2;
+        if (rateControl == RateControlMode.Cbr)
+            return "-b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
+        return "-b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
+    }
+
+    /// <summary>同步编码 preflight（后台线程调用）。name 为 ffmpeg 编码器名。</summary>
+    private static bool ProbeEncoderSync(string exe, string encoderName)
     {
         try
         {
+            // QSV/AMF 对像素格式更挑，统一喂 nv12；NVENC/软件用默认 yuv420p。
+            string pixFmt = encoderName.EndsWith("_qsv", StringComparison.Ordinal)
+                || encoderName.EndsWith("_amf", StringComparison.Ordinal)
+                    ? " -pix_fmt nv12"
+                    : "";
             var info = new ProcessStartInfo
             {
                 FileName = exe,
                 Arguments = "-hide_banner -loglevel error -y -f lavfi"
                     + " -i color=size=256x256:rate=1:duration=0.1"
-                    + " -c:v h264_nvenc -frames:v 1 -f null -",
+                    + " -c:v " + encoderName + pixFmt
+                    + " -frames:v 1 -f null -",
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardError = true,
@@ -581,7 +833,7 @@ internal sealed class VideoEncoder : IDisposable
                 probe.BeginErrorReadLine();
                 probe.BeginOutputReadLine();
                 // 与 VerifyEncoder 同理放宽到 15 秒：spawn 就要 ~5 秒的机器上，
-                // 5 秒超时会让 NVENC 永远探测失败、永远回退 CPU 编码
+                // 5 秒超时会让硬件编码器永远探测失败、永远回退软件编码。
                 if (!probe.WaitForExit(15000))
                 {
                     try { probe.Kill(); } catch { }

@@ -38,6 +38,7 @@ namespace UiPreview
             int hardFail = HardTextCheck.Run(
                 ProjectDir);
             int replayFail = ReplayCheck.Run();
+            int encMatrixFail = EncoderMatrixCheck.Run().Failed;
             int timelineFail = ReplayTimelineCheck.Run();
             int wavFail = WavRoundTripCheck.Run();
             int runtimeFail = LocRuntimeCheck.Run();
@@ -45,6 +46,8 @@ namespace UiPreview
                 ProjectDir);
             int shapeFail = UiLogicShapeCheck.Run(
                 ProjectDir);
+            int effectSnapshotFail = EffectRemoverSnapshotCheck.Run().Failed;
+            int writeSafetyFail = WriteSafetyCheck.Run().Failed;
             int missingKeyFail = MissingRuntimeKeyCheck.Run(
                 ProjectDir);
             int keybdFail = KeybdSoundTickCheck.Run(
@@ -128,7 +131,7 @@ namespace UiPreview
                 ProjectDir);
             int orphanFail = PortedCompletenessCheck.NoOrphanChecks(
                 ProjectDir);
-            int total = locFail + hardFail + replayFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + orphanFail;
+            int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + orphanFail;
             Console.WriteLine();
             Console.WriteLine(total == 0
                 ? "  全部通过"

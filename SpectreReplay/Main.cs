@@ -70,38 +70,57 @@ namespace SpectreReplay
             }
         }
 
+        /// <summary>
+        /// 关闭模组或启用失败时的统一收尾。**必须幂等**：OnToggle(true) 的 catch
+        /// 会调用它，之后 UMM 还可能再发一次 OnToggle(false)。
+        /// 每一步都单独 try：某一步抛异常不能阻断后面的补丁卸载/线程停止。
+        /// </summary>
+        private static void Teardown()
+        {
+            // 关模组等于设置页没了：把拖动期间攒下的改动先写掉
+            try { Ui.OnGui.FlushConfig(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时落盘失败：" + ex.Message); }
+
+            // **先把在跑的回放/录制/渲染收场，再拆补丁。** 关模组不是关一个开关：
+            // ReplayPlayer.Stop 才是「还原难度与 noFail、把键盘交还玩家」的唯一路径。
+            // 跳过它，玩家会被留在录像的判定模式里，而 CachedDifficulty 还攥着
+            // 他的原值——下次装弹再 Stop 时会把泄漏值当成原值写回，玩家真正的
+            // 设置就永久丢了。StopRecording 同理：is_recording 翻假后没人收，
+            // 这份录制再也不会被保存。CancelRender 让渲染作业自己走收尾，
+            // 否则它会带着钉扎时钟继续跑，而它依赖的补丁马上就不在了。
+            // 三步都自带「没在跑就早退」的守卫，空闲时关模组只是三次空调用。
+            try { SpectreState.PlayActions.StopPlaying(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时停止回放失败：" + ex.Message); }
+            try { SpectreState.PlayActions.StopRecording(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时停止录制失败：" + ex.Message); }
+            try { Features.Replay.ManualSaveHotkey.Reset(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时复位手动保存热键失败：" + ex.Message); }
+            try { Features.VideoRender.VideoRender.CancelRender(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时取消渲染失败：" + ex.Message); }
+
+            SpectreState.SetGetKeyAsyncEnabled(false);
+            // 去特效在 Decode 后就地改写了内存谱面。关闭模组前先用原始快照还原，
+            // 否则玩家关掉模组再保存，写回磁盘的是剥过特效的版本。
+            try { Features.EffectRemover.EffectRemover.RestoreOriginalLevelData(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时还原去特效谱面失败：" + ex.Message); }
+            SpectrePatchHub.UnpatchAll();
+            PatchManager.UnpatchAll();
+            MainThread.Uninstall();
+            AudioRecorder.StopAllMicrophones();
+            Ui.Timeline.TimelineOverlay.Destroy();
+            Ui.ModernSettingsWindow.Destroy();
+            Features.Replay.TimelineController.Clear();
+            // 去特效关闭后，编辑器保存按钮不能停留在禁用态；若内存里仍是
+            // 剥离版，RestoreEditorSaveButtons 会按 LevelDataStripped 保持禁用。
+            try { Features.EffectRemover.EffectRemover.RestoreEditorSaveButtons(); }
+            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时恢复编辑器保存按钮失败：" + ex.Message); }
+        }
+
         private static bool OnToggle(ModEntry modEntry, bool isToggled)
         {
             if (!isToggled)
             {
-                // 关模组等于设置页没了：把拖动期间攒下的改动先写掉
-                Ui.OnGui.FlushConfig();
-
-                // **先把在跑的回放/录制/渲染收场，再拆补丁。** 关模组不是关一个开关：
-                // ReplayPlayer.Stop 才是「还原难度与 noFail、把键盘交还玩家」的唯一路径。
-                // 跳过它，玩家会被留在录像的判定模式里，而 CachedDifficulty 还攥着
-                // 他的原值——下次装弹再 Stop 时会把泄漏值当成原值写回，玩家真正的
-                // 设置就永久丢了（与「回放启动失败仍泄漏接管设置」同一类漏洞，只是
-                // 入口换成了关模组）。StopRecording 同理：is_recording 翻假后没人收，
-                // 这份录制再也不会被保存。CancelRender 让渲染作业自己走收尾，
-                // 否则它会带着钉扎时钟继续跑，而它依赖的补丁马上就不在了。
-                // 三步都自带「没在跑就早退」的守卫，空闲时关模组只是三次空调用。
-                try { SpectreState.PlayActions.StopPlaying(); }
-                catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 关模组时停止回放失败：" + ex.Message); }
-                try { SpectreState.PlayActions.StopRecording(); }
-                catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 关模组时停止录制失败：" + ex.Message); }
-                Features.Replay.ManualSaveHotkey.Reset();
-                try { Features.VideoRender.VideoRender.CancelRender(); }
-                catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 关模组时取消渲染失败：" + ex.Message); }
-
-                SpectreState.SetGetKeyAsyncEnabled(false);
-                SpectrePatchHub.UnpatchAll();
-                PatchManager.UnpatchAll();
-                MainThread.Uninstall();
-                AudioRecorder.StopAllMicrophones();
-                Ui.Timeline.TimelineOverlay.Destroy();
-                Ui.ModernSettingsWindow.Destroy();
-                Features.Replay.TimelineController.Clear();
+                Teardown();
                 return true;
             }
 
@@ -190,6 +209,10 @@ namespace SpectreReplay
             catch (Exception ex)
             {
                 UnityEngine.Debug.LogError("[SpectreReplay] 装配失败：" + ex);
+                // 启用失败可能发生在补丁/线程/UI 已部分安装之后。必须主动收尾，
+                // 否则 UMM 若不再发 OnToggle(false)，游戏里会残留半套补丁。
+                try { Teardown(); }
+                catch (Exception cleanup) { UnityEngine.Debug.LogWarning("[SpectreReplay] 装配失败后的收尾异常：" + cleanup.Message); }
                 return false;
             }
         }

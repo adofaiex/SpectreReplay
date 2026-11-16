@@ -6,7 +6,7 @@
 powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 ```
 
-五个参数：`-SkipBuild` / `-SkipPreview` / `-SkipDeploy`（游戏在跑时 dll 会被锁，
+四个参数：`-SkipPreview` / `-SkipDeploy`（游戏在跑时 dll 会被锁，
 用 `-SkipDeploy` 跳过部署那一节）/ `-SkipAudits`（跳过只读审计那一节）/
 `-Ci`（跳过两项依赖本机安装的检查：Steam 部署一致性、上游工作区干净。
 
@@ -38,17 +38,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 > **「断言 0 条，失败 0」**——与全绿肉眼无法区分，整套离线套件等于没跑。
 > 现在「0 条断言」本身判红，并贴出原始输出末尾用于定位。
 
-五件事绑成一次判定，任何一项红就返回非零：主项目构建、离线验证套件、
-**只读审计**（7 个离线审计脚本）、线上 dll 与构建产物的 sha256 一致、
-`D:\Projects\Spectre` 工作区干净。（后两项只在本地跑，`-Ci` 跳过。）
+六件事绑成一次判定，任何一项红就返回非零：脚本编码、主项目构建（警告也判红）、
+离线验证套件、**只读审计**（6 个离线审计脚本）、本仓库工作区干净、
+线上 dll 与构建产物的 sha256 一致、上游 Spectre 工作区干净。
+（后两项只在本地跑，`-Ci` 跳过；上游路径优先读 `SPECTRE_UPSTREAM`。）
 
-> **当前打印 202 条断言 0 失败**（2026-11-12 实测；本轮加了回放按键 API 契约
-> `ApiSurfaceCheck` 与 RainingKeys 推桥接线 `RainingKeysBridgeCheck` 各 7 行，
-> 之前是 188；11-09 记录是 168，音画偏移 `MuxOffsetCheck` 加 20 行；
-> 10-30 记录是 155，其间键盘音覆盖值等轮次加了行级判据）。
-> 这个数字会随轮次变，
-> 引用前先跑一遍 `verify.ps1` 看真实条数。**注意它是「✓ 行数」而不是判据数**
-> ——`UiLogicShapeCheck` 现有 176 条判据只印 1 行，所以加判据这个数字不变。
+> **当前打印 255 条断言 0 失败**（2026-11-16 实测；14 语言 × 502 键）。
+> 这个数字会随轮次变，引用前先跑一遍 `verify.ps1` 看真实条数。
+> **注意它是「✓ 行数」而不是判据数**——`UiLogicShapeCheck` 现有 195 条判据只印 1 行，
+> 所以加判据这个数字不变。
 
 ## 套件构成
 
@@ -85,8 +83,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 | ApiSurfaceCheck | 回放按键查询 API 对外契约（2026-11-12 加）：`SpectreAPI` 六个成员在位且委托同源（拉取接口必须与补丁桥同一套键码换算）、`ReplayKeyChanged` 事件与 raiser 同在、`ManagedInput.Note` 在**状态写入之后**发事件、`GetHeldReplayKeys` 无回放分支永不返回 null、两参 Raise 走主线程封送 + 逐订阅者异常隔离、`ApiVersion` 随成员升级。变异 `MUT-API1`（Note 不再发事件）/`MUT-API2`（无回放分支返回 null）/`MUT-API3`（事件成员删除）守 |
 | ReplayInputBridgeCheck | ReplayInput 推桥接线（2026-11-12 加，跨 KV 通用约定）：Start/Stop/PumpInput 边沿/Rebuild 重播种/Main 复位五处在位、**按类型名 `ReplayInput` 扫描全部程序集（不许绑死某一家程序集——同类 mod 多、接口通用）**、四方法全解析、VK→KeyCode 走 SkyHook 逆链（与 `KeyViewerBridge.ToNativeVk` 互逆）且保留 VK_APPS=93 ↔ KeyCode.Menu 特判。这类 KV 受控模式只认显式调用，桥断在游戏里毫无异常。变异 `MUT-RI1`（不喂边沿）/`MUT-RI2`（不发 OnEndInputs）守 |
 
-**总数 111 个 ✓ 行**（2026-10-24 实测；10-22 记录是 110，本轮加 `ReplayCheck` 的 ⑹「v1 旧回放仍能解码」1 行。再往后的 ⑳c **不增行**（它折叠进 `UiLogicShapeCheck` 的汇总行，判据 67→68）。更早的沿革：删掉旧上游格式回落的 ⑥/⑦ 两条后从 69 降到 67，界面扩到 14 语言后升到 83，此后又加过检查到 86，加录制鼠标指针的 5 条到 91，加跨平台回放输入 1 行到 98）。这个数字会随轮次变，
-引用前先跑一遍 `verify.ps1` 看真实条数。
+**总数以 `verify.ps1` 实跑为准**（2026-11-16 实测 255 条 `✓` 行、0 失败）。
+这个数字会随轮次变；引用前先跑一遍。**它是「✓ 行数」而不是判据数**，
+`UiLogicShapeCheck` 的 195 条判据只印 1 行，所以加判据这个数字不变。
 
 > **口径修正（2026-10-12）：`✓ 行数 ≠ 断言单元数`，早先"两者相等"的说法是错的。**
 > 实测有两处**折叠**：`PortedCompletenessCheck` 有 15 个判据却只印 2 行
@@ -99,7 +98,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 每加一条断言，**必须用 `tools\mutate.ps1 -Which MUT-X` 证明它会红**（自动还原）。
 已累计 10 条以上假断言、2 条假变异——形态见 `docs\SPECTRE_COMPARISON.md`
 与记忆库的「六条铁律」。`-ExpectGreen` 是反向对照（证明"全绿"本身可达）。
-`tools\mutate-regression.ps1` 全量回归 **153 条**变异（计数口径：`mutate.ps1` 里 `'MUT-XXX' {` 块的去重数，**标签允许小写**，`MUT-K4b` 就是这个形式；2026-10-23 实测 150 个唯一名（另有 3 块把 `}` 与标签写在同一行，粗扫会数成 153）；本轮加 `MUT-CI1`~`MUT-CI10` 守跨平台回放输入，`MUT-CI10` 专守「广播判据不能用 Usable」；`MUT-KM1`/`MUT-KM2` 守键位重映射界面的调用形状与写回三步；`MUT-V15`/`MUT-V16` 守 `LimitKey` 真的改变映射表末态（分别对应历史上让它失效的两道兜底循环）。这个数字一直在漂：10-19 加 `MUT-W2` 后记成 117，加 `MUT-D15`/`MUT-D16`/`MUT-CR4` 后记成 120，加 `MUT-D17`/`MUT-D18` 后记成 122——**三次记录都比当时的真实块数小**，因为写文档时只数了「这轮新增的」。所以别再往上加着数了：跑 `mutate-regression.ps1` 时它会自己打印「通过 N / M」，以那个 M 为准。`MUT-D15` 守悬停说明必须以鼠标为锚点、`MUT-D16` 守详情面板同时显示 Accuracy 与 X-Accuracy、`MUT-CR4` 守 v2 容器仍可解密（迭代次数回落）、`MUT-D17` 守镜头缩放滑条必须挂缩放开关（否则拖了不生效）、`MUT-D18` 守去特效三颗「全选本组」按钮都挂总开关（只改最后一处，防判据只认首次命中）、`MUT-D19` 守按钮只许长在 visual/track/planet 三组（把 visual 那颗搬进 audio，总数不变）、`MUT-D20` 守全选必须双向（第一颗退回单向）、`MUT-D21` 守「移除全部装饰」挂两个父项、`MUT-D22` 守等待回放的预算必须按真实秒数记（改回 `fps * 10` 帧计数就红）、`MUT-D23` 守等待放行必须承认倒计时阶段（把 `States.Countdown` 改成别的状态就红，成段缺 GET READY / 3 2 1 / GO）、`MUT-D24` 守倒计时长度必须按谱面派生（把拍数写死成 4，等于假设所有谱都是 4 拍 145 BPM，慢歌长倒计时又会切掉开头）、`MUT-D25` 守倒计时放行不许再出现绝对秒数窗口（把 `-2.0` 下界加回放行条件就红）、`MUT-D26` 守「录制鼠标指针」开关必须接 `RenderCursorOn`（改成接回 `RenderClockOn` 就红）、`MUT-D27` 守渲染作业必须把开关交给画面源（写死 `true` 就红）、`MUT-D28` 守没有指针设备时不许画箭头（删掉 `Input.mousePresent` 就红）、`MUT-D29` 守鼠标指针叠加必须默认关（改回 `= true` 就红——它是往画面里加东西，不是录得更全）。新增 `MUT-V11` 守「Render 容器必须精确尺寸」；
+`tools\mutate-regression.ps1` 全量回归 **298 条**变异（2026-11-16 实测；以脚本打印的 M 为准。计数口径：`mutate.ps1` 里 `'MUT-XXX' {` 块的去重数，**标签允许小写**，`MUT-K4b` 就是这个形式；2026-10-23 实测 150 个唯一名（另有 3 块把 `}` 与标签写在同一行，粗扫会数成 153）；本轮加 `MUT-CI1`~`MUT-CI10` 守跨平台回放输入，`MUT-CI10` 专守「广播判据不能用 Usable」；`MUT-KM1`/`MUT-KM2` 守键位重映射界面的调用形状与写回三步；`MUT-V15`/`MUT-V16` 守 `LimitKey` 真的改变映射表末态（分别对应历史上让它失效的两道兜底循环）。这个数字一直在漂：10-19 加 `MUT-W2` 后记成 117，加 `MUT-D15`/`MUT-D16`/`MUT-CR4` 后记成 120，加 `MUT-D17`/`MUT-D18` 后记成 122——**三次记录都比当时的真实块数小**，因为写文档时只数了「这轮新增的」。所以别再往上加着数了：跑 `mutate-regression.ps1` 时它会自己打印「通过 N / M」，以那个 M 为准。`MUT-D15` 守悬停说明必须以鼠标为锚点、`MUT-D16` 守详情面板同时显示 Accuracy 与 X-Accuracy、`MUT-CR4` 守 v2 容器仍可解密（迭代次数回落）、`MUT-D17` 守镜头缩放滑条必须挂缩放开关（否则拖了不生效）、`MUT-D18` 守去特效三颗「全选本组」按钮都挂总开关（只改最后一处，防判据只认首次命中）、`MUT-D19` 守按钮只许长在 visual/track/planet 三组（把 visual 那颗搬进 audio，总数不变）、`MUT-D20` 守全选必须双向（第一颗退回单向）、`MUT-D21` 守「移除全部装饰」挂两个父项、`MUT-D22` 守等待回放的预算必须按真实秒数记（改回 `fps * 10` 帧计数就红）、`MUT-D23` 守等待放行必须承认倒计时阶段（把 `States.Countdown` 改成别的状态就红，成段缺 GET READY / 3 2 1 / GO）、`MUT-D24` 守倒计时长度必须按谱面派生（把拍数写死成 4，等于假设所有谱都是 4 拍 145 BPM，慢歌长倒计时又会切掉开头）、`MUT-D25` 守倒计时放行不许再出现绝对秒数窗口（把 `-2.0` 下界加回放行条件就红）、`MUT-D26` 守「录制鼠标指针」开关必须接 `RenderCursorOn`（改成接回 `RenderClockOn` 就红）、`MUT-D27` 守渲染作业必须把开关交给画面源（写死 `true` 就红）、`MUT-D28` 守没有指针设备时不许画箭头（删掉 `Input.mousePresent` 就红）、`MUT-D29` 守鼠标指针叠加必须默认关（改回 `= true` 就红——它是往画面里加东西，不是录得更全）。新增 `MUT-V11` 守「Render 容器必须精确尺寸」；
 `MUT-V12`/`MUT-V13` 分别守判据⑨的两半（卡片底图必须是卡色贴图、
 不许再出现 `GUI.backgroundColor` 赋值——乘算会抹平按钮 hover）。
 2026-10-17 另加两条：`MUT-U34` 守「去特效总开关必须默认关」（⑯）、
@@ -109,7 +108,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 
 2026-10-18 另加五条：MUT-U40（⑳a 删掉「允许覆盖关卡」拨动后的刷新）、MUT-U41（⑳b 总开关只留「关掉→恢复」那一半）、MUT-U42（㉑a 摘掉异步那条补丁的 Feature）、MUT-U43（㉑b 删掉 Main 里的 SpecialKeys 注册）、MUT-U44（㉑c 删掉键盘侧的 Escape 守卫）。
 
-2026-10-24 另加三条：MUT-U45（⑧c 把旧扩展名塞回可读清单）、MUT-U46（⑧b 把 `.psprp` 从可读清单删掉）、MUT-U47（**⑳c** 给保存拦截挂回 `Feature` = 让「改写残留态在功能关闭后仍被拦住」随总开关卸载，专守 D-F2 的修复；实测 111 条断言里恰好它变红）。
+2026-10-24 另加三条：MUT-U45（⑧c 把旧扩展名塞回可读清单）、MUT-U46（⑧b 把 `.psprp` 从可读清单删掉）、MUT-U47（**⑳c** 给保存拦截挂回 `Feature` = 让「改写残留态在功能关闭后仍被拦住」随总开关卸载，专守 D-F2 的修复；当时 111 条断言里恰好它变红）。
 
 > ⚠️ **MUT-U42 修过一次假变异**：第一版把参数改成 ...SpecialKeys_DISABLED，而原串仍是它的**前缀**，子串计数判据照样命中 ⇒ 代码改了、闸门没红，被误判成「判据是假的」。现在两边都收紧：判据用 CountClosedArgs（要求实参后紧跟 ) 或 ,），变异整段删参数并自带「是否真的改动了字节」的自检。与本项目早前 playback.openlevel 前缀假判据是同一形态。
 
@@ -160,8 +159,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 
 **回放与视频渲染的最终效果只能在游戏里实跑确认。** 闸门守的是"不会静默废掉
 整条链路"那类规则（用真 ffmpeg 跑参数、用真程序集反射核对补丁目标），
-不是"画面好看"。当前 `Params.xml` 里 `com.spectre.replay` 仍是
-`Enabled="false"`，`Load()` 一次都没跑过。
+不是"画面好看"。离线全绿之后仍要按 `AGENT.md` §12 的实机路径跑一遍。
 
 ## 改完记得跑
 

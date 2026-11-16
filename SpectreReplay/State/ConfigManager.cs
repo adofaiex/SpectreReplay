@@ -97,6 +97,13 @@ public static class ConfigManager
         public int render_fps { get; set; }
         public int render_encoder { get; set; }
         public int render_quality { get; set; }
+        public int render_hardware { get; set; }
+        public int render_video_codec { get; set; }
+        public int render_rate_control { get; set; }
+        public int render_crf { get; set; }
+        public int render_cqp { get; set; }
+        public int render_bitrate_mbps { get; set; }
+        public int render_preset { get; set; }
         public int render_output_format { get; set; }
         /// <summary>转换目标容器（与渲染格式解耦，见 Settings.ConvertTarget）。</summary>
         public int convert_target { get; set; }
@@ -223,6 +230,13 @@ public static class ConfigManager
                 render_fps = Settings.RenderFps,
                 render_encoder = Settings.RenderEncoderMode,
                 render_quality = Settings.RenderQualityMode,
+                render_hardware = Settings.RenderHardware,
+                render_video_codec = Settings.RenderVideoCodec,
+                render_rate_control = Settings.RenderRateControl,
+                render_crf = Settings.RenderCrf,
+                render_cqp = Settings.RenderCqp,
+                render_bitrate_mbps = Settings.RenderBitrateMbps,
+                render_preset = Settings.RenderPreset,
                 render_output_format = Settings.RenderOutputFormat,
                 convert_target = Settings.ConvertTarget,
                 render_capture_mode = Settings.RenderCaptureMode,
@@ -276,7 +290,9 @@ public static class ConfigManager
         {
             if (!Directory.Exists(directoryName))
                 Directory.CreateDirectory(directoryName);
-            File.WriteAllText(filePath, contents);
+            // 崩溃安全：先写 .tmp，再原子替换；旧文件落到 .bak。
+            // 直接 File.WriteAllText 会在写入中途留下截断的 JSON。
+            AtomicFile.WriteAllText(filePath, contents);
         }
         catch (Exception ex)
         {
@@ -360,7 +376,7 @@ public static class ConfigManager
 
         try
         {
-            File.WriteAllText(configPath, json.ToString(Formatting.Indented));
+            AtomicFile.WriteAllText(configPath, json.ToString(Formatting.Indented));
             Debug.Log("[SpectreReplay] 旧配置已迁移并落盘");
         }
         catch (Exception ex)
@@ -516,8 +532,39 @@ public static class ConfigManager
                     Settings.RenderWidth = Mathf.Clamp(ints.Value<int?>("render_width") ?? Settings.RenderWidth, 320, 7680);
                     Settings.RenderHeight = Mathf.Clamp(ints.Value<int?>("render_height") ?? Settings.RenderHeight, 240, 4320);
                     Settings.RenderFps = Mathf.Clamp(ints.Value<int?>("render_fps") ?? Settings.RenderFps, 15, 480);
-                    Settings.RenderEncoderMode = Mathf.Clamp(ints.Value<int?>("render_encoder") ?? Settings.RenderEncoderMode, 0, 3);
+                    // 旧配置：render_encoder=3 表示「纯 CPU」，且当时没有 render_hardware。
+                    // 迁移必须发生在 clamp 之前，否则 3 会先被压成 2（Quality），
+                    // 玩家「纯 CPU」的意图静默丢失。只在没有 render_hardware 键时迁移，
+                    // 避免覆盖玩家后来显式选择的后端。
+                    int? rawEncoder = ints.Value<int?>("render_encoder");
+                    int? rawHardware = ints.Value<int?>("render_hardware");
+                    if (rawHardware == null && rawEncoder == 3)
+                    {
+                        Settings.RenderHardware = 4;      // Cpu
+                        Settings.RenderEncoderMode = 2;   // Quality
+                        Debug.Log("[SpectreReplay] 旧配置 render_encoder=3 已迁移为 CPU 后端");
+                    }
+                    else
+                    {
+                        Settings.RenderEncoderMode = Mathf.Clamp(rawEncoder ?? Settings.RenderEncoderMode, 0, 2);
+                        // 越界值不要 clamp 到 CPU：那会静默掉一个数量级的性能。
+                        // 非法后端回 Auto，并留日志。
+                        int hardwareValue = rawHardware ?? Settings.RenderHardware;
+                        if (hardwareValue < 0 || hardwareValue > 4)
+                        {
+                            Debug.LogWarning("[SpectreReplay] 配置 render_hardware 非法（" + hardwareValue + "），回退 Auto");
+                            hardwareValue = 0;
+                        }
+                        Settings.RenderHardware = hardwareValue;
+                    }
                     Settings.RenderQualityMode = Mathf.Clamp(ints.Value<int?>("render_quality") ?? Settings.RenderQualityMode, 0, 3);
+                    // 新增编码参数：旧配置缺键时用默认值（H.264 + ABR），保持升级前行为。
+                    Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>("render_video_codec") ?? Settings.RenderVideoCodec, 0, 1);
+                    Settings.RenderRateControl = Mathf.Clamp(ints.Value<int?>("render_rate_control") ?? Settings.RenderRateControl, 0, 3);
+                    Settings.RenderCrf = Mathf.Clamp(ints.Value<int?>("render_crf") ?? Settings.RenderCrf, 0, 51);
+                    Settings.RenderCqp = Mathf.Clamp(ints.Value<int?>("render_cqp") ?? Settings.RenderCqp, 0, 51);
+                    Settings.RenderBitrateMbps = Mathf.Clamp(ints.Value<int?>("render_bitrate_mbps") ?? Settings.RenderBitrateMbps, 0, 160);
+                    Settings.RenderPreset = Mathf.Clamp(ints.Value<int?>("render_preset") ?? Settings.RenderPreset, 0, 10);
                     Settings.RenderOutputFormat = Mathf.Clamp(ints.Value<int?>("render_output_format") ?? Settings.RenderOutputFormat, 0, 3);
                     // 旧配置没有这个键：缺省时**跟随渲染格式**，保持升级前的行为
                     // （升级前转换用的就是 RenderOutputFormat）。

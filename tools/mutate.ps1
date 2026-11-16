@@ -824,7 +824,7 @@ switch ($Which) {
     'MUT-U79' {
         # 52a：NVENC 探测不再排空管道——输出超缓冲即死锁，有硬件被判无 NVENC。
         Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' ('                        probe.BeginErrorReadLine();') ('')
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' ('                probe.BeginErrorReadLine();') ('')
     }
     'MUT-U80' {
         # 52b：stderr 上限被拆——失控进程刷屏变成无界内存。
@@ -2994,8 +2994,97 @@ switch ($Which) {
         Backup 'Features\Replay\Runtime\ReplayInputBridge.cs'
         ReplaceExact 'Features\Replay\Runtime\ReplayInputBridge.cs' 'started.Add(t.Origin);' ''
     }
+    'MUT-ENC1' {
+        # 视频编码矩阵回归：H.265 分支被改回 H.264。玩家选了 H.265，
+        # 成片仍是 H.264，界面只显示实际编码器（DescribeEncoder 同理会变），
+        # 但导出逻辑静默降级。EncoderMatrixCheck ① 钉的形态。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '"-c:v libx265 -preset "' '"-c:v libx264 -preset "'
+    }
+    'MUT-ENC2' {
+        # 码率模式回归：CBR 被退回 VBR。恒定码率需求（直播/硬件兼容）
+        # 静默失效，ffmpeg 仍能跑，成片也正常，只有码率分布不对。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '"-rc cbr -b:v "' '"-rc vbr -b:v "'
+    }
+    'MUT-ENC3' {
+        # 编码参数持久化回归：视频编码不落盘。玩家选 H.265 后重启游戏
+        # 回到 H.264；ConfigManager 的 JObject 写侧缺字段，EncoderMatrixCheck ④ 钉的形态。
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' 'render_video_codec = Settings.RenderVideoCodec,' ''
+    }
+    'MUT-ENC4' {
+        # VP9 CQP 回归：CQP 被直接送进 BuildRateControl，产出 -qp N。
+        # libvpx-vp9 没有 -qp 私有选项，ffmpeg 会报错退出，渲染作业失败。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'rc = BuildAbrRateControl(false);' 'rc = BuildRateControl(false);'
+    }
+    'MUT-HW1' {
+        # 2A-1 迁移幂等回归：去掉「没有 render_hardware 键」判断。
+        # 玩家已选 NVENC，旧 render_encoder=3 仍会被改回 CPU。
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' 'rawHardware == null && rawEncoder == 3' 'rawEncoder == 3'
+    }
+    'MUT-HW2' {
+        # 2A-1 迁移语义回归：旧 render_encoder=3 不映射成 CPU 后端，
+        # 玩家「纯 CPU」意图静默丢失。
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' 'Settings.RenderHardware = 4;' 'Settings.RenderHardware = 0;'
+    }
+    'MUT-HW3' {
+        # 2A-2 回归：QSV 的 -global_quality 被换成 -crf。
+        # QSV 不认 -crf，选了 QSV + CRF/CQP 时 ffmpeg 直接退出。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'return "-global_quality " + crf;' 'return "-crf " + crf;'
+    }
+    'MUT-HW4' {
+        # 2A-1 回归：非法 render_hardware 被回退成 CPU，而不是 Auto。
+        # 手改配置写 9 时渲染速度掉一个数量级且无声。
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' 'hardwareValue = 0;' 'hardwareValue = 4;'
+    }
+    'MUT-HW5' {
+        # 2A-2 回归：EncoderStateFor 不再检查目录是否加载。
+        # 目录未就绪时会直接进入 Supports，首次渲染可能误判硬件不可用。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'if (!EncoderCatalog.IsLoaded(exe))' 'if (false)'
+    }
+    'MUT-HW6' {
+        # 2A-2 回归：Supports 不再按清单匹配，任何编码器都被认为可用。
+        # 硬件 preflight 会对不存在的编码器起进程，Auto 链选错后端。
+        Backup 'Features\VideoRender\Pipeline\EncoderCatalog.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\EncoderCatalog.cs' 'return set.Contains(encoderName);' 'return true;'
+    }
+    'MUT-EF1' {
+        # 去特效应答安全回归：有快照但还原时不重新 Decode。关闭功能后
+        # 内存里仍是剥过的谱面，保存按钮恢复可用 -> 原谱被覆盖。
+        Backup 'Features\EffectRemover\EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' 'data.Decode(dict, out _);' ''
+    }
+    'MUT-EF2' {
+        # 关闭模组时不还原去特效谱面。玩家退出模组再保存，写回的是剥过特效的版本。
+        Backup 'Main.cs'
+        ReplaceExact 'Main.cs' 'Features.EffectRemover.EffectRemover.RestoreOriginalLevelData();' ''
+    }
+    'MUT-WS1' {
+        # 写入安全回归：配置保存退回直接 WriteAllText。崩溃/断电会留下
+        # 截断的 Configs.json，玩家看到的是「设置全丢了」。
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' 'AtomicFile.WriteAllText(filePath, contents);' 'File.WriteAllText(filePath, contents);'
+    }
+    'MUT-WS2' {
+        # 生命周期回归：收尾不卸载补丁。启用失败后残留半套补丁，游戏行为
+        # 取决于失败发生在哪一步，极难排查。
+        Backup 'Main.cs'
+        ReplaceExact 'Main.cs' 'SpectrePatchHub.UnpatchAll();' ''
+    }
+    'MUT-WS3' {
+        # 原子写入回归：退回 File.Copy 覆盖。写入中途崩溃会留下截断目标。
+        Backup 'State\AtomicFile.cs'
+        ReplaceExact 'State\AtomicFile.cs' 'File.Replace(tmp, path, bak);' 'File.Copy(tmp, path, true);'
+    }
     default {
-        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116）"
+        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116）"
     }
 }
 

@@ -10,6 +10,10 @@ verify-last.log
 mutate-regression-last.log
 .tmp_*
 
+# 原子写入的临时/备份文件（正常不会入库；误放仓库时也不该提交）
+*.tmp
+*.bak
+
 # 临时提交信息文件
 _msg*.txt
 _commitmsg*.txt
@@ -22,3 +26,6 @@ _frames/
 .agents/
 _diag/
 .planning/
+
+# 编辑器/代理生成的本地配置，不属于仓库
+.kilo/

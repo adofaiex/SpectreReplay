@@ -356,7 +356,12 @@ internal sealed class VideoRenderJob : MonoBehaviour
                 var enc = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
                     preW, preH, fps,
                     (VideoEncoder.Quality)Settings.RenderEncoderMode, Settings.RenderQualityMode, preFlip,
-                    container);
+                    container,
+                    (VideoEncoder.VideoCodec)Settings.RenderVideoCodec,
+                    (VideoEncoder.RateControlMode)Settings.RenderRateControl,
+                    Settings.RenderCrf, Settings.RenderCqp,
+                    Settings.RenderBitrateMbps, Settings.RenderPreset,
+                    (VideoEncoder.HardwareBackend)Settings.RenderHardware);
                 enc.Begin();
                 if (tornDown)
                 {
@@ -501,7 +506,12 @@ internal sealed class VideoRenderJob : MonoBehaviour
             encoder = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
                 frames.Width, frames.Height, fps,
                 (VideoEncoder.Quality)Settings.RenderEncoderMode, Settings.RenderQualityMode, frames.NeedsRowFlip,
-                container);
+                container,
+                (VideoEncoder.VideoCodec)Settings.RenderVideoCodec,
+                (VideoEncoder.RateControlMode)Settings.RenderRateControl,
+                Settings.RenderCrf, Settings.RenderCqp,
+                Settings.RenderBitrateMbps, Settings.RenderPreset,
+                (VideoEncoder.HardwareBackend)Settings.RenderHardware);
             encoder.Begin();
             LogTiming("encoder-begin", setupSw.ElapsedMilliseconds + "ms (rebuilt)");
         }

@@ -105,9 +105,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/verify.ps1 -Ci    # CI
 | `-SkipDeploy` | **只跳过复制那一步**；sha256 一致性核对在守卫之外，照样会红 |
 | `-SkipAudits` | 跳过「只读审计」一节（只读 `SpectreReplay/`、`tools/`、`docs/`） |
 | `-Ci` | 跳过两项绑本机的检查：Steam 部署一致性、上游工作区干净 |
-| `-SkipBuild` | **死开关**（只出现在参数声明，没有实际使用） |
 
-顺序：脚本编码自检 → 主项目构建 → 离线套件 → 只读审计 → 部署一致性 → 上游工作区干净。**退出码 = 失败项数**。`verify-last.log` 每次重写（已 gitignore）。
+顺序：脚本编码自检（含 `tools/i18n`）→ 主项目构建（警告也判红）→ 离线套件 → 只读审计 → 本仓库工作区干净 → 部署一致性 → 上游工作区干净。**退出码 = 失败项数**。`verify-last.log` 每次重写（已 gitignore）。
 
 ### 4.2 变异
 
@@ -164,7 +163,7 @@ powershell -File tools/i18n/gen-locdata.ps1   # 从 source.json 重新生成 Loc
 
 - **新增检查必须同时加一条变异**证明它能红。
 - **变异要退回真实的 bug 形状**，不能只做 `true→false` 这种必然红的偷懒改法。
-- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**（已同步 verify.md / 两份 README / i18n README）；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**（新增回放按键 API 契约与 RainingKeys 推桥两组检查/变异，已同步 verify.md）。引用前先跑，或直接写「以实跑为准」。
+- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-16 实测：255 条 `✓`、502 键（14 语言）、313 个变异标签、6 个只读审计。** 引用前先跑，或直接写「以实跑为准」。
 - **判据锚点与变异模式从当前文件实读，不凭记忆写。** 闸门的 Check 先经 `SrcUtil.Clean` 剥注释再跑判据——锚点带 `//` 尾巴必失配；行首缩进/文本要逐字一致；源码重构后旧模式会命中 0 次（2026-11-15 实测两起：FF 行锚点带注释尾巴、U125 模式缩进过时）。
 
 ## 6. 架构
@@ -218,7 +217,7 @@ private static bool Hit_Prefix(...) { ... }
 **回放与注入**
 
 - 主路径是**托管输入层**：`ReplayPlayer.PumpInput` 把到时的键写进 `ManagedInput`/键状态，游戏以为玩家在按；`ManagedInput` 回答 `RDInput` 查询（`Patch_InputInjection.cs:34-64`）。
-- **OS 级 `SendInput` 是永久关闭的镜像**：`ManagedInput.DisableSendInput = true` 让 `Mirror` 恒假，所有消费者因此空转。别「顺手打开」——它与异步广播互斥，同开会把同一颗键捕两次算两遍（`ReplayPlayer.cs:368-370`）。
+- **OS 级 `SendInput` 是可选镜像，默认关闭**：`ManagedInput.Mirror => Settings.MirrorInputToOS && is_playing && Application.isFocused`（`ManagedInput.cs:58-59`）。它只给「只读 Unity Input 的第三方键显」用，不参与判定；与异步广播同开时由 `Patch_MirrorEchoSuppressor` 去回声，若抑制器未挂载则只警告一次并退回非镜像（`ReplayPlayer.cs:531-540`）。不要因为「默认关」就把它改成 `const false`。
 - **泵必须在游戏读输入之前**：挂在 `PlayerControl_Update`/`UpdateInput` 的 **Prefix**（`Patch_InputInjection.cs:16-30`）。挂 Postfix 就晚一帧。
 - **单帧上限**：事件 64 条、命中 256 条；超出留到下一帧，**没有追赶/重对齐**。删掉上限 = 卡帧雪崩。
 - **角度闸**：非有限角度时这一帧一条命中都不消费（`Patch_Playback.cs:29-31`）。
@@ -235,7 +234,7 @@ private static bool Hit_Prefix(...) { ... }
 - 键音 WAV：44 字节头 + PCM；**哈希只覆盖 PCM、跳过 44 字节头**（`WavLoader` 与 `KeybdAudioCodec` 共用这个契约，改一边等于作废两边缓存）。
 - **回放内键音覆盖**：`KeybdAudioCodec` 按回放里的按键实时合成键音；音量/偏移/静音三项可**按回放覆盖**（`Data/KeybdPrefs.cs`，落在 `KbdPrefs` 段）。每项各带 `Has*` 标志——**用标志位而不是哨兵值**表示「没覆盖」（`KeybdPrefs.cs:7` 的注释写了理由）；偏移是**替换**全局 `MicrophoneOffset`，不是相加；静音独立于音量值（静音时不看音量）。缺段 = 三项全跟随全局设置。回放里没有 `KbdAudio` 段时退回「同目录同名 `.wav`」的老路径。导出 wav 导的是**叠加覆盖值之后**的结果，不是原始录音。
 - **停源，不然上一份键盘音会一直播**：换回放/销毁 clip 时必须停掉 `musicSource`（`Patch_Playback.cs` 的 `WavLoader.musicSource` 登记项），否则旧音频继续出声，导出端 `AudioListener` 会把它原样混进成片——「导出有声、回放没声」这一类怪象多半出在这里。
-- ffmpeg：`mp4/mkv/mov` = H.264 + AAC；`webm` = VP9 + Opus 48k。NVENC 先探再用，失败回退 CPU。`-y` 截断残留要删/救；stdin 泵线程与 stderr 排空都不能省。
+- ffmpeg：`mp4/mkv/mov` = H.264/H.265（玩家选，`libx264`/`libx265`，NVENC 可用时 `h264_nvenc`/`hevc_nvenc`）+ AAC；`webm` = VP9 + Opus 48k。NVENC 先探再用（h264/h265 分别探），失败回退 CPU。码率模式支持 ABR/CRF/CQP/CBR；软件 preset 可选 `ultrafast..placebo`。`-y` 截断残留要删/救；stdin 泵线程与 stderr 排空都不能省。
 - 光标叠加默认关（opt-in）；预览相机只影响预览。
 - 时钟钉扎有四套机制（输出钉、变速钉、`RenderClock` 转译默认关、非缩放 delta detour），各自防不同漂移，**别合并**。
 
@@ -259,7 +258,7 @@ private static bool Hit_Prefix(...) { ... }
 ### 6.6 文案（i18n）管线
 
 ```
-tools/i18n/source.json     唯一事实源：[{key, zh, en}, …]，顺序即生成顺序（今天 417 键）
+tools/i18n/source.json     唯一事实源：[{key, zh, en}, …]，顺序即生成顺序（今天 502 键）
 tools/i18n/locales/*.json  12 个语言译文（zh-t ja ko es pt fr de pl cs ro ru vi）
 tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本）
 ```
@@ -373,7 +372,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 - `ManagedInput.Active` 只等于 `is_playing`。
 - `holdKeys` 单一来源；`Append` 必须用 `AsyncKeyCode`。
 - `Stop` 顺序：快照 → 翻标志 → 发松开；难度/`noFail`/`hitMarginLimit` 必须在所有校验之后接管，并在 Stop 与两条失败路径都还原。
-- OS 级 `SendInput` 保持关闭。
+- **OS 级 `SendInput` 默认关闭、可选开启**：`Settings.MirrorInputToOS` 只影响第三方键显，不参与判定；与异步广播同开时依赖 `Patch_MirrorEchoSuppressor` 去回声，抑制器缺失时必须退回并告警。
 
 ### 8.4 渲染 / 音频
 
@@ -423,7 +422,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 12. **`LocData.cs` 与 `source.json` 没有一致性检查**：手改生成物闸门不会红。
 13. **全量变异回归不在 CI**（E-F5 未修），要自己定期跑。
 14. **`.gitattributes` 强制 `text eol=lf`**，别提交 CRLF 差异。
-15. **文档口径普遍过期**（2026-10-28 实测）：`Loc.cs:10` 与 `tools/i18n/README.md:3` 写「325 键」，实际 **417**；`docs/verify.md` 写 111 条断言，实际 **153**；变异标签它写 153（`SUMMARY.md` 写 155），实际 **160**——别把「153 条断言」和「153 条变异」看混；`Settings.cs:8` 提到的 `SettingsUI` 类型**不存在**（绘制在 `Pages.Pages.Draw*`）；`SpectrePatch.cs:73-76` 的示例写 `MaxVersion = GameVersion.VerifiedBuild`，但 `GameVersion` 没有这个成员。引用任何数字前先实测。
+15. **文档口径曾经普遍过期**（2026-10-28 实测；2026-11-16 已对齐一次）：`Loc.cs` 与 `tools/i18n/README.md` 曾写「325 键」，实际 **502**；`docs/verify.md` 曾写 111 条断言，实际 **255**；变异标签曾写 153/155/269，实际 **313**——别把「断言数」和「变异数」看混。`Settings.cs:8` 提到的 `SettingsUI` 类型**不存在**（绘制在 `Pages.Pages.Draw*`）；`SpectrePatch.cs:73-76` 的示例写 `MaxVersion = GameVersion.VerifiedBuild`，但 `GameVersion` 没有这个成员。引用任何数字前先实测。
 16. `OnGui.cs` 的成员注释引用「类注释第 3/4 条规则」，但类注释已不在文件里——别去找不存在的规则原文。
 17. 用 `Measure-Object -Line` 数行会跳过空行，行号会漂；以 read 工具/编辑器的物理行号为准。
 18. 本仓库的工作区经常带着**未提交的改动**（本次写作期间 `Pages.cs` 就被本团队之外的人改过、dll 也被重新构建）。动工前后各看一眼 `git status`，别把别人的半成品算成自己的，也别顺手 revert。
@@ -442,32 +441,34 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 
 | 项 | 现状 | 风险 |
 |---|---|---|
-| D-F2 去特效内存残留 | 未修 | 去特效期间摘掉的事件仍被持有 |
-| A-F1 `string.GetHashCode` | 跨运行时不稳定 | 别拿它做持久化键 |
-| A-F2 `.psprp` 解压无上限 | 未修 | 损坏/恶意文件可能吃满内存 |
-| E-F2 审计把注释算进去 | 未修 | 计数偏多 |
+| D-F2 去特效内存残留 | 已加原始快照/还原 | Decode 前 `LevelData.Encode()` 存快照，关闭模组/功能时 `Decode` 原地还原；`SaveLevelAs` 与导出/上传路径仍需实机确认 |
+| A-F1 `string.GetHashCode` | 已修（双写迁移） | 新录制走 `StableHash`（FNV-1a）尾部可选段；旧字段保留供旧构建读取，播放侧优先新段 |
+| A-F2 `.psprp` 解压无上限 | 已修（64 MB） | `ReplayCompression.MaxDecompressed = 64 MB`，预分配受压缩比约束；异常文本仍写 512 MB（待修） |
+| E-F2 审计把注释算进去 | 部分未修 | 4 个审计仍可能把注释示例算进去，计数偏多 |
 | E-F5 变异回归不在 CI | 未修 | 断言腐烂无人发现 |
-| C-F4..C-F8 音频/ffmpeg | 部分未验 | 见 `docs/audit/C-video.md` 与源码注释 |
-| 版本门控是 fail-open | 文档（`SpectrePatch.cs:167-168`）声称核心补丁 pin 到已验证 build、游戏更新后 fail-closed，但**没有补丁真这么做**：全仓 `MaxVersion` 只用于 r149/r150 签名分叉；`VerifiedBuild` 只进启动日志和 `Verified` 属性 | 游戏升到 r151+ 时补丁照挂，可能按旧语义执行 |
+| C-F4 NVENC 探针管道死锁 | 已修 | 探测改为 `BeginOutputReadLine`/`BeginErrorReadLine` + 15 秒超时；C-F5..C-F8 仍需实机确认 |
+| 版本门控是 fail-open | 设计如此 | `SpectrePatchHub` 明确 fail-open：`VerifiedBuild` 只用于日志/属性，`MaxVersion` 只用于 r149/r150 签名分叉；挂载失败会 fail-closed，但「签名不变、语义变了」无法离线发现 |
 
 另外：`ui.patchfailed (N)` 是唯一**常驻**的「补丁没挂上」信号；只弹一次的通知会被玩家忽略。
 
 ## 12. 离线验不了什么
 
 - 画面是否「跟当初一模一样」、键音、光标位置、渲染观感：只能实机。
-- 实机路径：`tools/deploy.ps1` → 进游戏 → `Ctrl+F10` 开面板 → 进关卡录一局 → `F9` 手动存 → **重新载入该关卡**后回放（回放要重开那一关才真正开始）→ 渲染一段短片。
-- 热键：`Ctrl+F10` 面板；`F9` 手动保存；`F10` 放弃本局保存；`F11` 中止渲染（设置页可改）。
-- 已知需要实机确认的假设：15fps 下 `AudioRenderer` 溢出、`ScreenCapture` 回读帧对齐、`Microphone.Start` 采样率行为、NVENC 探针死锁可达性。
+- 实机路径：`tools/deploy.ps1` → 进游戏 → 按设置页热键（默认 `Settings.WindowButton`）开面板 → 进关卡录一局 → 手动保存 → **重新载入该关卡**后回放（回放要重开那一关才真正开始）→ 渲染一段短片。
+- 热键：面板、手动保存、放弃保存、中止渲染都在设置页可改；默认值见 `Settings.WindowButton` / `SaveButton` / `CancelSaveButton` / 渲染中止键。
+- 已知需要实机确认的假设：15fps 下 `AudioRenderer` 溢出、`ScreenCapture` 回读帧对齐、`Microphone.Start` 采样率行为、`ScreenCapture` 回读失败时的上一帧复制路径。
 
 ## 13. 提交前清单
 
 - [ ] `dotnet build SpectreReplay.slnx -c Release` 0 警告
 - [ ] `tools/verify.ps1` 退出码 0（或能说清跳过了什么）
 - [ ] 新断言配了变异，`tools/mutate.ps1 -Which …` 退出 0
-- [ ] 改了文案：生成器跑过、12 语言齐、`LocCheck` 绿
+- [ ] 改了文案：生成器跑过、14 语言齐、`LocCheck` 绿
 - [ ] 改了补丁：启动日志「挂上 x/y」满、`ui.patchfailed` 为 0
 - [ ] 改了容器：拿一个旧回放真读一次
 - [ ] 改了 `Settings`/`Configs.json` 形状：拿一份**旧的** `Configs.json` 加载一次（缺键要走默认，不能报错吞设置）
+- [ ] 改了配置/云写入：确认是「临时文件 + 原子替换」，不是直接截断目标文件
+- [ ] 改了 `OnToggle`/补丁装配：确认失败路径会回滚，关闭路径会恢复 UI/编辑器状态
 - [ ] 工作区只含本次改动（别把别人的半成品一起提交）
 - [ ] 提交信息写清「为什么」
 
@@ -476,7 +477,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 | 想知道 | 去哪 |
 |---|---|
 | 用户视角、装法、热键 | `README.md`（英）/ `README_zh.md`（中） |
-| 闸门逐条检查清单与设计理由 | `docs/verify.md`（**注意数字已过期**） |
+| 闸门逐条检查清单与设计理由 | `docs/verify.md`（数字以实跑为准） |
 | 全项目体检的发现与口径 | `docs/audit/README.md`、`SUMMARY.md`、`A~E` 五份 |
 | Spectre 移植历史（大部分已失效） | `docs/SPECTRE_COMPARISON.md`（顶部有失效警告，别当现状） |
 | 文案管线 | `tools/i18n/README.md` |

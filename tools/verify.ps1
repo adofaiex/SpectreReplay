@@ -12,7 +12,6 @@
     把两边绑在一起，红了就一定会被看见。
 #>
 param(
-    [switch]$SkipBuild,
     [switch]$SkipPreview,
     [switch]$SkipDeploy,
     [switch]$SkipAudits,
@@ -107,7 +106,12 @@ function RunAudits {
 # 报的是「hash literal was incomplete，line 124」——指不到真凶，看着像登记表写坏了。
 # 这里提前拦：缺 BOM 直接点名文件，并给出补 BOM 的一行命令。
 Step '脚本编码（UTF-8 BOM）' {
-    $scripts = @(Get-ChildItem -LiteralPath $PSScriptRoot -Filter *.ps1 -File)
+    # 包含 tools/i18n：gen-locdata.ps1 也在 PowerShell 5.1 下运行，缺 BOM 会 ParserError。
+    $scripts = @(
+        Get-ChildItem -LiteralPath $PSScriptRoot -Filter *.ps1 -File
+    ) + @(
+        Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot 'i18n') -Filter *.ps1 -File
+    )
     $noBom = @()
     foreach ($s in $scripts) {
         $fs = [IO.File]::OpenRead($s.FullName)
@@ -143,8 +147,16 @@ Step '主项目构建' {
         }
         Write-Host "  ✗ 主项目编译不过" -ForegroundColor Red
         $script:fail++
+    } elseif ($warns.Count -gt 0) {
+        # 警告也判红：基线现在是 0 警告。放过一次，下一次就会有人把
+        # CS0162/CS0219 这类「代码没生效」的真问题藏在噪音里。
+        $warns | Select-Object -Unique -First 8 | ForEach-Object {
+            Write-Host ('  ✗ ' + $_.Line.Trim()) -ForegroundColor Red
+        }
+        Write-Host "  ✗ 主项目有 $($warns.Count) 条警告（基线要求 0 警告）" -ForegroundColor Red
+        $script:fail++
     } else {
-        Write-Host ('  ✓ 0 错误' + $(if ($warns.Count -gt 0) { "，$($warns.Count) 警告" } else { '，0 警告' }))
+        Write-Host '  ✓ 0 错误，0 警告'
     }
 }
 
@@ -194,6 +206,19 @@ if (-not $SkipPreview) {
 
 if (-not $SkipAudits) {
     Step '只读审计（Harmony 形参 / 死代码）' { RunAudits }
+}
+
+Step '本仓库工作区干净' {
+    # 有未提交改动时跑不出可归因的结论：今天绿、明天红，分不清是代码还是
+    # 工作区里的半成品。CI 的 checkout 天然干净；本地这条会拦住「拿脏树当基线」。
+    $dirty = @(& git -C $root status --porcelain)
+    if ($dirty.Count -gt 0) {
+        Write-Host "  ✗ 工作区有未提交改动（$($dirty.Count) 项）" -ForegroundColor Red
+        $dirty | Select-Object -First 12 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor Red }
+        $script:fail++
+    } else {
+        Write-Host '  ✓ 工作区干净'
+    }
 }
 
 Step '部署一致性' {
@@ -256,7 +281,16 @@ Step 'Spectre 未被污染' {
         Write-Host '  · CI 模式跳过：检查的是本机那份上游工作区，CI 里不存在'
         return
     }
-    Push-Location 'D:\Projects\Spectre'
+    $upstream = $env:SPECTRE_UPSTREAM
+    if ([string]::IsNullOrWhiteSpace($upstream)) {
+        $upstream = 'D:\Projects\Spectre'
+    }
+    if (-not (Test-Path -LiteralPath $upstream)) {
+        Write-Host "  ✗ 上游工作区不存在：$upstream（设置 SPECTRE_UPSTREAM 或重新克隆）" -ForegroundColor Red
+        $script:fail++
+        return
+    }
+    Push-Location -LiteralPath $upstream
     # 只看**已跟踪**文件的改动（git status 的第一列非 ??）。
     #
     # 原先用 `status --porcelain` 全量判定，结果被未跟踪目录误伤：

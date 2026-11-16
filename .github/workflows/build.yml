@@ -17,18 +17,18 @@ concurrency:
 # 工作区布局**必须**是：
 #   <ws>/SpectreReplay   本仓库（checkout 的 path）
 #   <ws>/adofai-libs     游戏托管程序集（私有仓）
-#   <ws>/Spectre         上游 Spectre（port-diff-audit 要比对源码）
-# 理由：csproj 里 31 个 HintPath 全写的是 `..\..\adofai-libs\<dll>`，
-# 没有一条绝对路径。checkout 到子目录、依赖放在同级，本地布局与 CI 完全一致。
-# 两个环境变量是给 tools/ 下的审计脚本和 UiPreview 用的——它们有
+# 理由：Directory.Build.props 优先读 ADOFAI_LIBS，否则回退到仓库同级的
+# adofai-libs；本地布局与 CI 布局一致。
+# 环境变量是给 tools/ 下的审计脚本和 UiPreview 用的——它们有
 # 「环境变量 → 仓库同级目录 → 历史绝对路径」三级回退，CI 里走第一级。
 env:
   ADOFAI_LIBS: ${{ github.workspace }}\adofai-libs
-  SPECTRE_UPSTREAM: ${{ github.workspace }}\Spectre\Spectre
 
 jobs:
   build:
     runs-on: windows-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -59,31 +59,13 @@ jobs:
           git -C adofai-libs remote set-url origin \
             https://github.com/2228293026/adofai-libs.git
 
-      # 上游 Spectre 是公开仓，匿名可克隆。port-diff-audit 是真门禁：
-      # 找不到上游它会 exit 3，绝不静默跳过（否则"移植保真度"在 CI 里等于没跑）。
-      # 不取子模块：比对只用 Spectre/ 下的源码，SpectrePatch / QuartzUi 不参与。
-      #
-      # **钉到与本地工作区相同的 commit**（本地 D:\Projects\Spectre 就在这个 SHA）。
-      # 跟 master 走的话，上游任何一次重构都会让本仓的 CI 变红，而红的原因
-      # 与本次提交毫无关系——闸门一旦长期假红，真正的问题就被淹了
-      # （同 verify.ps1 -Ci 里那两条跳过的理由）。升级上游时这里和本地一起改。
-      - name: Clone upstream Spectre (port-diff reference)
-        shell: bash
-        env:
-          SPECTRE_REF: 1d84227a7bd378f9ee0b68552d20c83fcbbb03e8
-        run: |
-          git init Spectre
-          git -C Spectre remote add origin https://github.com/adofaiex/Spectre.git
-          git -C Spectre fetch --depth 1 origin "$SPECTRE_REF"
-          git -C Spectre checkout --detach FETCH_HEAD
-
       # SpectreReplay.slnx 需要 SDK 10（本地 10.0.402）。
       - uses: actions/setup-dotnet@v6
         with:
           dotnet-version: 10.0.x
 
       # 一个闸门跑完全部离线验证：主项目构建（netstandard2.1）+
-      # 离线预览套件（net10.0-windows）+ 7 个只读审计。
+      # 离线预览套件（net10.0-windows）+ 6 个只读审计。
       # -Ci 只跳过两项依赖本机安装的检查（Steam 部署一致性、上游工作区干净），
       # 其余照常全跑——这与「绿着的闸门其实有几项没跑」的忌讳一致。
       - name: Verify (offline gates)
@@ -163,6 +145,29 @@ jobs:
             Write-Host "[release] ✓ info.json Version = $version"
           }
 
+      # 版本一致性：info.json / repo.json / AssemblyInfo / CHANGELOG 必须同一个基础版本。
+      # 只校验 info.json 时，release 页会出现「dll 显示 0.3.2、repo 说 0.3.1」这种
+      # UMM 更新检查直接失效的错配。
+      - name: Check version consistency
+        shell: pwsh
+        run: |
+          $tag  = '${{ github.ref_name }}'
+          $base = (($tag -replace '^v', '') -split '-')[0]
+          $info = Get-Content -Raw SpectreReplay/SpectreReplay/bin/Release/info.json | ConvertFrom-Json
+          $repo = Get-Content -Raw repo.json | ConvertFrom-Json
+          $asm  = (Select-String -Path SpectreReplay/SpectreReplay/AssemblyInfo.cs -Pattern 'AssemblyInformationalVersion\("([^"]+)"\)').Matches[0].Groups[1].Value
+          $chg  = (Select-String -Path CHANGELOG.md -Pattern '^## \[([^\]]+)\]').Matches[0].Groups[1].Value
+          $bad = @()
+          if ($info.version -ne $base) { $bad += "info.json=$($info.version)" }
+          if ($repo.Releases[0].Version -ne $base) { $bad += "repo.json=$($repo.Releases[0].Version)" }
+          if ($asm -ne $base) { $bad += "AssemblyInfo=$asm" }
+          if ($chg -ne $base) { $bad += "CHANGELOG=$chg" }
+          if ($bad.Count -gt 0) {
+            Write-Error "版本不一致（tag 基础版本 $base）：$($bad -join '; ')"
+            exit 1
+          }
+          Write-Host "[release] ✓ 版本一致：$base"
+
       # mod 包：dll + info.json 平铺在 zip 根。loader 靠 info.json 发现模组，
       # 缺了它 DLL 根本不会被加载（README 的安装步骤同此口径）。
       - name: Package mod zip
@@ -177,13 +182,20 @@ jobs:
           Copy-Item $info.FullName stage/
           Compress-Archive -Path stage/* -DestinationPath "SpectreReplay-${{ github.ref_name }}.zip"
 
-      # 视频渲染需要 ffmpeg。与上游 Spectre 发布包同源（BtbN win64-gpl，
-      # 含 NVENC/x264），资产名保持 ffmpeg.exe 以便直接丢进 mod 目录。
+      # 视频渲染需要 ffmpeg。钉死 BtbN 的 autobuild 与 SHA256：
+      # latest 端点不可复现，且供应链上「今天能下、明天被换」是最难查的一类。
+      # 升级时改 URL + 校验和，并跑一次本地渲染冒烟。
       - name: Download ffmpeg
         shell: pwsh
         run: |
-          # BtbN 的 latest 端点偶发 504，加自动重试（10 次退避）。
-          curl.exe -L --fail --retry 10 --retry-delay 5 --retry-all-errors -o ffmpeg.zip https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-11-13-12-43/ffmpeg-N-128889-g88c46fce27-win64-gpl.zip'
+          $expected = '35FA1C17EEEAD1F572072B134458788CAF71C4A7FBCE9E0BB2F3C41032959531'
+          curl.exe -L --fail --retry 10 --retry-delay 5 --retry-all-errors -o ffmpeg.zip $url
+          $actual = (Get-FileHash ffmpeg.zip -Algorithm SHA256).Hash
+          if ($actual -ne $expected) {
+            Write-Error "ffmpeg.zip SHA256 不匹配：expected=$expected actual=$actual"
+            exit 1
+          }
           Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg_extract
           Get-ChildItem -Path ffmpeg_extract -Recurse -Filter ffmpeg.exe |
             Select-Object -First 1 | Move-Item -Destination .

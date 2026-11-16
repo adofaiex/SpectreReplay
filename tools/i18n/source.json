@@ -679,16 +679,76 @@
   "zh": "未找到 ffmpeg.exe，请放到模组目录或游戏根目录，或加入系统 PATH",
   "en": "ffmpeg.exe not found; place it in the mod folder or game root, or add it to PATH"
  },
- {
-  "key": "render.codec",
-  "zh": "编码器",
-  "en": "Encoder"
- },
- {
-  "key": "render.codec.current",
-  "zh": "实际编码器",
-  "en": "Actual encoder"
- },
+  {
+   "key": "render.codec",
+   "zh": "编码器",
+   "en": "Encoder"
+  },
+  {
+   "key": "render.video_codec",
+   "zh": "视频编码",
+   "en": "Video codec"
+  },
+  {
+   "key": "render.rate_control",
+   "zh": "码率控制",
+   "en": "Rate control"
+  },
+  {
+   "key": "render.bitrate",
+   "zh": "目标码率",
+   "en": "Target bitrate"
+  },
+  {
+   "key": "render.crf",
+   "zh": "CRF 质量",
+   "en": "CRF quality"
+  },
+  {
+   "key": "render.cqp",
+   "zh": "CQP 量化",
+   "en": "CQP quantizer"
+  },
+  {
+   "key": "render.preset",
+   "zh": "编码预设",
+   "en": "Encoder preset"
+  },
+  {
+   "key": "render.video_codec.tip",
+   "zh": "选择 H.264 或 H.265。H.264 兼容性最好；H.265 体积更小，但部分旧播放器/剪辑软件不支持。",
+   "en": "Choose H.264 or H.265. H.264 is most compatible; H.265 is smaller but some older players/editors do not support it."
+  },
+  {
+   "key": "render.rate_control.tip",
+   "zh": "ABR 按目标码率；CRF 按质量；CQP 按量化；CBR 恒定码率。",
+   "en": "ABR = target bitrate; CRF = quality; CQP = quantizer; CBR = constant bitrate."
+  },
+  {
+   "key": "render.bitrate.tip",
+   "zh": "0 表示按分辨率、帧率和画质自动估算；大于 0 时覆盖自动值。",
+   "en": "0 = auto by resolution/fps/quality; >0 overrides the automatic value."
+  },
+  {
+   "key": "render.crf.tip",
+   "zh": "CRF 越小质量越高、体积越大；x264/x265 常用 16–28。",
+   "en": "Lower CRF = better quality/larger file; 16–28 is typical for x264/x265."
+  },
+  {
+   "key": "render.cqp.tip",
+   "zh": "CQP 越小质量越高、体积越大；范围 0–51。",
+   "en": "Lower CQP = better quality/larger file; range 0–51."
+  },
+  {
+   "key": "render.preset.tip",
+   "zh": "软件编码预设；auto 按画质档映射。NVENC/VP9 不使用。",
+   "en": "Software encoder preset; auto follows the quality tier. Not used by NVENC/VP9."
+  },
+  {
+   "key": "render.codec.current",
+   "zh": "实际编码器",
+   "en": "Actual encoder"
+  },
  {
   "key": "render.quality",
   "zh": "画质",

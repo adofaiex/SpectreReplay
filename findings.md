@@ -21,46 +21,38 @@
 ## Verification
 - tools/verify.ps1 -Ci -SkipDeploy：全部通过。
 - 主项目 Release：0 错误，0 警告。
-- 离线套件：164 条断言，0 失败。
-- 只读审计：全部通过。
+- 离线套件：255 条断言，0 失败（2026-11-16 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
+- 只读审计：6 项全部通过。
 - MUT-TL1 至 MUT-TL7：全部被检出。
 
-## UGUI Settings Migration Findings
-- The visible settings surface is still UMM `OnGUI`; `OnGui.OnGUI` draws tabs and calls five IMGUI page methods.
-- There are already working UGUI primitives under `Ui/Timeline`: overlay Canvas, GraphicRaycaster, `Text`, `InputField`, pointer hit tests, drag/resize, rounded sprites, and pooled UI meshes.
-- The existing page methods combine visual rendering and business actions. A UGUI migration should reuse those business actions instead of duplicating list/cloud/render state.
-- Preserve `OnShow`, `OnHide`, `OnSave`, `Pages.FlushPending`, `Settings.CommitSafe`, delayed slider commits, hotkey capture, native file dialogs, cloud confirmations, and render cancellation.
-- `D:\Projects\StutterFix\SettingsWindow.cs` still uses IMGUI `OnGUI`; reference its `UiDraw` canvas/slot/batch drawing patterns rather than copying the entire settings window.
+## UGUI Settings Migration（已撤销）
+- 结论：UGUI 设置窗口原型（`Pages.Ugui.cs` / `SettingsWindowUgui.cs`）可以编译，
+  但会把五页业务状态、原生对话框、云确认和渲染取消等逻辑全部重新接线，回归面过大。
+- 现行方案：UMM/IMGUI 宿主保留，`Ui/ModernSettingsWindow.cs` 提供独立 IMGUI 窗口；
+  时间轴仍是独立的 UGUI 覆盖层。
+- 已删除原型文件与 `build-errors.log` / `build-current.log` / `verify-current*.log` 等过期日志。
+- `Pages` 仍是 `internal static partial class`，为后续按页拆分预留。
+
+## Hardening（2026-11-16）
+已修：
+- `Main.OnToggle(true)` 的 catch 现在调用 `Teardown()`；关闭路径统一走 `Teardown()`，
+  卸载补丁/线程、停止回放/录制/渲染，并还原去特效谱面。
+- `ConfigManager.SaveConfigs` 与 `MigrateLegacyConfig` 改走 `AtomicFile`（tmp + `File.Replace` + `.bak`）。
+- `CloudReplay` 本地恢复改走 `AtomicFile.WriteAllBytes`。
+- `Settings.check` 对热键做 `Enum.IsDefined`，非法值回退默认并告警。
+- `verify.ps1` 警告判红、检查本仓库工作区、BOM 覆盖 `tools/i18n`、移除 `-SkipBuild`、支持 `SPECTRE_UPSTREAM`。
+- `Directory.Build.props` 统一 `ADOFAI_LIBS` / 同级 `adofai-libs`。
+- CI 删除无效的 Spectre 克隆，ffmpeg 固定版本 + SHA256，增加版本一致性检查。
+- `EffectRemover` 在 Decode 前保存原始 JSON，关闭模组/功能时还原。
+- `ReplayCompression` 的 64 MB 诊断文本/注释已修正。
+
+仍待实机确认：
+- `SaveLevelAs` 与 `scnEditor.GetExportLevelFiles` 导出路径在去特效开启时仍可能写出去特效版；
+  当前靠 `LevelDataStripped` + 关闭还原降低风险，完整覆盖需要实机验证。
+- `EffectRemover` 还原依赖 `GDMiniJSON.Json.Deserialize(LevelData.Encode())`，需在真实编辑器里跑一次
+  「开启 → 进关 → 关闭 → 保存 → 重进」确认瞬时状态无副作用。
 
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md
 - D:/Projects/SpectreReplay/docs/verify.md
 - D:/Program Files (x86)/Steam/steamapps/common/A Dance of Fire and Ice/UMMMods/StutterFix
-# Phase 6 — 全设置界面 UGUI
-
-## Current architecture
-
-- UMM callbacks remain in `Ui/OnGui.cs`.
-- `Pages.cs` is a single static class containing all page state, settings bindings, and actions.
-- Existing IMGUI helpers in `OnGui.cs` are presentation-only, but page actions are interleaved with IMGUI drawing.
-- `Settings` and `ConfigManager` remain the only persistence path. PlayerPrefs is forbidden.
-- Existing timeline UGUI proves the project can host `ScreenSpaceOverlay` canvases and runtime-created `UnityEngine.UI` controls.
-
-## Migration decision
-
-- Change `Pages` to `internal static partial class Pages`.
-- Add `Pages.Ugui.cs` in the same class so existing private fields/actions remain the single source of business state.
-- Add a persistent `SettingsWindowUgui` MonoBehaviour and a reusable `SettingsUiKit`.
-- `OnGui.OnGUI` becomes a bridge that ensures the UGUI window is shown; it must not emit visible IMGUI widgets.
-- Preserve `OnShow`, `OnHide`, `OnSave`, `FlushConfig`, and close/save semantics.
-
-## Runtime requirements
-
-- Canvas: `ScreenSpaceOverlay`, high sorting order, `CanvasScaler` 1920x1080.
-- Full-screen hit-block image prevents interaction with the game behind the window.
-- Canvas hiding must use `canvas.enabled = false`, not deactivation.
-- Ensure one `EventSystem` and `StandaloneInputModule`.
-- Font atlas warm-up happens before first user-visible frame.
-- Scroll views require `RectMask2D`, transparent viewport graphic, and ScrollRect.
-- Slider edits update memory while dragging; release commits through `Pages.Commit()`.
-- Text fields commit on Enter, blur, panel close; Esc cancels.

@@ -22,9 +22,43 @@ internal static class EffectRemover
 {
     internal static void OnLevelDataDecode(LevelData levelData)
     {
+        // 恢复过程中 Decode 会再次走到这个 Postfix；必须跳过 Remove，
+        // 否则刚还原的原始数据会被同一套规则再剥一遍。
+        if (Restoring)
+        {
+            Restoring = false;
+            LevelDataStripped = false;
+            return;
+        }
+
         // 每次 Decode 都是全新的内存副本：先把「这份谱面被我们改写过」清掉。
         // 关掉去特效之后重新进关会走到这里，标记归零，保存才重新放行。
         LevelDataStripped = false;
+
+        if (!Enabled || levelData == null)
+        {
+            OriginalLevelDataJson = null;
+            LastLevelData = null;
+            return;
+        }
+
+        // **先留原始快照，再动数据。** 快照失败时宁可不改写：没有原始副本的
+        // 去特效就是不可回滚的破坏，玩家一关一关试过去时根本发现不了。
+        try
+        {
+            string json = levelData.Encode();
+            if (string.IsNullOrEmpty(json)) throw new InvalidOperationException("Encode returned empty");
+            OriginalLevelDataJson = json;
+            LastLevelData = levelData;
+        }
+        catch (Exception ex)
+        {
+            OriginalLevelDataJson = null;
+            LastLevelData = null;
+            UnityEngine.Debug.LogWarning("[SpectreReplay] 去特效原始快照失败，本次不改写谱面：" + ex.Message);
+            return;
+        }
+
         Remove(levelData);
     }
 
@@ -64,6 +98,59 @@ internal static class EffectRemover
     /// <para>只在主线程读写（Decode 与保存都在主线程），不需要同步。</para>
     /// </summary>
     internal static bool LevelDataStripped;
+
+    /// <summary>去特效改写前的原始谱面 JSON。只在主线程读写。</summary>
+    private static string OriginalLevelDataJson;
+
+    /// <summary>快照对应的 LevelData 实例。关闭模组/功能时用它原地还原。</summary>
+    private static LevelData LastLevelData;
+
+    /// <summary>正在还原，Decode 的 Postfix 要跳过 Remove。</summary>
+    private static bool Restoring;
+
+    /// <summary>
+    /// 把最近一次被去特效改写的内存谱面还原成原始数据。
+    /// 关闭模组或关闭功能时调用；没有快照时是 no-op。
+    /// 还原失败时保持 LevelDataStripped，让保存继续被拦住。
+    /// </summary>
+    internal static void RestoreOriginalLevelData()
+    {
+        if (LastLevelData == null || string.IsNullOrEmpty(OriginalLevelDataJson))
+        {
+            LevelDataStripped = false;
+            return;
+        }
+
+        LevelData data = LastLevelData;
+        string json = OriginalLevelDataJson;
+        bool restored = false;
+        Restoring = true;
+        try
+        {
+            // LevelData.Encode 用 System.Text.Json 序列化，Decode 接受
+            // GDMiniJSON 解析出的 Dictionary<string, object>（游戏自己的口径）。
+            if (!(GDMiniJSON.Json.Deserialize(json) is Dictionary<string, object> dict))
+                throw new InvalidOperationException("original level data JSON parse failed");
+            data.Decode(dict, out _);
+            restored = true;
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogWarning("[SpectreReplay] 去特效原始谱面还原失败：" + ex.Message);
+        }
+        finally
+        {
+            Restoring = false;
+        }
+
+        if (restored)
+        {
+            OriginalLevelDataJson = null;
+            LastLevelData = null;
+            LevelDataStripped = false;
+        }
+        RefreshEditorSaveButtons();
+    }
 
     /// <summary>编辑器里还能不能保存。
     /// 去特效开着时：只有显式允许覆盖（EnableSave）才放行——玩家在编辑器里试听后

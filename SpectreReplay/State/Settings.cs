@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
 using UnityEngine;
@@ -5,7 +6,7 @@ using UnityEngine;
 namespace SpectreReplay;
 
 // 模组设置（纯数据）：全部持久化字段的唯一事实源 + 启动归一化（check）+ 键位重映射表。
-// 界面绘制在 SettingsUI（经 using static 引用本类字段）；落盘由 ConfigManager 负责。
+// 界面绘制在 Pages（经 using static 引用本类字段）；落盘由 ConfigManager 负责。
 public static class Settings
 {
     // 回放系统总开关：false = 卸载录制/回放/保存/录像的全部补丁（生命周期清理补丁除外）
@@ -189,8 +190,25 @@ public static class Settings
     public static int RenderWidth = 1920;
     public static int RenderHeight = 1080;
     public static int RenderFps = 60;
-    public static int RenderEncoderMode = 0;   // 0 自动 1 最快 2 质量 3 纯 CPU
-    public static int RenderQualityMode = 1;   // 0 低 1 标准 2 高 3 极致
+    public static int RenderEncoderMode = 0;   // 速度/画质：0 自动 1 最快 2 质量
+    public static int RenderQualityMode = 1;   // 画质档：0 低 1 标准 2 高 3 极致
+    // 硬件后端：0 自动 1 NVENC 2 QSV 3 AMF 4 强制 CPU。
+    // 与 RenderEncoderMode 分离：前者只决定速度/画质，后者只决定后端。
+    public static int RenderHardware = 0;
+    // 视频编码：0 H.264（默认，保持旧成片兼容）1 H.265。WebM 容器强制 VP9，
+    // 这个值只在 mp4/mkv/mov 生效。
+    public static int RenderVideoCodec = 0;
+    // 码率控制：0 ABR（目标码率）1 CRF（质量）2 CQP（量化）3 CBR（恒定码率）。
+    // CRF/CQP 的数值域与 x264/x265 一致；WebM 的 VP9 只支持 ABR/CRF，CQP/CBR 会
+    // 自动退回 ABR（见 VideoEncoder.EncoderArguments）。
+    public static int RenderRateControl = 0;
+    public static int RenderCrf = 20;
+    public static int RenderCqp = 23;
+    // 目标码率（Mbps）。0 = 按分辨率/帧率/画质档自动估算；>0 = 玩家显式覆盖。
+    public static int RenderBitrateMbps = 0;
+    // 软件编码预设：0 = 按画质档自动；1..10 = ultrafast..placebo。
+    // NVENC/VP9 不使用这个值（它们有自己的 preset 映射）。
+    public static int RenderPreset = 0;
     public static int RenderOutputFormat = 0;  // 输出容器：0 mp4 1 mkv 2 webm 3 mov（见 VideoEncoder.OutContainer）
     public static int ConvertTarget = 0;       // 转换目标容器：0 mp4 1 mkv 2 webm 3 mov
     public static float RenderTailSeconds = 3f;
@@ -318,6 +336,23 @@ public static class Settings
         // 提示条停留时长：手改配置文件可能写进 0 或 999。夹到有意义区间——
         // 0 秒等于「弹出来看不见」，999 秒则永不消失，两种都像模组坏了。
         NotificationSeconds = Mathf.Clamp(NotificationSeconds, 1f, 10f);
+        // 热键：手改配置可能写进任意整数。直接 (KeyCode)int 会得到一个未定义键，
+        // 表现为「按了没反应」且日志里没有线索。逐个校验，非法值回退默认并告警。
+        // 面板键不允许 None：None 会让玩家再也打不开设置页。
+        WindowButton = NormalizeHotkey(WindowButton, 277, "WindowButton", disallowNone: true);
+        SaveButton = NormalizeHotkey(SaveButton, 290, "SaveButton", disallowNone: false);
+        CancelSaveButton = NormalizeHotkey(CancelSaveButton, 291, "CancelSaveButton", disallowNone: false);
+        RenderStopKey = NormalizeHotkey(RenderStopKey, 292, "RenderStopKey", disallowNone: false);
+        // 编码参数：手改配置可能写进越界值。x264/x265 的 CRF/CQP 域是 0..51，
+        // 码率上限按 160 Mbps 收（4K 高帧率也够用），预设只接受已知的 10 档。
+        RenderVideoCodec = Mathf.Clamp(RenderVideoCodec, 0, 1);
+        RenderEncoderMode = Mathf.Clamp(RenderEncoderMode, 0, 2);
+        RenderHardware = Mathf.Clamp(RenderHardware, 0, 4);
+        RenderRateControl = Mathf.Clamp(RenderRateControl, 0, 3);
+        RenderCrf = Mathf.Clamp(RenderCrf, 0, 51);
+        RenderCqp = Mathf.Clamp(RenderCqp, 0, 51);
+        RenderBitrateMbps = Mathf.Clamp(RenderBitrateMbps, 0, 160);
+        RenderPreset = Mathf.Clamp(RenderPreset, 0, 10);
         checklang();
         BuildKeyCodeConvertTable();
         // 这里不能有 `== 0xFFFF → num` 的兜底：BuildKeyCodeConvertTable 已保证末态
@@ -325,6 +360,17 @@ public static class Settings
         // 整个盖成恒等映射。
         SpectreState.save_button = (KeyCode)SaveButton;
         SpectreState.cancel_save_button = (KeyCode)CancelSaveButton;
+    }
+
+    /// <summary>热键归一化：必须是已定义的 KeyCode；非法时回退默认并留日志。</summary>
+    private static int NormalizeHotkey(int value, int fallback, string name, bool disallowNone)
+    {
+        bool defined = Enum.IsDefined(typeof(KeyCode), value);
+        if (defined && (!disallowNone || value != 0))
+            return value;
+        Debug.LogWarning("[SpectreReplay] 配置热键 " + name + " 非法（" + value
+            + "），已回退默认值 " + fallback);
+        return fallback;
     }
 
     /// <summary>把当前设置立即落盘并刷新补丁开关（通用提交入口）。</summary>

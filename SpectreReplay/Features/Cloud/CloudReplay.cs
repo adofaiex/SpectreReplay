@@ -671,7 +671,7 @@ namespace SpectreReplay.Features.Cloud
             {
                 return false;
             }
-            File.WriteAllBytes(localPath, data ?? new byte[0]);
+            AtomicFile.WriteAllBytes(localPath, data ?? new byte[0]);
             return true;
         }
 
@@ -844,7 +844,7 @@ namespace SpectreReplay.Features.Cloud
 
                     try
                     {
-                        File.WriteAllBytes(localPath, data ?? new byte[0]);
+                        AtomicFile.WriteAllBytes(localPath, data ?? new byte[0]);
                         r.Restored++;
                     }
                     catch (Exception ex)
@@ -1096,7 +1096,7 @@ namespace SpectreReplay.Features.Cloud
 
             try
             {
-                File.WriteAllBytes(localPath, data);
+                AtomicFile.WriteAllBytes(localPath, data);
             }
             catch (Exception ex)
             {
@@ -1336,7 +1336,7 @@ namespace SpectreReplay.Features.Cloud
 
                 string dir = Path.GetDirectoryName(localPath);
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
-                File.WriteAllBytes(localPath, data);
+                AtomicFile.WriteAllBytes(localPath, data);
 
                 // 本地这份现在与云端逐字节一致：记下来，免得紧接着的一次写盘
                 // 把同一份内容再往云端重复写一遍。

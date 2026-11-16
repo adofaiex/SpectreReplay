@@ -52,27 +52,27 @@
        游戏自带程序集绝不能被拷贝覆盖 -->
   <ItemGroup>
     <Reference Include="mscorlib">
-      <HintPath>..\..\adofai-libs\mscorlib.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\mscorlib.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="System">
-      <HintPath>..\..\adofai-libs\System.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\System.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Core">
-      <HintPath>..\..\adofai-libs\System.Core.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\System.Core.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Numerics">
-      <HintPath>..\..\adofai-libs\System.Numerics.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\System.Numerics.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Numerics.Vectors">
-      <HintPath>..\..\adofai-libs\System.Numerics.Vectors.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\System.Numerics.Vectors.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="System.Drawing">
-      <HintPath>..\..\adofai-libs\System.Drawing.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\System.Drawing.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <!-- BrotliStream 在 netstandard.dll 的 facade 里只到 GZipStream 为止，编译期需要
@@ -80,103 +80,103 @@
          114688 B），已核实里面 BrotliStream 是 TypeDef 而非 TypeRef —— 也就是说
          运行时确实有实现，不是空转发。Private=false 保证不拷贝进输出目录。 -->
     <Reference Include="System.IO.Compression">
-      <HintPath>..\..\adofai-libs\System.IO.Compression.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\System.IO.Compression.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="netstandard">
-      <HintPath>..\..\adofai-libs\netstandard.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\netstandard.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="0Harmony">
-      <HintPath>..\..\adofai-libs\0Harmony.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\0Harmony.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="DOTween">
-      <HintPath>..\..\adofai-libs\DOTween.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\DOTween.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Assembly-CSharp">
-      <HintPath>..\..\adofai-libs\Assembly-CSharp.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\Assembly-CSharp.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Assembly-CSharp-firstpass">
-      <HintPath>..\..\adofai-libs\Assembly-CSharp-firstpass.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\Assembly-CSharp-firstpass.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Newtonsoft.Json">
-      <HintPath>..\..\adofai-libs\Newtonsoft.Json.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\Newtonsoft.Json.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine">
-      <HintPath>..\..\adofai-libs\UnityEngine.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.AudioModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.AudioModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.AudioModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.CoreModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.CoreModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.AssetBundleModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.AssetBundleModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.AssetBundleModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.ImageConversionModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.ImageConversionModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.ImageConversionModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.VideoModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.VideoModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.VideoModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.IMGUIModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.IMGUIModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.IMGUIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.InputLegacyModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.InputLegacyModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.InputLegacyModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.UI">
-      <HintPath>..\..\adofai-libs\UnityEngine.UI.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.UI.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.UIModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.UIModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.UIModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.ParticleSystemModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.ParticleSystemModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.ParticleSystemModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.ScreenCaptureModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.ScreenCaptureModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.ScreenCaptureModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityEngine.TextRenderingModule">
-      <HintPath>..\..\adofai-libs\UnityEngine.TextRenderingModule.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityEngine.TextRenderingModule.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="RDTools">
-      <HintPath>..\..\adofai-libs\RDTools.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\RDTools.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="SkyHook.Unity">
-      <HintPath>..\..\adofai-libs\SkyHook.Unity.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\SkyHook.Unity.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityFileDialog">
-      <HintPath>..\..\adofai-libs\UnityFileDialog.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityFileDialog.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="Unity.TextMeshPro">
-      <HintPath>..\..\adofai-libs\Unity.TextMeshPro.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\Unity.TextMeshPro.dll</HintPath>
       <Private>false</Private>
     </Reference>
     <Reference Include="UnityModManager">
-      <HintPath>..\..\adofai-libs\UnityModManager.dll</HintPath>
+      <HintPath>$(AdofaiLibsRoot)\UnityModManager.dll</HintPath>
       <Private>false</Private>
     </Reference>
   </ItemGroup>

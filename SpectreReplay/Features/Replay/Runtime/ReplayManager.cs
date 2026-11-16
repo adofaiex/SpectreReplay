@@ -608,7 +608,7 @@ internal static class ReplayManager
             for (int i = 2; File.Exists(target) && i < 1000; i++)
                 target = Path.Combine(outDir, baseName + "_" + i + ".wav");
 
-            File.WriteAllBytes(target, wav);
+            AtomicFile.WriteAllBytes(target, wav);
             savedPath = target;
             return true;
         }
