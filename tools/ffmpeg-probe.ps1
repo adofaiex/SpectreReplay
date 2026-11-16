@@ -26,7 +26,7 @@ function Get-RowFilter([bool]$flipRows) {
     $color = ',scale=out_color_matrix=bt709,format=yuv420p'
     return $(if ($flipRows) { 'vflip,' } else { '' }) + $pad + $color
 }
-function Get-EncoderArgs([string]$codec, [int]$fps, [string]$quality, [int]$tier, [bool]$nvenc) {
+function Get-EncoderArgs([string]$codec, [int]$fps, [string]$quality, [int]$tier, [bool]$nvenc, [string]$rc = 'Abr') {
     $gop = [Math]::Max(1, $fps * 2)
     $megapixels = 1920 * 1080 / 1000000.0
     $scale = @{0=0.5;1=1.0;2=1.6;3=2.4}[$tier]
@@ -47,6 +47,30 @@ function Get-EncoderArgs([string]$codec, [int]$fps, [string]$quality, [int]$tier
             $tune = $(if ($quality -eq 'Fastest') { 'll' } else { 'hq' })
             $cq = @{0=23;2=18;3=16}[$tier]; if (-not $cq) { $cq = 20 }
             return "-c:v h264_nvenc -preset $nvPreset -tune $tune -rc vbr -cq $cq -b:v ${target}M -maxrate ${ceiling}M -bufsize ${bucket}M -g $gop"
+        }
+        'svt' {
+            $m = @{ Fastest = '10'; Sharpest = '4' }
+            $preset = $(if ($m.ContainsKey($quality)) { $m[$quality] } else { '8' })
+            $enc = "-c:v libsvtav1 -preset $preset"
+            switch ($rc) {
+                'Crf' { $enc += ' -crf 30' }
+                'Cqp' { $enc += ' -crf 23' }
+                'Cbr' { $enc += " -b:v ${target}M -bufsize ${bucket}M" }
+                default { $enc += " -b:v ${target}M" }
+            }
+            return "$enc -g $gop"
+        }
+        'aom' {
+            $m = @{ Fastest = '8'; Sharpest = '2' }
+            $cpuUsed = $(if ($m.ContainsKey($quality)) { $m[$quality] } else { '4' })
+            $enc = "-c:v libaom-av1 -cpu-used $cpuUsed -row-mt 1"
+            switch ($rc) {
+                'Crf' { $enc += ' -crf 30 -b:v 0' }
+                'Cqp' { $enc += ' -crf 23 -b:v 0' }
+                'Cbr' { $enc += " -b:v ${target}M -maxrate ${target}M -bufsize ${bucket}M" }
+                default { $enc += " -b:v ${target}M -maxrate ${ceiling}M -bufsize ${bucket}M" }
+            }
+            return "$enc -g $gop"
         }
         default {
             $m3 = @{ Fastest = 'ultrafast'; Sharpest = 'fast' }
@@ -153,6 +177,47 @@ foreach ($c in $containers) {
     if (-not $ok) { $fail++ }
     Write-Output ("  [{0}] {1}  mid={2}KB final={3}KB  dur={4}  video={5} audio={6}" -f `
         $(if ($ok) { 'OK  ' } else { 'FAIL' }), $c.name, [int]($midSize/1KB), [int]((Get-Item $final).Length/1KB), $dur, $hasVideo, $hasAudio)
+}
+
+# ── AV1 矩阵：svt/aom × ABR/CRF/CQP/CBR × mp4/mkv ──────────────────
+# 这一组专门抓「参数形状非法」：svt 不接受 -maxrate、aom 的 CRF 需要 -b:v 0、
+# MOV 不能装 AV1（所以只测 mp4/mkv）。
+$av1Containers = @(
+    @{ name='mp4'; ext='.mp4' },
+    @{ name='mkv'; ext='.mkv' }
+)
+foreach ($codec in @('svt', 'aom')) {
+    foreach ($rc in @('Abr', 'Crf', 'Cqp', 'Cbr')) {
+        foreach ($c in $av1Containers) {
+            $tag = "av1_${codec}_${rc}_$($c.name)"
+            $mid = Join-Path $work ($tag + '_mid.mp4')
+            $final = Join-Path $work ($tag + $c.ext)
+            $enc = Get-EncoderArgs $codec $FPS 'Balanced' 1 $false $rc
+            $encArgs = "-y -f rawvideo -pixel_format rgba -video_size ${W}x${H} -framerate $FPS -i `"$framesCat`" -an -vf `"$vf`" $enc -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 `"$mid`""
+            $p = Start-Process -FilePath $ff -ArgumentList $encArgs -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e1.txt')
+            if ($p.ExitCode -ne 0) {
+                Write-Output ("  [FAIL] {0} encode exit={1}" -f $tag, $p.ExitCode)
+                Get-Content (Join-Path $work 'e1.txt') -Tail 4 | ForEach-Object { "      $_" }
+                $fail++; continue
+            }
+            $audio = '-c:a aac -b:a 320k'
+            $muxArgs = "-y -i `"$mid`" -i `"$wav`" -map 0:v:0 -map 1:a:0 -c:v copy $audio -ac 2 `"$final`""
+            $p2 = Start-Process -FilePath $ff -ArgumentList $muxArgs -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e2.txt')
+            if ($p2.ExitCode -ne 0) {
+                Write-Output ("  [FAIL] {0} mux exit={1}" -f $tag, $p2.ExitCode)
+                Get-Content (Join-Path $work 'e2.txt') -Tail 4 | ForEach-Object { "      $_" }
+                $fail++; continue
+            }
+            $probeFile = Join-Path $work 'probe.txt'
+            Start-Process -FilePath $ff -ArgumentList "-hide_banner -i `"$final`"" -Wait -NoNewWindow `
+                -RedirectStandardError $probeFile -RedirectStandardOutput (Join-Path $work 'probe_out.txt') | Out-Null
+            $probe = [IO.File]::ReadAllText($probeFile)
+            $ok = ($probe -match 'Audio:') -and ($probe -match 'Video:')
+            if (-not $ok) { $fail++ }
+            Write-Output ("  [{0}] {1}  video={2} audio={3}" -f `
+                $(if ($ok) { 'OK  ' } else { 'FAIL' }), $tag, ($probe -match 'Video:'), ($probe -match 'Audio:'))
+        }
+    }
 }
 
 Write-Output ""

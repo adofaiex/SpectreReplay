@@ -1794,6 +1794,8 @@ namespace SpectreReplay.Pages
 
             string stage = string.IsNullOrEmpty(s.Stage) ? Loc.T("render.active") : s.Stage;
             GUILayout.Label(stage, Gui.LabelStyle);
+            if (!string.IsNullOrEmpty(s.Detail))
+                GUILayout.Label(s.Detail, Gui.NoteStyle);
             if (s.FramesTotal > 0)
             {
                 Gui.ProgressBar(s.Progress,
@@ -1869,8 +1871,12 @@ namespace SpectreReplay.Pages
                     Loc.T("render.codec.auto"), Loc.T("render.codec.fastest"),
                     Loc.T("render.codec.quality"),
                 }, RenderEncoderMode, i => { RenderEncoderMode = i; Commit(); });
-                OnGui.RowDropdown("render.video_codec", new[] { "H264", "H265" },
+                OnGui.RowDropdown("render.video_codec", new[] { "H264", "H265", "AV1" },
                     RenderVideoCodec, i => { RenderVideoCodec = i; Commit(); });
+                OnGui.RowDropdown("render.hardware", new[]
+                {
+                    Loc.T("render.codec.auto"), "NVENC", "QSV", "AMF", Loc.T("render.codec.cpu"),
+                }, RenderHardware, i => { RenderHardware = i; Commit(); });
                 OnGui.RowDropdown("render.rate_control", new[] { "ABR", "CRF", "CQP", "CBR" },
                     RenderRateControl, i => { RenderRateControl = i; Commit(); });
                 if (RenderRateControl == 1)
@@ -1931,9 +1937,23 @@ namespace SpectreReplay.Pages
                 var container = (VideoEncoder.OutContainer)Mathf.Clamp(RenderOutputFormat, 0, 3);
                 string name = VideoEncoder.DescribeEncoder(
                     container,
-                    (VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 1),
+                    (VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 2),
                     (VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4));
                 Gui.KeyValue("render.codec.current", name, Gui.DimCol);
+                // 回退原因必须可见：玩家选了 AV1/MOV、或选了 QSV 但落到软件，
+                // 只显示 libx264/libx265 会让人以为设置没生效。
+                if (container == VideoEncoder.OutContainer.Mov && RenderVideoCodec == 2)
+                    OnGui.Note("render.codec.mov_av1_fallback");
+                if (RenderVideoCodec == 2 && RenderRateControl == 3 && name.Contains("libsvtav1", StringComparison.Ordinal))
+                    OnGui.Note("render.codec.svt_cbr");
+                if (RenderVideoCodec == 2 && name.Contains("libaom", StringComparison.Ordinal))
+                    OnGui.Note("render.codec.aom_slow");
+                if ((RenderHardware == 2 || RenderHardware == 3)
+                    && !name.Contains(RenderHardware == 2 ? "qsv" : "amf", StringComparison.Ordinal))
+                {
+                    OnGui.Note(Loc.F("render.codec.hw_fallback",
+                        RenderHardware == 2 ? "QSV" : "AMF"));
+                }
 
                 string exe = VideoEncoder.LocateEncoder();
                 // 统一走能力校验（-version，缓存）：本地坏 ffmpeg.exe 不再被

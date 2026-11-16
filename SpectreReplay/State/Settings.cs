@@ -195,8 +195,8 @@ public static class Settings
     // 硬件后端：0 自动 1 NVENC 2 QSV 3 AMF 4 强制 CPU。
     // 与 RenderEncoderMode 分离：前者只决定速度/画质，后者只决定后端。
     public static int RenderHardware = 0;
-    // 视频编码：0 H.264（默认，保持旧成片兼容）1 H.265。WebM 容器强制 VP9，
-    // 这个值只在 mp4/mkv/mov 生效。
+    // 视频编码：0 H.264（默认，保持旧成片兼容）1 H.265 2 AV1。WebM 容器强制 VP9，
+    // 这个值只在 mp4/mkv/mov 生效。AV1 软件优先 SVT，退回 libaom；硬件按可用性。
     public static int RenderVideoCodec = 0;
     // 码率控制：0 ABR（目标码率）1 CRF（质量）2 CQP（量化）3 CBR（恒定码率）。
     // CRF/CQP 的数值域与 x264/x265 一致；WebM 的 VP9 只支持 ABR/CRF，CQP/CBR 会
@@ -345,7 +345,7 @@ public static class Settings
         RenderStopKey = NormalizeHotkey(RenderStopKey, 292, "RenderStopKey", disallowNone: false);
         // 编码参数：手改配置可能写进越界值。x264/x265 的 CRF/CQP 域是 0..51，
         // 码率上限按 160 Mbps 收（4K 高帧率也够用），预设只接受已知的 10 档。
-        RenderVideoCodec = Mathf.Clamp(RenderVideoCodec, 0, 1);
+        RenderVideoCodec = Mathf.Clamp(RenderVideoCodec, 0, 2);
         RenderEncoderMode = Mathf.Clamp(RenderEncoderMode, 0, 2);
         RenderHardware = Mathf.Clamp(RenderHardware, 0, 4);
         RenderRateControl = Mathf.Clamp(RenderRateControl, 0, 3);

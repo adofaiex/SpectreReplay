@@ -18,6 +18,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
 {
     private string encoderPath;
     private VideoRender.RenderRange renderRange;
+    // 本次作业绑定的硬件后端；CPU 重跑时在 Launch 读取一次，后续 resize 重建沿用。
+    private VideoEncoder.HardwareBackend hardware;
 
     private bool cancelRequested;
     private VideoFrameSource frames;
@@ -80,6 +82,9 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 在 OnGUI 布局中途换场景会打乱 IMGUI 布局组，推迟到下一帧 Start()
         job.encoderPath = encoderPath;
         job.renderRange = range;
+        job.hardware = VideoRender.ForceCpuNextRun
+            ? VideoEncoder.HardwareBackend.Cpu
+            : (VideoEncoder.HardwareBackend)Settings.RenderHardware;
         return job;
     }
 
@@ -361,7 +366,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
                     (VideoEncoder.RateControlMode)Settings.RenderRateControl,
                     Settings.RenderCrf, Settings.RenderCqp,
                     Settings.RenderBitrateMbps, Settings.RenderPreset,
-                    (VideoEncoder.HardwareBackend)Settings.RenderHardware);
+                    hardware);
                 enc.Begin();
                 if (tornDown)
                 {
@@ -511,7 +516,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
                 (VideoEncoder.RateControlMode)Settings.RenderRateControl,
                 Settings.RenderCrf, Settings.RenderCqp,
                 Settings.RenderBitrateMbps, Settings.RenderPreset,
-                (VideoEncoder.HardwareBackend)Settings.RenderHardware);
+                hardware);
             encoder.Begin();
             LogTiming("encoder-begin", setupSw.ElapsedMilliseconds + "ms (rebuilt)");
         }
@@ -1574,6 +1579,17 @@ internal sealed class VideoRenderJob : MonoBehaviour
         VideoRender.Current.Error = message;
         TriggerMessage(LocalizationManager.GetLocalizedText("rendervideo.failed") + "\n" + message, extra: 2f, type: NotifType.Warning);
         Debug.Log("[SpectreReplay] replay render failed: " + message);
+        // 编码器/后端中途失败：整段重来一次，强制 CPU。只重试一次，且不在
+        // mux 阶段重试（容器/音轨问题重跑编码器没有意义）。
+        if (!finalizeErrorFromMux
+            && encoder != null
+            && encoder.IsBackendFailure()
+            && (VideoEncoder.HardwareBackend)Settings.RenderHardware != VideoEncoder.HardwareBackend.Cpu)
+        {
+            VideoRender.RequestCpuRetry(
+                renderRange.Enabled ? renderRange : VideoRender.RenderRange.Full,
+                message);
+        }
         ReportEnd(SpectreAPI.RenderEndStatus.Failed, null, message);
     }
 
@@ -1955,6 +1971,14 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 兜底：未报过终态的按失败；事件在 Job 清空之后触发，订阅者可安全启动下一个渲染
         ReportEnd(SpectreAPI.RenderEndStatus.Failed, null, null);
         SpectreAPI.RaiseRenderFinished(endStatus, endOutput, endError);
+        // 终态已上报、旧 Job 已清空，才允许启动 CPU 重跑。不能放在捕获循环或
+        // 编码错误回调里：那时 Job != null，StartRender 会被守卫直接挡掉。
+        if (VideoRender.CpuRetryPending)
+        {
+            VideoRender.RenderRange retryRange = VideoRender.CpuRetryRange;
+            string retryReason = VideoRender.CpuRetryReason;
+            VideoRender.StartCpuRetry(retryRange, retryReason);
+        }
         Destroy(gameObject);
     }
 

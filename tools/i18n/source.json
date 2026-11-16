@@ -685,6 +685,41 @@
    "en": "Encoder"
   },
   {
+   "key": "render.hardware",
+   "zh": "硬件后端",
+   "en": "Hardware backend"
+  },
+  {
+   "key": "render.hardware.tip",
+   "zh": "Auto 按可用性回退；也可强制 NVENC/QSV/AMF/CPU。",
+   "en": "Auto falls back by availability; you can force NVENC/QSV/AMF/CPU."
+  },
+  {
+   "key": "render.cpu_retry",
+   "zh": "编码器中途失败，已回退 CPU 重跑（整段重来）。",
+   "en": "Encoder failed mid-render; retrying from the start with CPU encoding."
+  },
+  {
+   "key": "render.codec.mov_av1_fallback",
+   "zh": "MOV 容器不支持 AV1，本次回退 H.265。",
+   "en": "MOV does not support AV1; falling back to H.265."
+  },
+  {
+   "key": "render.codec.svt_cbr",
+   "zh": "SVT-AV1 没有 CBR，本次按带缓冲的 ABR 处理。",
+   "en": "SVT-AV1 has no CBR mode; using ABR with a buffer."
+  },
+  {
+   "key": "render.codec.aom_slow",
+   "zh": "未找到 SVT-AV1，使用 libaom-av1（较慢）。",
+   "en": "libsvtav1 not found; using libaom-av1 (slow)."
+  },
+  {
+   "key": "render.codec.hw_fallback",
+   "zh": "{0} 不可用，已回退软件编码。",
+   "en": "{0} is unavailable; falling back to software encoding."
+  },
+  {
    "key": "render.video_codec",
    "zh": "视频编码",
    "en": "Video codec"

@@ -3019,6 +3019,52 @@ switch ($Which) {
         Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
         ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'rc = BuildAbrRateControl(false);' 'rc = BuildRateControl(false);'
     }
+    'MUT-AV1-1' {
+        # 2A-3 回归：AV1 软件编码不再优先 SVT，直接落到 libaom（慢）。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'if (EncoderCatalog.Supports(exe, "libsvtav1")) return Codec.SvtAv1;' 'if (false) return Codec.SvtAv1;'
+    }
+    'MUT-AV1-2' {
+        # 2A-3 回归：AV1 NVENC 命令被写成 hevc_nvenc，选了 AV1 出 H.265。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '-c:v av1_nvenc' '-c:v hevc_nvenc'
+    }
+    'MUT-AV1-3' {
+        # 2A-3 回归：AV1 候选链分支失效，AV1 落到 H.264/H.265 候选。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'Codec sw = SoftwareCodec(VideoCodec.Av1, exe);' 'Codec sw = SoftwareCodec(VideoCodec.H264, exe);'
+    }
+    'MUT-AV1-4' {
+        # 2A-3 回归：MOV + AV1 不再回退 H.265。
+        # ffmpeg mov muxer 拒绝 AV1，整场渲染后收尾合成才失败。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'if (container == OutContainer.Mov && videoCodec == VideoCodec.Av1)' 'if (false)'
+    }
+    'MUT-AV1-5' {
+        # 2A-3 回归：SVT ABR 又带上 -maxrate。libsvtav1 不接受，起手 exit -22。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'return "-b:v " + target + "M";' 'return "-b:v " + target + "M -maxrate " + target + "M";'
+    }
+    'MUT-AV1-6' {
+        # 2A-3 回归：render_video_codec clamp 回到 0..1，已存 AV1 重启变 H.265。
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' 'Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>("render_video_codec") ?? Settings.RenderVideoCodec, 0, 2);' 'Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>("render_video_codec") ?? Settings.RenderVideoCodec, 0, 1);'
+    }
+    'MUT-AV1-7' {
+        # 2A-3 回归：界面下拉去掉 AV1，玩家无法选 AV1。
+        Backup 'Pages\Pages.cs'
+        ReplaceExact 'Pages\Pages.cs' '"H264", "H265", "AV1"' '"H264", "H265"'
+    }
+    'MUT-AV1-8' {
+        # 2A-4 回归：硬件后端下拉消失，玩家无法强制/回退 NVENC/QSV/AMF/CPU。
+        Backup 'Pages\Pages.cs'
+        ReplaceExact 'Pages\Pages.cs' 'OnGui.RowDropdown("render.hardware"' 'OnGui.RowDropdown("render.codec"'
+    }
+    'MUT-AV1-9' {
+        # 2A-4 回归：MOV + AV1 回退原因不再显示，玩家只看到 libx265。
+        Backup 'Pages\Pages.cs'
+        ReplaceExact 'Pages\Pages.cs' 'OnGui.Note("render.codec.mov_av1_fallback");' ''
+    }
     'MUT-HW1' {
         # 2A-1 迁移幂等回归：去掉「没有 render_hardware 键」判断。
         # 玩家已选 NVENC，旧 render_encoder=3 仍会被改回 CPU。
@@ -3083,8 +3129,34 @@ switch ($Which) {
         Backup 'State\AtomicFile.cs'
         ReplaceExact 'State\AtomicFile.cs' 'File.Replace(tmp, path, bak);' 'File.Copy(tmp, path, true);'
     }
+    'MUT-CPU1' {
+        # 2A-5 回归：NotifyFailed 不再触发 CPU 重跑。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'encoder.IsBackendFailure()' 'false'
+    }
+    'MUT-CPU2' {
+        # 2A-5 回归：TearDown 不再启动 CPU 重跑。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'VideoRender.StartCpuRetry(retryRange, retryReason);' ''
+    }
+    'MUT-CPU3' {
+        # 2A-5 回归：作业不再捕获 ForceCpuNextRun，重跑仍会用硬件。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'job.hardware = VideoRender.ForceCpuNextRun' 'job.hardware = VideoEncoder.HardwareBackend.Cpu'
+    }
+    'MUT-CPU4' {
+        # 2A-5 回归：重跑原因不再显示在阶段下。
+        Backup 'Pages\Pages.cs'
+        ReplaceExact 'Pages\Pages.cs' 'if (!string.IsNullOrEmpty(s.Detail))' 'if (false)'
+    }
+    'MUT-CPU5' {
+        # 2A-5 回归：从后端失败特征表里删掉 Could not open encoder。
+        # 真·编码器拒绝（svt/aom 参数问题）不再触发 CPU 重跑。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '"Could not open encoder"' '"Could not open encoderX"'
+    }
     default {
-        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116）"
+        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116）"
     }
 }
 

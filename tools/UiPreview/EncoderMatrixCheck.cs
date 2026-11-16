@@ -24,8 +24,26 @@ internal static class EncoderMatrixCheck
 
         Console.WriteLine("  ── 视频编码器矩阵 ──");
 
-        Check(enc.Contains("internal enum VideoCodec { H264 = 0, H265 = 1 }", StringComparison.Ordinal),
-            "① VideoEncoder 有 H.264/H.265 枚举");
+        Check(enc.Contains("internal enum VideoCodec { H264 = 0, H265 = 1, Av1 = 2 }", StringComparison.Ordinal),
+            "① VideoEncoder 有 H.264/H.265/AV1 枚举");
+        Check(enc.Contains("if (videoCodec == VideoCodec.Av1)", StringComparison.Ordinal)
+            && enc.Contains("Codec sw = SoftwareCodec(VideoCodec.Av1, exe);", StringComparison.Ordinal)
+            && enc.Contains("case Codec.NvencAv1:", StringComparison.Ordinal)
+            && enc.Contains("case Codec.QsvAv1:", StringComparison.Ordinal)
+            && enc.Contains("case Codec.AmfAv1:", StringComparison.Ordinal),
+            "① AV1 候选链与硬件分支在");
+        Check(enc.Contains("EncoderCatalog.Supports(exe, \"libsvtav1\")", StringComparison.Ordinal)
+            && enc.Contains("EncoderCatalog.Supports(exe, \"libaom-av1\")", StringComparison.Ordinal)
+            && enc.Contains("return Codec.SvtAv1;", StringComparison.Ordinal)
+            && enc.Contains("return Codec.AomAv1;", StringComparison.Ordinal),
+            "① AV1 软件优先 SVT，退回 libaom");
+        Check(enc.Contains("-c:v av1_nvenc", StringComparison.Ordinal)
+            && enc.Contains("-c:v libsvtav1", StringComparison.Ordinal)
+            && enc.Contains("-c:v libaom-av1", StringComparison.Ordinal),
+            "① AV1 编码命令在");
+        Check(enc.Contains("return \"-b:v \" + target + \"M -bufsize \" + bucket + \"M\";", StringComparison.Ordinal)
+            && enc.Contains("return \"-b:v \" + target + \"M\";", StringComparison.Ordinal),
+            "② SVT ABR/CBR 不传 -maxrate（libsvtav1 会拒绝）");
         Check(enc.Contains("internal enum Quality { Balanced = 0, Fastest = 1, Sharpest = 2 }", StringComparison.Ordinal)
             && !enc.Contains("Quality.CpuOnly", StringComparison.Ordinal),
             "① Quality 只保留速度/画质，CpuOnly 已删");
@@ -37,6 +55,10 @@ internal static class EncoderMatrixCheck
             "① H.265 硬件走 hevc_nvenc");
         Check(enc.Contains("if (container == OutContainer.WebM) return Codec.Vp9;", StringComparison.Ordinal),
             "① WebM 强制 VP9（H.264/H.265 不进 WebM）");
+        Check(enc.Contains("if (container == OutContainer.Mov && videoCodec == VideoCodec.Av1)", StringComparison.Ordinal)
+            && enc.Contains("return Codec.X265;", StringComparison.Ordinal)
+            && enc.Contains("MOV 容器不支持 AV1", StringComparison.Ordinal),
+            "① MOV + AV1 回退 H.265 并告警（mov muxer 拒绝 AV1）");
         Check(enc.Contains("private string SoftwarePreset()", StringComparison.Ordinal),
             "① 软件编码有独立 preset 映射");
         Check(enc.Contains("ProbeEncoderSync(exe, encoderName)", StringComparison.Ordinal)
@@ -72,7 +94,7 @@ internal static class EncoderMatrixCheck
             && settings.Contains("public static int RenderBitrateMbps = 0;", StringComparison.Ordinal)
             && settings.Contains("public static int RenderPreset = 0;", StringComparison.Ordinal),
             "③ Settings 新增编码字段");
-        Check(settings.Contains("RenderVideoCodec = Mathf.Clamp(RenderVideoCodec, 0, 1);", StringComparison.Ordinal)
+        Check(settings.Contains("RenderVideoCodec = Mathf.Clamp(RenderVideoCodec, 0, 2);", StringComparison.Ordinal)
             && settings.Contains("RenderEncoderMode = Mathf.Clamp(RenderEncoderMode, 0, 2);", StringComparison.Ordinal)
             && settings.Contains("RenderHardware = Mathf.Clamp(RenderHardware, 0, 4);", StringComparison.Ordinal)
             && settings.Contains("RenderRateControl = Mathf.Clamp(RenderRateControl, 0, 3);", StringComparison.Ordinal)
@@ -90,6 +112,8 @@ internal static class EncoderMatrixCheck
             && cfg.Contains("ints.Value<int?>(\"render_hardware\")", StringComparison.Ordinal)
             && cfg.Contains("ints.Value<int?>(\"render_preset\")", StringComparison.Ordinal),
             "④ ConfigManager 读取编码字段（旧配置缺键走默认）");
+        Check(cfg.Contains("Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>(\"render_video_codec\") ?? Settings.RenderVideoCodec, 0, 2);", StringComparison.Ordinal),
+            "④ render_video_codec clamp 0..2（AV1 不被压回 H.265）");
         Check(cfg.Contains("rawHardware == null && rawEncoder == 3", StringComparison.Ordinal)
             && cfg.Contains("Settings.RenderHardware = 4;", StringComparison.Ordinal)
             && cfg.Contains("Settings.RenderEncoderMode = 2;", StringComparison.Ordinal),
@@ -106,6 +130,8 @@ internal static class EncoderMatrixCheck
             "⑤ 渲染作业把编码参数传给 VideoEncoder");
 
         Check(pages.Contains("OnGui.RowDropdown(\"render.video_codec\"", StringComparison.Ordinal)
+            && pages.Contains("\"H264\", \"H265\", \"AV1\"", StringComparison.Ordinal)
+            && pages.Contains("OnGui.RowDropdown(\"render.hardware\"", StringComparison.Ordinal)
             && pages.Contains("OnGui.RowDropdown(\"render.rate_control\"", StringComparison.Ordinal)
             && pages.Contains("OnGui.RowDropdown(\"render.preset\"", StringComparison.Ordinal)
             && pages.Contains("OnGui.RowSlider(\"render.crf\"", StringComparison.Ordinal)
@@ -113,12 +139,18 @@ internal static class EncoderMatrixCheck
             && pages.Contains("OnGui.RowSlider(\"render.bitrate\"", StringComparison.Ordinal),
             "⑥ 界面暴露视频编码/码率模式/preset 入口");
         Check(pages.Contains("(VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4)", StringComparison.Ordinal)
+            && pages.Contains("(VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 2)", StringComparison.Ordinal)
             && pages.Contains("VideoEncoder.DescribeEncoder(", StringComparison.Ordinal),
             "⑥ 编码路径下拉已瘦身，后端由 hardware 传入");
+        Check(pages.Contains("render.codec.mov_av1_fallback", StringComparison.Ordinal)
+            && pages.Contains("render.codec.svt_cbr", StringComparison.Ordinal)
+            && pages.Contains("render.codec.aom_slow", StringComparison.Ordinal)
+            && pages.Contains("render.codec.hw_fallback", StringComparison.Ordinal),
+            "⑥ 回退原因提示在（MOV/AV1、SVT CBR、libaom、硬件不可用）");
         Check(enc.Contains("switch (ResolveCodec(container, videoCodec, hardware))", StringComparison.Ordinal)
             && !enc.Contains("ResolveCodec(quality, container, videoCodec", StringComparison.Ordinal),
             "⑦ DescribeEncoder 与 PickCodec 共用同一判定，quality 已退出后端判定");
-        Check(enc.Contains("private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware)", StringComparison.Ordinal)
+        Check(enc.Contains("private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware, string exe)", StringComparison.Ordinal)
             && enc.Contains("EncoderStateFor(exe, EncoderName(candidate))", StringComparison.Ordinal)
             && enc.Contains("if (!EncoderCatalog.IsLoaded(exe))", StringComparison.Ordinal)
             && enc.Contains("EncoderCatalog.EnsureLoaded(exe)", StringComparison.Ordinal),

@@ -163,7 +163,7 @@ powershell -File tools/i18n/gen-locdata.ps1   # 从 source.json 重新生成 Loc
 
 - **新增检查必须同时加一条变异**证明它能红。
 - **变异要退回真实的 bug 形状**，不能只做 `true→false` 这种必然红的偷懒改法。
-- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-16 实测：255 条 `✓`、502 键（14 语言）、313 个变异标签、6 个只读审计。** 引用前先跑，或直接写「以实跑为准」。
+- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-16 实测：271 条 `✓`、509 键（14 语言）、327 个变异标签、6 个只读审计。** 引用前先跑，或直接写「以实跑为准」。
 - **判据锚点与变异模式从当前文件实读，不凭记忆写。** 闸门的 Check 先经 `SrcUtil.Clean` 剥注释再跑判据——锚点带 `//` 尾巴必失配；行首缩进/文本要逐字一致；源码重构后旧模式会命中 0 次（2026-11-15 实测两起：FF 行锚点带注释尾巴、U125 模式缩进过时）。
 
 ## 6. 架构
@@ -234,7 +234,7 @@ private static bool Hit_Prefix(...) { ... }
 - 键音 WAV：44 字节头 + PCM；**哈希只覆盖 PCM、跳过 44 字节头**（`WavLoader` 与 `KeybdAudioCodec` 共用这个契约，改一边等于作废两边缓存）。
 - **回放内键音覆盖**：`KeybdAudioCodec` 按回放里的按键实时合成键音；音量/偏移/静音三项可**按回放覆盖**（`Data/KeybdPrefs.cs`，落在 `KbdPrefs` 段）。每项各带 `Has*` 标志——**用标志位而不是哨兵值**表示「没覆盖」（`KeybdPrefs.cs:7` 的注释写了理由）；偏移是**替换**全局 `MicrophoneOffset`，不是相加；静音独立于音量值（静音时不看音量）。缺段 = 三项全跟随全局设置。回放里没有 `KbdAudio` 段时退回「同目录同名 `.wav`」的老路径。导出 wav 导的是**叠加覆盖值之后**的结果，不是原始录音。
 - **停源，不然上一份键盘音会一直播**：换回放/销毁 clip 时必须停掉 `musicSource`（`Patch_Playback.cs` 的 `WavLoader.musicSource` 登记项），否则旧音频继续出声，导出端 `AudioListener` 会把它原样混进成片——「导出有声、回放没声」这一类怪象多半出在这里。
-- ffmpeg：`mp4/mkv/mov` = H.264/H.265（玩家选，`libx264`/`libx265`，NVENC 可用时 `h264_nvenc`/`hevc_nvenc`）+ AAC；`webm` = VP9 + Opus 48k。NVENC 先探再用（h264/h265 分别探），失败回退 CPU。码率模式支持 ABR/CRF/CQP/CBR；软件 preset 可选 `ultrafast..placebo`。`-y` 截断残留要删/救；stdin 泵线程与 stderr 排空都不能省。
+- ffmpeg：`mp4/mkv` = H.264/H.265/AV1；`mov` = H.264/H.265（AV1 回退 H.265，mov muxer 拒绝 AV1）；`webm` = VP9 + Opus 48k。软件 `libx264`/`libx265`/`libsvtav1`/`libaom-av1`，NVENC/QSV/AMF 可用时走硬件。NVENC/QSV/AMF 先读 `-encoders` 目录再 preflight，失败回退软件。码率模式支持 ABR/CRF/CQP/CBR；软件 preset 可选 `ultrafast..placebo`。`-y` 截断残留要删/救；stdin 泵线程与 stderr 排空都不能省。
 - 光标叠加默认关（opt-in）；预览相机只影响预览。
 - 时钟钉扎有四套机制（输出钉、变速钉、`RenderClock` 转译默认关、非缩放 delta detour），各自防不同漂移，**别合并**。
 
@@ -258,7 +258,7 @@ private static bool Hit_Prefix(...) { ... }
 ### 6.6 文案（i18n）管线
 
 ```
-tools/i18n/source.json     唯一事实源：[{key, zh, en}, …]，顺序即生成顺序（今天 502 键）
+tools/i18n/source.json     唯一事实源：[{key, zh, en}, …]，顺序即生成顺序（今天 509 键）
 tools/i18n/locales/*.json  12 个语言译文（zh-t ja ko es pt fr de pl cs ro ru vi）
 tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本）
 ```
@@ -422,7 +422,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 12. **`LocData.cs` 与 `source.json` 没有一致性检查**：手改生成物闸门不会红。
 13. **全量变异回归不在 CI**（E-F5 未修），要自己定期跑。
 14. **`.gitattributes` 强制 `text eol=lf`**，别提交 CRLF 差异。
-15. **文档口径曾经普遍过期**（2026-10-28 实测；2026-11-16 已对齐一次）：`Loc.cs` 与 `tools/i18n/README.md` 曾写「325 键」，实际 **502**；`docs/verify.md` 曾写 111 条断言，实际 **255**；变异标签曾写 153/155/269，实际 **313**——别把「断言数」和「变异数」看混。`Settings.cs:8` 提到的 `SettingsUI` 类型**不存在**（绘制在 `Pages.Pages.Draw*`）；`SpectrePatch.cs:73-76` 的示例写 `MaxVersion = GameVersion.VerifiedBuild`，但 `GameVersion` 没有这个成员。引用任何数字前先实测。
+15. **文档口径曾经普遍过期**（2026-10-28 实测；2026-11-16 已对齐一次）：`Loc.cs` 与 `tools/i18n/README.md` 曾写「325 键」，实际 **509**；`docs/verify.md` 曾写 111 条断言，实际 **271**；变异标签曾写 153/155/269，实际 **327**——别把「断言数」和「变异数」看混。`Settings.cs:8` 提到的 `SettingsUI` 类型**不存在**（绘制在 `Pages.Pages.Draw*`）；`SpectrePatch.cs:73-76` 的示例写 `MaxVersion = GameVersion.VerifiedBuild`，但 `GameVersion` 没有这个成员。引用任何数字前先实测。
 16. `OnGui.cs` 的成员注释引用「类注释第 3/4 条规则」，但类注释已不在文件里——别去找不存在的规则原文。
 17. 用 `Measure-Object -Line` 数行会跳过空行，行号会漂；以 read 工具/编辑器的物理行号为准。
 18. 本仓库的工作区经常带着**未提交的改动**（本次写作期间 `Pages.cs` 就被本团队之外的人改过、dll 也被重新构建）。动工前后各看一眼 `git status`，别把别人的半成品算成自己的，也别顺手 revert。

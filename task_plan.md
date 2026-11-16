@@ -84,12 +84,13 @@ Phase 6（加固）
     - [x] 选中具体编码器后 1 帧 preflight，失败回退下一个后端并写日志/UI
     - [x] `WarmUp` 只解析目录 + 预热当前选择，不做 9 个编码器逐个 15 秒探测
     - [x] QSV/AMF 基础参数：QSV 支持 `-global_quality`；AMF 先保证 ABR/CBR
-  - [ ] 2A-3 AV1 参数与码率映射（软件优先 `libsvtav1`、退回 `libaom-av1`；`av1_nvenc`/`av1_qsv`/`av1_amf`；CQP/CBR 按后端能力回退）
-  - [ ] 2A-4 UI + 14 语言 + `.tip` + 实际编码器与回退原因显示
-  - [ ] 2A-5 后端中途失败回退 CPU 重跑
-    - [ ] `VideoEncoder` 暴露失败原因（区分「编码器不可用」与其他失败），贯通 `pumpFailure` 与 `FinishVideo`
-    - [ ] 重跑钩子挂在 `ReportEnd(Failed)` 收尾**之后**，先 `ResetLeakedPins()`+`ResetSnapshot()` 再 `Launch`；不能在捕获循环或编码错误回调里内联（会被 `StartRender` 的 `Job != null` 守卫挡掉）
-    - [ ] 只重试一次；UI 说明「整段重来」；重跑期间仍可取消；不重复上报完成
+  - [x] 2A-3 AV1 参数与码率映射（软件优先 `libsvtav1`、退回 `libaom-av1`；`av1_nvenc`/`av1_qsv`/`av1_amf`；CQP/CBR 按后端能力回退）
+  - [x] 2A-4 UI + 14 语言 + `.tip` + 实际编码器与回退原因显示
+  - [x] 2A-5 后端中途失败回退 CPU 重跑
+    - [x] `VideoEncoder.IsBackendFailure()` 区分编码器不可用与其他失败
+    - [x] 特征表只认强特征，排除 `Invalid argument` / `not supported` 等 stderr 噪声
+    - [x] 重跑钩子挂在 `RaiseRenderFinished` 之后、`Destroy` 之前，Job 已清空
+    - [x] 只重试一次；UI 显示整段重来原因；重跑期间仍可取消；不重复上报
   - [ ] 2A-6 CI ffmpeg 能力断言 + 变异 + 文档
     - [ ] `tools/ffmpeg-capability.ps1` 校验期望集合；失败时把 `-encoders` 输出存 artifact，升级时能看出少哪个变体
     - [ ] 断言只管**发布包里那份 ffmpeg**；玩家游戏目录自备的仍靠运行时 `EncoderCatalog`，两者不能互相替代

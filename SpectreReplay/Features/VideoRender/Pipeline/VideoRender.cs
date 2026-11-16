@@ -73,6 +73,14 @@ internal static class VideoRender
     internal static VideoRenderJob Job { get; private set; }
     internal static bool Active => Job != null;
 
+    // 后端中途失败 → CPU 重跑（只自动一次）。ForceCpuNextRun 只在 Launch 读取，
+    // 新作业自己持有 hardware，后续 resize 重建不会偷偷回到硬件。
+    internal static bool ForceCpuNextRun;
+    internal static bool CpuRetryPending;
+    internal static bool CpuRetryUsed;
+    internal static RenderRange CpuRetryRange;
+    internal static string CpuRetryReason;
+
     // 当前帧源的捕获面。帧源构造时装上、构造失败（CleanupOnConstructionFailure）
     // 与 Dispose 时清掉，StartRender 的 ResetLeakedPins 兜底复位。渲染期补丁按它
     // 分流：判定飘字隐藏只拦 CleanCamera——WholeScreen 拍的就是后备缓冲，飘字
@@ -154,6 +162,15 @@ internal static class VideoRender
 
     internal static void StartRender(RenderRange range)
     {
+        // 玩家手动开始 = 新一轮；允许下一次后端失败再自动回退 CPU 一次。
+        CpuRetryUsed = false;
+        CpuRetryPending = false;
+        CpuRetryReason = null;
+        StartRenderInternal(range);
+    }
+
+    private static void StartRenderInternal(RenderRange range)
+    {
         if (Job != null)
             return;
         if (!Settings.RenderOn)
@@ -193,6 +210,41 @@ internal static class VideoRender
         PendingRange = range;
         Job = VideoRenderJob.Launch(encoderPath, range);
         SpectreAPI.RaiseRenderStarted();
+    }
+
+    /// <summary>
+    /// 后端中途失败时请求一次 CPU 重跑。由 job 在 ReportEnd(Failed) 之后调用；
+    /// 真正的重启在 TearDown 完成、Job 清空后进行。
+    /// </summary>
+    internal static void RequestCpuRetry(RenderRange range, string reason)
+    {
+        if (CpuRetryUsed || CpuRetryPending) return;
+        CpuRetryUsed = true;
+        CpuRetryPending = true;
+        CpuRetryRange = range;
+        CpuRetryReason = reason;
+        TriggerMessage(SpectreReplay.Ui.Loc.T("render.cpu_retry") + "\n" + reason,
+            extra: 3f, type: NotifType.Warning);
+        Debug.LogWarning("[SpectreReplay] renderer backend failed; retrying once with CPU: " + reason);
+    }
+
+    /// <summary>在旧 job 已 CloseJob、Job 清空之后调用。整段重来，只自动一次。</summary>
+    internal static void StartCpuRetry(RenderRange range, string reason)
+    {
+        if (Job != null) return;
+        CpuRetryPending = false;
+        ForceCpuNextRun = true;
+        try
+        {
+            StartRenderInternal(range);
+        }
+        finally
+        {
+            ForceCpuNextRun = false;
+        }
+        // 让重跑期间的阶段文字带上原因；job 后续会覆盖成正常阶段。
+        if (Job != null)
+            Current.Detail = reason;
     }
 
     internal static void CancelRender()

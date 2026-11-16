@@ -47,6 +47,7 @@ namespace UiPreview
             int shapeFail = UiLogicShapeCheck.Run(
                 ProjectDir);
             int effectSnapshotFail = EffectRemoverSnapshotCheck.Run().Failed;
+            int cpuRetryFail = CpuRetryCheck.Run().Failed;
             int writeSafetyFail = WriteSafetyCheck.Run().Failed;
             int missingKeyFail = MissingRuntimeKeyCheck.Run(
                 ProjectDir);
@@ -131,7 +132,7 @@ namespace UiPreview
                 ProjectDir);
             int orphanFail = PortedCompletenessCheck.NoOrphanChecks(
                 ProjectDir);
-            int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + orphanFail;
+            int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + cpuRetryFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + orphanFail;
             Console.WriteLine();
             Console.WriteLine(total == 0
                 ? "  全部通过"

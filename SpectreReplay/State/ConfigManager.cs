@@ -559,7 +559,7 @@ public static class ConfigManager
                     }
                     Settings.RenderQualityMode = Mathf.Clamp(ints.Value<int?>("render_quality") ?? Settings.RenderQualityMode, 0, 3);
                     // 新增编码参数：旧配置缺键时用默认值（H.264 + ABR），保持升级前行为。
-                    Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>("render_video_codec") ?? Settings.RenderVideoCodec, 0, 1);
+                    Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>("render_video_codec") ?? Settings.RenderVideoCodec, 0, 2);
                     Settings.RenderRateControl = Mathf.Clamp(ints.Value<int?>("render_rate_control") ?? Settings.RenderRateControl, 0, 3);
                     Settings.RenderCrf = Mathf.Clamp(ints.Value<int?>("render_crf") ?? Settings.RenderCrf, 0, 51);
                     Settings.RenderCqp = Mathf.Clamp(ints.Value<int?>("render_cqp") ?? Settings.RenderCqp, 0, 51);

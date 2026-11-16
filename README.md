@@ -45,7 +45,7 @@ SpectreReplay is a UnityModManager mod (mod id `com.spectre.replay`). While you 
 
 - **Renders the replay to a file.** The level is replayed frame by frame with every frame captured deliberately, then encoded together with its audio track.
 - **Two frame sources.** *Game view* captures what the game shows, UI included, at window resolution. *Clean camera* renders the game's camera chain into an offscreen texture with no interface at all and at any resolution you like, including supersampling.
-- **Encoder and quality presets.** H.264 or H.265, CPU (libx264/libx265) or hardware (NVENC), four speed/quality tiers, automatic fallback to CPU when no usable hardware encoder is found.
+- **Encoder and quality presets.** H.264, H.265, or AV1 (MP4/MKV; MOV falls back to H.265 because its muxer rejects AV1); CPU (libx264/libx265/libsvtav1/libaom-av1) or hardware (NVENC/QSV/AMF), four speed/quality tiers, automatic fallback to software when no usable hardware encoder is found.
 - **Rate control.** ABR (target bitrate), CRF (quality), CQP (constant quantizer) or CBR (constant bitrate), with an optional software preset (`ultrafast` … `placebo`). WebM stays on VP9.
 - **Starting a render no longer stutters.** The encoder is spawned in the background while you confirm the settings and is ready when capture begins; the hardware-encoder probe also waits for ffmpeg to actually start before concluding, so a slow launch no longer falls back to CPU. A finished render consumes the replay and unloads it.
 - **Four containers: mp4, mkv, webm, mov.** Codec and audio codec are chosen to match the container (webm, for instance, re-encodes to VP9 + Opus).
@@ -164,7 +164,7 @@ On the compile side this has been checked against three separate `Assembly-CShar
 - **Unity 6000.3.25f1**, game **3.3.1** (release branch) and **3.4.0** (alpha, build **r150**), **UnityModManager 0.33**.
 - **Harmony** for runtime method patching, including transpilers.
 - **Self-drawn IMGUI** for the standalone settings window: rounded nine-slice background textures, a soft window drop shadow, custom sliders, toggles and text fields — no stock controls.
-- **ffmpeg** as an external encoder, distributed with the mod: libx264/libx265 for CPU encoding, with hardware (NVENC) fallback when available.
+- **ffmpeg** as an external encoder, distributed with the mod: libx264/libx265/libsvtav1/libaom-av1 for CPU encoding, with hardware (NVENC/QSV/AMF) fallback when available.
 - **Offline verification gate**: a `net10.0-windows` test harness that links the real replay codec and audio/format logic and asserts behaviour without launching the game, plus a mutation suite that reintroduces each previously fixed bug and checks that the assertions actually go red. An assertion that cannot fail is treated as a bug in the test.
 
 ## Build and install

@@ -25,8 +25,8 @@ internal sealed class VideoEncoder : IDisposable
     internal enum HardwareBackend { Auto = 0, Nvenc = 1, Qsv = 2, Amf = 3, Cpu = 4 }
 
     // 视频编码：H.264 是默认（旧成片/播放器兼容性最好），H.265 是可选的
-    // 高压缩比路径。WebM 容器会无视这个值，固定 VP9。
-    internal enum VideoCodec { H264 = 0, H265 = 1 }
+    // 高压缩比路径，AV1 为第二批新增。WebM 容器会无视这个值，固定 VP9。
+    internal enum VideoCodec { H264 = 0, H265 = 1, Av1 = 2 }
 
     // 码率控制：ABR = 目标码率；CRF = 恒定质量；CQP = 恒定量化；
     // CBR = 恒定码率。x264/x265 全支持；NVENC 用 -cq/-qp/-rc 映射；
@@ -255,7 +255,7 @@ internal sealed class VideoEncoder : IDisposable
                 EncoderCatalog.EnsureLoaded(exe);
                 // 预热当前设置会选中的编码器；ResolveCodec 会在需要时起 1 帧 preflight。
                 var container = (OutContainer)Mathf.Clamp(SpectreReplay.Settings.RenderOutputFormat, 0, 3);
-                var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 1);
+                var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 2);
                 var hardware = (HardwareBackend)Mathf.Clamp(SpectreReplay.Settings.RenderHardware, 0, 4);
                 ResolveCodec(container, codec, hardware);
             }
@@ -496,19 +496,53 @@ internal sealed class VideoEncoder : IDisposable
     private enum Codec
     {
         Vp9,
-        NvencH264, NvencH265,
-        QsvH264, QsvH265,
-        AmfH264, AmfH265,
+        NvencH264, NvencH265, NvencAv1,
+        QsvH264, QsvH265, QsvAv1,
+        AmfH264, AmfH265, AmfAv1,
+        SvtAv1, AomAv1,
         X264, X265
     }
 
     private static int hardwareFallbackLogged;
+    private static int movAv1FallbackLogged;
 
-    private static Codec SoftwareCodec(VideoCodec videoCodec)
-        => videoCodec == VideoCodec.H265 ? Codec.X265 : Codec.X264;
-
-    private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware)
+    private static Codec SoftwareCodec(VideoCodec videoCodec, string exe)
     {
+        if (videoCodec == VideoCodec.H265) return Codec.X265;
+        if (videoCodec == VideoCodec.Av1)
+        {
+            // AV1 软件优先 SVT（快），退回 libaom（慢但普遍）。
+            // 两个都没有时回 X265，界面会显示 libx265，而不是静默宣称 AV1。
+            if (EncoderCatalog.IsLoaded(exe))
+            {
+                if (EncoderCatalog.Supports(exe, "libsvtav1")) return Codec.SvtAv1;
+                if (EncoderCatalog.Supports(exe, "libaom-av1")) return Codec.AomAv1;
+            }
+            return Codec.X265;
+        }
+        return Codec.X264;
+    }
+
+    private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware, string exe)
+    {
+        if (videoCodec == VideoCodec.Av1)
+        {
+            Codec sw = SoftwareCodec(VideoCodec.Av1, exe);
+            switch (hardware)
+            {
+                case HardwareBackend.Cpu:
+                    return new[] { sw };
+                case HardwareBackend.Nvenc:
+                    return new[] { Codec.NvencAv1, sw };
+                case HardwareBackend.Qsv:
+                    return new[] { Codec.QsvAv1, sw };
+                case HardwareBackend.Amf:
+                    return new[] { Codec.AmfAv1, sw };
+                default:
+                    return new[] { Codec.NvencAv1, Codec.QsvAv1, Codec.AmfAv1, sw };
+            }
+        }
+
         bool h265 = videoCodec == VideoCodec.H265;
         switch (hardware)
         {
@@ -537,10 +571,15 @@ internal sealed class VideoEncoder : IDisposable
         {
             case Codec.NvencH264: return "h264_nvenc";
             case Codec.NvencH265: return "hevc_nvenc";
+            case Codec.NvencAv1: return "av1_nvenc";
             case Codec.QsvH264: return "h264_qsv";
             case Codec.QsvH265: return "hevc_qsv";
+            case Codec.QsvAv1: return "av1_qsv";
             case Codec.AmfH264: return "h264_amf";
             case Codec.AmfH265: return "hevc_amf";
+            case Codec.AmfAv1: return "av1_amf";
+            case Codec.SvtAv1: return "libsvtav1";
+            case Codec.AomAv1: return "libaom-av1";
             case Codec.X264: return "libx264";
             case Codec.X265: return "libx265";
             default: return "libvpx-vp9";
@@ -588,13 +627,22 @@ internal sealed class VideoEncoder : IDisposable
     {
         // webm 容器只认 VP8/VP9 + Vorbis/Opus；H.264/H.265 都不能进 WebM。
         if (container == OutContainer.WebM) return Codec.Vp9;
+        // mov muxer 直接拒绝 AV1（"av1 only supported in MP4 and AVIF"），
+        // 而且失败发生在整场渲染后的收尾合成。这里提前回退 H.265。
+        if (container == OutContainer.Mov && videoCodec == VideoCodec.Av1)
+        {
+            if (Interlocked.Exchange(ref movAv1FallbackLogged, 1) == 0)
+                Debug.LogWarning("[SpectreReplay] MOV 容器不支持 AV1，本次回退 H.265。");
+            return Codec.X265;
+        }
 
         string exe = LocateEncoder();
-        Codec software = SoftwareCodec(videoCodec);
-        foreach (Codec candidate in Candidates(videoCodec, hardware))
+        Codec software = SoftwareCodec(videoCodec, exe);
+        foreach (Codec candidate in Candidates(videoCodec, hardware, exe))
         {
             // 软件编码永远可用；硬件候选失败时最终落在这里。
-            if (candidate == Codec.X264 || candidate == Codec.X265)
+            if (candidate == Codec.X264 || candidate == Codec.X265
+                || candidate == Codec.SvtAv1 || candidate == Codec.AomAv1)
                 return candidate;
 
             int state = EncoderStateFor(exe, EncoderName(candidate));
@@ -630,6 +678,11 @@ internal sealed class VideoEncoder : IDisposable
             case Codec.NvencH264: return "h264_nvenc (GPU)";
             case Codec.QsvH264: return "h264_qsv (GPU)";
             case Codec.AmfH264: return "h264_amf (GPU)";
+            case Codec.NvencAv1: return "av1_nvenc (GPU)";
+            case Codec.QsvAv1: return "av1_qsv (GPU)";
+            case Codec.AmfAv1: return "av1_amf (GPU)";
+            case Codec.SvtAv1: return "libsvtav1 (CPU)";
+            case Codec.AomAv1: return "libaom-av1 (CPU)";
             default: return "libx264 (CPU)";
         }
     }
@@ -689,6 +742,37 @@ internal sealed class VideoEncoder : IDisposable
                     return "-c:v " + EncoderName(selected)
                         + " -quality " + aQuality
                         + " " + BuildAmfRateControl() + " -g " + gop;
+                }
+            case Codec.NvencAv1:
+                {
+                    string nvPreset = quality == Quality.Fastest ? "p1" : quality == Quality.Sharpest ? "p6" : "p4";
+                    return "-c:v av1_nvenc -preset " + nvPreset
+                        + " " + BuildRateControl(true) + " -g " + gop;
+                }
+            case Codec.QsvAv1:
+                {
+                    return "-c:v av1_qsv " + BuildQsvRateControl() + " -g " + gop;
+                }
+            case Codec.AmfAv1:
+                {
+                    string aQuality = quality == Quality.Fastest ? "speed"
+                        : quality == Quality.Sharpest ? "quality" : "balanced";
+                    return "-c:v av1_amf -quality " + aQuality
+                        + " " + BuildAmfRateControl() + " -g " + gop;
+                }
+            case Codec.SvtAv1:
+                {
+                    string preset = quality == Quality.Fastest ? "10"
+                        : quality == Quality.Sharpest ? "4" : "8";
+                    return "-c:v libsvtav1 -preset " + preset
+                        + " " + BuildSvtRateControl() + " -g " + gop;
+                }
+            case Codec.AomAv1:
+                {
+                    string cpuUsed = quality == Quality.Fastest ? "8"
+                        : quality == Quality.Sharpest ? "2" : "4";
+                    return "-c:v libaom-av1 -cpu-used " + cpuUsed + " -row-mt 1 "
+                        + BuildAomRateControl() + " -g " + gop;
                 }
             case Codec.X265:
                 {
@@ -801,6 +885,47 @@ internal sealed class VideoEncoder : IDisposable
         if (rateControl == RateControlMode.Cbr)
             return "-b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
         return "-b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
+    }
+
+    /// <summary>SVT-AV1：CRF/CQP 用 -crf；ABR/CBR 只能用 -b:v（不接受 -maxrate）。</summary>
+    private string BuildSvtRateControl()
+    {
+        int target = TargetBitrateMbps();
+        int bucket = target * 2;
+        switch (rateControl)
+        {
+            case RateControlMode.Crf:
+                return "-crf " + crf;
+            case RateControlMode.Cqp:
+                return "-crf " + cqp;
+            case RateControlMode.Cbr:
+                // libsvtav1 不接受 -maxrate（实测 exit -22 Could not open encoder）。
+                // SVT 没有可用的 CBR 模式：-svtav1-params rc=2 同样被拒。
+                // 这里按「带缓冲的 ABR」处理，2A-4 需要把语义降级显示给玩家。
+                return "-b:v " + target + "M -bufsize " + bucket + "M";
+            default:
+                // SVT 的 ABR 只接受 -b:v；-maxrate/-bufsize 组合会起手失败。
+                return "-b:v " + target + "M";
+        }
+    }
+
+    /// <summary>libaom-av1：CRF/CQP 都用 -crf -b:v 0；CBR/ABR 用通用码率参数。</summary>
+    private string BuildAomRateControl()
+    {
+        int target = TargetBitrateMbps();
+        int ceiling = target * 3 / 2;
+        int bucket = target * 2;
+        switch (rateControl)
+        {
+            case RateControlMode.Crf:
+                return "-crf " + crf + " -b:v 0";
+            case RateControlMode.Cqp:
+                return "-crf " + cqp + " -b:v 0";
+            case RateControlMode.Cbr:
+                return "-b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
+            default:
+                return "-b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
+        }
     }
 
     /// <summary>同步编码 preflight（后台线程调用）。name 为 ffmpeg 编码器名。</summary>
@@ -950,6 +1075,41 @@ internal sealed class VideoEncoder : IDisposable
             if (pipeStderr.Length > StderrCapChars)
                 pipeStderr.Remove(0, pipeStderr.Length - StderrCapChars);
         }
+    }
+
+    /// <summary>
+    /// 本次失败是否像“编码器/后端不可用”，而不是磁盘满、权限、取消等其他原因。
+    /// 只有这类失败才值得回退 CPU 重跑；把磁盘满也重跑一遍只是浪费时间。
+    /// </summary>
+    internal bool IsBackendFailure()
+    {
+        string text = (pumpFailure == null ? "" : pumpFailure.Message) + "\n" + StderrTail();
+        if (string.IsNullOrEmpty(text)) return false;
+        // 只认“编码器/后端本身不可用”的强特征。
+        // 不要放裸的 Invalid argument / not supported / Specified pixel format：
+        // ffmpeg 在 warning 级别会把这些写进 stderr，渲染期的滤镜/像素格式提示
+        // 会在管道里留下噪声，导致磁盘满、权限失败也误触发 CPU 重跑。
+        string[] markers =
+        {
+            "Unknown encoder",
+            "Error while opening encoder",
+            "Could not open encoder",
+            "Error initializing output stream",
+            "No such device",
+            "Option not found",
+            "Encoder requires",
+            "not supported by",
+            "Cannot load nvcuda",
+            "Cannot load nvEncodeAPI",
+            "Cannot load mfx",
+            "Cannot load amfrt"
+        };
+        foreach (string marker in markers)
+        {
+            if (text.IndexOf(marker, StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+        return false;
     }
 
     // 供异常消息拼接：读当前累计的 stderr（可能为空）
