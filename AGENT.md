@@ -163,7 +163,7 @@ powershell -File tools/i18n/gen-locdata.ps1   # 从 source.json 重新生成 Loc
 
 - **新增检查必须同时加一条变异**证明它能红。
 - **变异要退回真实的 bug 形状**，不能只做 `true→false` 这种必然红的偷懒改法。
-- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-16 实测：274 条 `✓`、509 键（14 语言）、328 个变异标签、6 个只读审计。** 引用前先跑，或直接写「以实跑为准」。
+- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-17 实测：283 条 `✓`、509 键（14 语言）、334 个变异标签、6 个只读审计。** 引用前先跑，或直接写「以实跑为准」。
 - **判据锚点与变异模式从当前文件实读，不凭记忆写。** 闸门的 Check 先经 `SrcUtil.Clean` 剥注释再跑判据——锚点带 `//` 尾巴必失配；行首缩进/文本要逐字一致；源码重构后旧模式会命中 0 次（2026-11-15 实测两起：FF 行锚点带注释尾巴、U125 模式缩进过时）。
 
 ## 6. 架构
@@ -422,7 +422,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 12. **`LocData.cs` 与 `source.json` 没有一致性检查**：手改生成物闸门不会红。
 13. **全量变异回归不在 CI**（E-F5 未修），要自己定期跑。
 14. **`.gitattributes` 强制 `text eol=lf`**，别提交 CRLF 差异。
-15. **文档口径曾经普遍过期**（2026-10-28 实测；2026-11-16 已对齐一次）：`Loc.cs` 与 `tools/i18n/README.md` 曾写「325 键」，实际 **509**；`docs/verify.md` 曾写 111 条断言，实际 **274**；变异标签曾写 153/155/269，实际 **328**——别把「断言数」和「变异数」看混。`Settings.cs:8` 提到的 `SettingsUI` 类型**不存在**（绘制在 `Pages.Pages.Draw*`）；`SpectrePatch.cs:73-76` 的示例写 `MaxVersion = GameVersion.VerifiedBuild`，但 `GameVersion` 没有这个成员。引用任何数字前先实测。
+15. **文档口径曾经普遍过期**（2026-10-28 实测；2026-11-16 已对齐一次）：`Loc.cs` 与 `tools/i18n/README.md` 曾写「325 键」，实际 **509**；`docs/verify.md` 曾写 111 条断言，实际 **283**；变异标签曾写 153/155/269，实际 **334**——别把「断言数」和「变异数」看混。`Settings.cs:8` 提到的 `SettingsUI` 类型**不存在**（绘制在 `Pages.Pages.Draw*`）；`SpectrePatch.cs:73-76` 的示例写 `MaxVersion = GameVersion.VerifiedBuild`，但 `GameVersion` 没有这个成员。引用任何数字前先实测。
 16. `OnGui.cs` 的成员注释引用「类注释第 3/4 条规则」，但类注释已不在文件里——别去找不存在的规则原文。
 17. 用 `Measure-Object -Line` 数行会跳过空行，行号会漂；以 read 工具/编辑器的物理行号为准。
 18. 本仓库的工作区经常带着**未提交的改动**（本次写作期间 `Pages.cs` 就被本团队之外的人改过、dll 也被重新构建）。动工前后各看一眼 `git status`，别把别人的半成品算成自己的，也别顺手 revert。
@@ -455,6 +455,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 
 - 画面是否「跟当初一模一样」、键音、光标位置、渲染观感：只能实机。
 - 实机路径：`tools/deploy.ps1` → 进游戏 → 按设置页热键（默认 `Settings.WindowButton`）开面板 → 进关卡录一局 → 手动保存 → **重新载入该关卡**后回放（回放要重开那一关才真正开始）→ 渲染一段短片。
+- 2B-0 颜色先导：`tools/hdr-probe.ps1`（或游戏启动参数 `--spectre-hdr-probe`）→ 进入关卡后读 `hdr-probe.txt` / `hdr-probe.png`，看 `max` 与 `over1`。`max <= 1.0` 则 2B 降级为 10-bit 精度。
 - 热键：面板、手动保存、放弃保存、中止渲染都在设置页可改；默认值见 `Settings.WindowButton` / `SaveButton` / `CancelSaveButton` / 渲染中止键。
 - 已知需要实机确认的假设：15fps 下 `AudioRenderer` 溢出、`ScreenCapture` 回读帧对齐、`Microphone.Start` 采样率行为、`ScreenCapture` 回读失败时的上一帧复制路径。
 

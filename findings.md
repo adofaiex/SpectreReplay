@@ -21,7 +21,7 @@
 ## Verification
 - tools/verify.ps1 -Ci -SkipDeploy：全部通过。
 - 主项目 Release：0 错误，0 警告。
-- 离线套件：274 条断言，0 失败（2026-11-16 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
+- 离线套件：283 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
 - 只读审计：6 项全部通过。
 - MUT-TL1 至 MUT-TL7：全部被检出。
 
@@ -51,6 +51,23 @@
   当前靠 `LevelDataStripped` + 关闭还原降低风险，完整覆盖需要实机验证。
 - `EffectRemover` 还原依赖 `GDMiniJSON.Json.Deserialize(LevelData.Encode())`，需在真实编辑器里跑一次
   「开启 → 进关 → 关闭 → 保存 → 重进」确认瞬时状态无副作用。
+
+## 2B-0 颜色先导实验（2026-11-17）
+- 探针：`--spectre-hdr-probe`，ARGBHalf/RGBAHalf，等待 `scrConductor.song.isPlaying`，采样 2.5s。
+- 两次实机结果：
+  - `max=2.654297`（两次完全一致，fp16 量化）
+  - `max_frame=3/4`
+  - `over1=111202/81457`，按像素占比 **0.318% / 0.340%**
+  - `frames=38/26`（同步回读拖慢帧率，窗口都是 2.5s）
+  - `nonblack=35020800/23952542`
+  - `colorspace=0`（Unity `QualitySettings.activeColorSpace` = Gamma）
+- 结论：
+  - ADOFAI 是 **Gamma 色彩空间**，帧缓冲是显示编码值，不是线性光。
+  - 存在确定性超白源（命中闪光/固定 HDR 颜色），HDR 收益真实。
+  - 纯 10-bit SDR（BT.709）会把 >1.0 钳掉，**不能保留超白**。
+  - 若做 HDR10：必须先 gamma→linear 解码 + BT.709→BT.2020 色域转换，再 PQ 编码。
+  - 不能把 Gamma 0–1 直接标 `smpte2084`；PNG 只作构图参照，测量以 `hdr-probe.txt` 为准。
+- 2B 走向：**2B-1 10-bit SDR（banding）独立推进；2B-2 HDR10 + 转换链单独立项**。
 
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md

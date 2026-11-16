@@ -105,6 +105,7 @@ namespace SpectreReplay
             catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时还原去特效谱面失败：" + ex.Message); }
             SpectrePatchHub.UnpatchAll();
             PatchManager.UnpatchAll();
+            Features.VideoRender.HdrProbe.Stop();
             MainThread.Uninstall();
             AudioRecorder.StopAllMicrophones();
             Ui.Timeline.TimelineOverlay.Destroy();
@@ -130,6 +131,8 @@ namespace SpectreReplay
                 Settings.check(modEntry.Path);
                 PatchManager.Initialize(harmony);
                 MainThread.Install();
+                // 命令行诊断：--spectre-hdr-probe（2B-0 颜色先导实验）。正常启动不创建对象。
+                Features.VideoRender.HdrProbe.TryStart();
                 Ui.Timeline.TimelineOverlay.Ensure();
                 Features.VideoRender.VideoEncoder.WarmUp();
 

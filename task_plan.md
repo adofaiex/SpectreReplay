@@ -71,8 +71,8 @@ Phase 6（加固）
 - [x] EncoderMatrixCheck + MUT-ENC1/2/3
 - **Status:** complete
 
-### Phase 9: 后续（未开始）
-- [ ] 2A AV1 + 通用硬件后端（Auto/NVENC/QSV/AMF/CPU）
+### Phase 9: 后续（进行中）
+- [x] 2A AV1 + 通用硬件后端（Auto/NVENC/QSV/AMF/CPU）
   - [x] 2A-1 设置模型：`RenderEncoderMode` 瘦身 + `RenderHardware`（0 Auto/1 NVENC/2 QSV/3 AMF/4 CPU）
     - [x] `RenderEncoderMode` 只留 `0=Auto / 1=Fastest / 2=Quality`；后端只由 `RenderHardware` 决定（唯一判定源）
     - [x] 删 `VideoEncoder.cs:18` 的 `Quality.CpuOnly`，并把 `:491` 的 `quality != Quality.CpuOnly` 换成纯 hardware 判定
@@ -95,17 +95,27 @@ Phase 6（加固）
     - [x] `tools/ffmpeg-capability.ps1` 校验期望集合；失败时把 `-encoders` 输出存 artifact
     - [x] 断言只管**发布包里那份 ffmpeg**；玩家自备的仍靠运行时 `EncoderCatalog`
     - [x] `MUT-CI22` 钉住 `libx265` 不得从期望集合漏掉
-- [ ] 2B-0 颜色先导实验（ARGB64 抓一帧 + 同帧 SDR 对照，测通道最大值与 banding 差异；只看最大值不足以证明收益）
-- [ ] 2B 10-bit 精度（优先）/ HDR10 容器（可选，需 SDR→PQ 或 HLG）
-  - [ ] `RenderTextureFormat.ARGB64` + `GraphicsFormat.R16G16B16A16_UNorm` + `AsyncGPUReadback` GraphicsFormat 重载（现有回读用的是 TextureFormat 重载）
+- [x] 2B-0 颜色先导实验（已实机跑；结论：Gamma 空间 + 确定性超白）
+  - [x] `HdrProbe`：`--spectre-hdr-probe` + ARGBHalf/RGBAHalf + `hdr-probe.txt/.png`
+  - [x] 只等 `scrConductor.song.isPlaying`，避免选曲界面暗帧
+  - [x] 检查 `rt.Create()`；多帧采样 2.5s，记录 `max`/`max_frame`/`nonblack`
+  - [x] `tools/hdr-probe.ps1` 解析 `status`/`nonblack`，失败 exit 1
+  - [x] 实机数据：`max=2.654297`、`colorspace=0 (Gamma)`、`over1≈0.32–0.34%`、两次采样一致
+  - [x] 判定：超白真实存在；纯 10-bit 保不住；HDR10 必须做 gamma→linear + BT.709→BT.2020 转换
+- [ ] 2B-1 10-bit SDR（独立可做，解决 banding）
+  - [ ] `RenderTextureFormat.ARGB64` + `GraphicsFormat.R16G16B16A16_UNorm` + `AsyncGPUReadback` GraphicsFormat 重载
   - [ ] 输出 `yuv420p10le` + BT.709，不加 HDR 元数据；4K 队列按 8 字节/像素限容
-  - [ ] HDR 第一版仅 H.265 + CleanCamera，禁用光标叠加或补 16-bit 光标；禁止把 SDR 0–1 直接标 `smpte2084`
+- [ ] 2B-2 HDR10 + 转换链（依赖 2B-0 结论）
+  - [ ] 采集改 `ARGBHalf` / `R16G16B16A16_SFloat`，不能用 UNorm 测/存 >1.0
+  - [ ] gamma→linear EOTF 解码 + BT.709→BT.2020 色域转换（Unity blit shader 或 ffmpeg `zscale`/`colorspace`）
+  - [ ] 输出 `yuv420p10le` + BT.2020 + PQ/SMPTE2084；仅 H.265 + CleanCamera
+  - [ ] 禁止把 Gamma 0–1 直接标 `smpte2084`；PNG 仅作构图参照，测量以 `hdr-probe.txt` 为准
 - [ ] 2C QSV/AMF 全矩阵（需 Intel/AMD 实机；无实机只做形状断言，不宣称已验证）
 - [ ] 2D 组件类型过滤（不手填 GameObject 名）
   - [ ] `RenderOverlayExcludeTypes` 字符串数组：`ConfigManager` 目前只有 int/bool/string/float 四类读写路径，需新增数组持久化 + 空值/分隔符归一化（预留 0.25–0.5 天）
   - [ ] UI 显示「已匹配 N 个对象」；配置错误不能表现为「什么都没显示」
 - [ ] Pages 拆分与静态状态收敛
-- **Status:** pending
+- **Status:** in_progress
 
 ## Decisions Made
 | Decision | Rationale |
