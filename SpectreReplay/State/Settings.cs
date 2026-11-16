@@ -198,6 +198,9 @@ public static class Settings
     // 视频编码：0 H.264（默认，保持旧成片兼容）1 H.265 2 AV1。WebM 容器强制 VP9，
     // 这个值只在 mp4/mkv/mov 生效。AV1 软件优先 SVT，退回 libaom；硬件按可用性。
     public static int RenderVideoCodec = 0;
+    // 10-bit SDR：ARGB64 采集 + yuv420p10le / BT.709，减少渐变 banding。
+    // 不保留 >1.0 的超白（HDR10 是 2B-2 的独立转换链）；光标叠加在此模式禁用。
+    public static bool Render10Bit;
     // 码率控制：0 ABR（目标码率）1 CRF（质量）2 CQP（量化）3 CBR（恒定码率）。
     // CRF/CQP 的数值域与 x264/x265 一致；WebM 的 VP9 只支持 ABR/CRF，CQP/CBR 会
     // 自动退回 ABR（见 VideoEncoder.EncoderArguments）。

@@ -43,6 +43,11 @@ internal static class HdrProbeCheck
         Check(probe.Contains("QualitySettings.activeColorSpace", StringComparison.Ordinal)
             && probe.Contains("colorspace=", StringComparison.Ordinal),
             "① 探针报告色彩空间（PQ 前置判据）");
+        Check(probe.Contains("RenderTextureFormat.ARGB32", StringComparison.Ordinal)
+            && probe.Contains("RenderTextureFormat.ARGB64", StringComparison.Ordinal)
+            && probe.Contains("ab_uniq8=", StringComparison.Ordinal)
+            && probe.Contains("ab_uniq10=", StringComparison.Ordinal),
+            "④ A/B 对拍：ARGB32/ARGB64 同链双帧 + 量化阶数");
         Check(main.Contains("Features.VideoRender.HdrProbe.TryStart();", StringComparison.Ordinal)
             && main.Contains("Features.VideoRender.HdrProbe.Stop();", StringComparison.Ordinal),
             "② Main 在 Load/Teardown 接线");

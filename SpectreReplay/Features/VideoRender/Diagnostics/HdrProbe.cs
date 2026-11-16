@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 
@@ -148,6 +149,10 @@ namespace SpectreReplay.Features.VideoRender
                 File.WriteAllBytes(png, tex.EncodeToPNG());
                 string status = nonblack == 0 ? "nonblack=0" : "ok";
                 WriteReport(status, max, maxFrame, over1, nonblack, frames, png);
+                // 2B-1 对拍：同一相机链紧邻两帧分别渲到 ARGB32 / ARGB64，统计每通道
+                // 唯一量化值数与相邻亮度阶差。帧间画面差在慢速段落可接受——要量的
+                // 是量化阶数分布，不是逐像素绝对值。
+                yield return CaptureAbReadback(camera, rt, tex, w, h);
             }
             finally
             {
@@ -160,6 +165,114 @@ namespace SpectreReplay.Features.VideoRender
                 Destroy(rt);
             }
             Destroy(gameObject);
+        }
+
+        /// <summary>
+        /// 2B-1 banding 对拍：同一相机链抓两帧，ARGB32（8-bit，对应现状）与
+        /// ARGB64（10-bit，对应 2B-1）。统计每通道唯一量化值数（uniq）与
+        /// 亮度相邻差的非零比（gradient walk），写进 ab_* 字段。
+        /// </summary>
+        private IEnumerator CaptureAbReadback(scrCamera camera, RenderTexture rtHalf,
+            Texture2D texHalf, int w, int h)
+        {
+            var abRt = new[]
+            {
+                new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32),
+                new RenderTexture(w, h, 24, RenderTextureFormat.ARGB64),
+            };
+            var uniq = new[] { -1, -1 };
+            var steps = new[] { -1, -1 };
+            var pngs = new[] { "", "" };
+            string dir = Application.persistentDataPath;
+            Directory.CreateDirectory(dir);
+            for (int k = 0; k < 2; k++)
+            {
+                if (!abRt[k].Create())
+                {
+                    WriteReport("ab rt create failed", 0f, -1, 0, 0, 0, null);
+                    break;
+                }
+                camera.Bgcamstatic.targetTexture = abRt[k];
+                camera.BGcam.targetTexture = abRt[k];
+                camera.camobj.targetTexture = abRt[k];
+                yield return new WaitForEndOfFrame();
+                TextureFormat tf = k == 0 ? TextureFormat.RGBA32 : TextureFormat.RGBA64;
+                Texture2D t = new Texture2D(w, h, tf, false, true);
+                RenderTexture.active = abRt[k];
+                t.ReadPixels(new Rect(0, 0, w, h), 0, 0);
+                t.Apply(false);
+                try
+                {
+                    CountQuantization(t, k == 1, out uniq[k], out steps[k]);
+                    string p = Path.Combine(dir, "hdr-probe-ab" + (k == 0 ? "8" : "10") + ".png");
+                    File.WriteAllBytes(p, t.EncodeToPNG());
+                    pngs[k] = p;
+                }
+                finally
+                {
+                    Destroy(t);
+                    RenderTexture.active = null;
+                    abRt[k].Release();
+                    Destroy(abRt[k]);
+                }
+                yield return null;
+            }
+            // 恢复相机目标（finally 之外的兜底；正常采样已恢复过）
+            camera.Bgcamstatic.targetTexture = rtHalf;
+            camera.BGcam.targetTexture = rtHalf;
+            camera.camobj.targetTexture = rtHalf;
+            AppendAbReport(uniq[0], steps[0], uniq[1], steps[1], pngs[0], pngs[1]);
+            // rtHalf/texHalf 归还调用处的 finally；这里只收尾本协程的资源
+        }
+
+        /// <summary>统计唯一量化值数（每通道合并集合）与亮度相邻差非零比。</summary>
+        private static void CountQuantization(Texture2D t, bool tenBit, out int uniq, out int steps)
+        {
+            int w = t.width, h = t.height;
+            var seen = new HashSet<int>();
+            int nonzeroSteps = 0, totalSteps = 0;
+            Color32[] c32 = tenBit ? null : t.GetPixels32();
+            Color[] c = tenBit ? t.GetPixels() : null;
+            for (int y = 0; y < h; y++)
+            {
+                for (int x = 0; x < w; x++)
+                {
+                    int idx = y * w + x;
+                    int r, g, b;
+                    if (tenBit) { r = (int)(c[idx].r * 65535f); g = (int)(c[idx].g * 65535f); b = (int)(c[idx].b * 65535f); }
+                    else { r = c32[idx].r; g = c32[idx].g; b = c32[idx].b; }
+                    seen.Add(r); seen.Add(g); seen.Add(b);
+                    if (x > 0)
+                    {
+                        int pr, pg, pb;
+                        if (tenBit) { pr = (int)(c[idx - 1].r * 65535f); pg = (int)(c[idx - 1].g * 65535f); pb = (int)(c[idx - 1].b * 65535f); }
+                        else { pr = c32[idx - 1].r; pg = c32[idx - 1].g; pb = c32[idx - 1].b; }
+                        // 亮度近似：只看 R 通道的相邻差（渐变区主要看单通道阶差）
+                        int d = Math.Abs(r - pr);
+                        totalSteps++;
+                        if (d != 0) nonzeroSteps++;
+                    }
+                }
+            }
+            uniq = seen.Count;
+            steps = totalSteps == 0 ? 0 : nonzeroSteps * 100 / totalSteps;
+        }
+
+        /// <summary>把 ab_* 追加到 hdr-probe.txt（独立写，避免重排既有字段）。</summary>
+        private static void AppendAbReport(int uniq8, int steps8, int uniq10, int steps10,
+            string png8, string png10)
+        {
+            string dir = Application.persistentDataPath;
+            Directory.CreateDirectory(dir);
+            string text = "ab_uniq8=" + uniq8
+                + "\nab_steps8=" + steps8
+                + "\nab_uniq10=" + uniq10
+                + "\nab_steps10=" + steps10
+                + "\nab_png8=" + (png8 ?? "")
+                + "\nab_png10=" + (png10 ?? "")
+                + "\n";
+            File.AppendAllText(Path.Combine(dir, "hdr-probe.txt"), text);
+            Debug.Log("[SpectreReplay] HDR probe AB: " + text);
         }
 
         private static void WriteReport(string status, float max, int maxFrame, int over1,

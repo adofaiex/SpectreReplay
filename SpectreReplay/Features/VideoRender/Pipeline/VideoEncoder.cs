@@ -81,6 +81,7 @@ internal sealed class VideoEncoder : IDisposable
     private readonly int qualityTier;
     private readonly bool flipRows;
     private readonly OutContainer container;
+    private readonly int bytesPerPixel;
     private readonly VideoCodec videoCodec;
     private readonly HardwareBackend hardware;
     private readonly RateControlMode rateControl;
@@ -111,7 +112,7 @@ internal sealed class VideoEncoder : IDisposable
         OutContainer container = OutContainer.Mp4,
         VideoCodec videoCodec = VideoCodec.H264, RateControlMode rateControl = RateControlMode.Abr,
         int crf = 20, int cqp = 23, int bitrateMbps = 0, int preset = 0,
-        HardwareBackend hardware = HardwareBackend.Auto)
+        HardwareBackend hardware = HardwareBackend.Auto, bool tenBit = false)
     {
         this.exePath = exePath;
         this.rawVideoPath = rawVideoPath;
@@ -123,6 +124,7 @@ internal sealed class VideoEncoder : IDisposable
         this.qualityTier = Math.Max(0, Math.Min(3, qualityTier));
         this.flipRows = flipRows;
         this.container = container;
+        this.bytesPerPixel = tenBit ? 8 : 4;
         this.videoCodec = videoCodec;
         this.hardware = hardware;
         this.rateControl = rateControl;
@@ -257,7 +259,7 @@ internal sealed class VideoEncoder : IDisposable
                 var container = (OutContainer)Mathf.Clamp(SpectreReplay.Settings.RenderOutputFormat, 0, 3);
                 var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 2);
                 var hardware = (HardwareBackend)Mathf.Clamp(SpectreReplay.Settings.RenderHardware, 0, 4);
-                ResolveCodec(container, codec, hardware);
+                ResolveCodec(container, codec, hardware, SpectreReplay.Settings.Render10Bit);
             }
             catch { /* 预热失败不影响后续按需探测 */ }
         });
@@ -268,16 +270,16 @@ internal sealed class VideoEncoder : IDisposable
 
     internal void Begin()
     {
-        string args = "-y -f rawvideo -pixel_format rgba"
+        string args = "-y -f rawvideo -pixel_format " + PixelFormat()
             + " -video_size " + width + "x" + height
             + " -framerate " + fps
             + " -i - -an -vf " + Quote(RowFilter())
             + " " + EncoderArguments()
-            + " -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 "
+            + " -pix_fmt " + TargetFormat() + " -colorspace bt709 -color_primaries bt709 -color_trc bt709 "
             + Quote(rawVideoPath);
         pipe = Spawn(args, redirectInput: true);
         // 帧队列缓存上限约 256 MiB
-        QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * 4)));
+        QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * bytesPerPixel)));
         queue = new BlockingCollection<PendingFrame>(QueueCapacity);
         pumpFailure = null;
         pump = new Thread(PumpLoop)
@@ -481,12 +483,16 @@ internal sealed class VideoEncoder : IDisposable
         }
     }
 
+    private string PixelFormat() => bytesPerPixel == 8 ? "rgba64le" : "rgba";
+
+    private string TargetFormat() => bytesPerPixel == 8 ? "yuv420p10le" : "yuv420p";
+
     // 相机纹理回读的行序与视频相反时补一次翻转；pad 把奇数宽高补偶数（yuv420p 要求）；
     // RGB→YUV 显式走 BT.709 矩阵——swscale 对无标记 RGB 默认 BT.601，HD 播放器按 709 解读会偏色
     private string RowFilter()
     {
         const string pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
-        const string color = ",scale=out_color_matrix=bt709,format=yuv420p";
+        string color = ",scale=out_color_matrix=bt709,format=" + TargetFormat();
         return (flipRows ? "vflip," : "") + pad + color;
     }
 
@@ -623,7 +629,7 @@ internal sealed class VideoEncoder : IDisposable
     }
 
     private static Codec ResolveCodec(OutContainer container, VideoCodec videoCodec,
-        HardwareBackend hardware)
+        HardwareBackend hardware, bool tenBit)
     {
         // webm 容器只认 VP8/VP9 + Vorbis/Opus；H.264/H.265 都不能进 WebM。
         if (container == OutContainer.WebM) return Codec.Vp9;
@@ -644,6 +650,10 @@ internal sealed class VideoEncoder : IDisposable
             if (candidate == Codec.X264 || candidate == Codec.X265
                 || candidate == Codec.SvtAv1 || candidate == Codec.AomAv1)
                 return candidate;
+            // h264_qsv 在本构建里只有 nv12，没有任何 10-bit 输入格式。
+            // 10-bit 时跳过它，继续尝试后面的 AMF/软件，避免 ffmpeg 静默 auto-select nv12。
+            if (tenBit && candidate == Codec.QsvH264)
+                continue;
 
             int state = EncoderStateFor(exe, EncoderName(candidate));
             if (state == 1)
@@ -663,12 +673,13 @@ internal sealed class VideoEncoder : IDisposable
     }
 
     private Codec PickCodec(OutContainer container)
-        => ResolveCodec(container, videoCodec, hardware);
+        => ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8);
 
     internal static string DescribeEncoder(OutContainer container,
-        VideoCodec videoCodec = VideoCodec.H264, HardwareBackend hardware = HardwareBackend.Auto)
+        VideoCodec videoCodec = VideoCodec.H264, HardwareBackend hardware = HardwareBackend.Auto,
+        bool tenBit = false)
     {
-        switch (ResolveCodec(container, videoCodec, hardware))
+        switch (ResolveCodec(container, videoCodec, hardware, tenBit))
         {
             case Codec.Vp9: return "libvpx-vp9 (CPU)";
             case Codec.NvencH265: return "hevc_nvenc (GPU)";

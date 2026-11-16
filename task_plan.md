@@ -102,10 +102,15 @@ Phase 6（加固）
   - [x] `tools/hdr-probe.ps1` 解析 `status`/`nonblack`，失败 exit 1
   - [x] 实机数据：`max=2.654297`、`colorspace=0 (Gamma)`、`over1≈0.32–0.34%`、两次采样一致
   - [x] 判定：超白真实存在；纯 10-bit 保不住；HDR10 必须做 gamma→linear + BT.709→BT.2020 转换
-- [ ] 2B-1 10-bit SDR（独立可做，解决 banding）
-  - [ ] `RenderTextureFormat.ARGB64` + `GraphicsFormat.R16G16B16A16_UNorm` + `AsyncGPUReadback` GraphicsFormat 重载
-  - [ ] 输出 `yuv420p10le` + BT.709，不加 HDR 元数据；4K 队列按 8 字节/像素限容
-- [ ] 2B-2 HDR10 + 转换链（依赖 2B-0 结论）
+- [x] 2B-1 10-bit SDR（代码完成 + 实机 banding 对拍证实）
+  - [x] `RenderTextureFormat.ARGB64` + `GraphicsFormat.R16G16B16A16_UNorm` + `AsyncGPUReadback` GraphicsFormat 重载
+  - [x] 输出 `yuv420p10le` + BT.709，不加 HDR 元数据；4K 队列按 8 字节/像素限容
+  - [x] `tools/ffmpeg-probe.ps1` 增加 10-bit 用例（libx264 / libx265 + yuv420p10le）
+  - [x] WholeScreen + 10-bit 显示收益有限提示（8-bit 后备缓冲）
+  - [x] 10-bit 时跳过 h264_qsv（无 10-bit 输入），回退 AMF/软件
+  - [x] MaxInFlight 先按像素、再对 10-bit 减一档；4K 10-bit 单帧 ~66MB
+  - [x] 实机同链双帧 ARGB32 vs ARGB64 回读对比：`ab_uniq8=255 / ab_uniq10=62992`、`ab_steps8=18% / ab_steps10=37%`，10-bit 相邻差非零比翻倍 → banding 改善证实
+- [x] 2B-1 10-bit SDR（代码 + 实机对拍全部完成）
   - [ ] 采集改 `ARGBHalf` / `R16G16B16A16_SFloat`，不能用 UNorm 测/存 >1.0
   - [ ] gamma→linear EOTF 解码 + BT.709→BT.2020 色域转换（Unity blit shader 或 ffmpeg `zscale`/`colorspace`）
   - [ ] 输出 `yuv420p10le` + BT.2020 + PQ/SMPTE2084；仅 H.265 + CleanCamera

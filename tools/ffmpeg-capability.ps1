@@ -52,6 +52,11 @@ foreach ($name in $required) {
 if (-not ($av1 | Where-Object { $names.Contains($_) })) {
     $missing += 'AV1 (' + ($av1 -join '/') + ')'
 }
+# 10-bit 能力：发布包里的 libx265 必须能接受 yuv420p10le，否则 2B-1 静默降级。
+$h265Info = (& $Ffmpeg -hide_banner -h encoder=libx265 2>&1 | Out-String)
+if ($h265Info -notmatch 'yuv420p10le') {
+    $missing += 'libx265:yuv420p10le'
+}
 
 if ($missing.Count -gt 0) {
     Write-Error ("ffmpeg 能力断言失败，缺少：" + ($missing -join ', '))

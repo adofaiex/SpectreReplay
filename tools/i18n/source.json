@@ -599,11 +599,26 @@
   "zh": "画面来源",
   "en": "Frame source"
  },
- {
-  "key": "render.cursor",
-  "zh": "鼠标指针",
-  "en": "Mouse cursor"
- },
+  {
+   "key": "render.cursor",
+   "zh": "鼠标指针",
+   "en": "Mouse cursor"
+  },
+  {
+   "key": "render.10bit",
+   "zh": "10-bit 精度",
+   "en": "10-bit precision"
+  },
+  {
+   "key": "render.10bit.tip",
+   "zh": "ARGB64 采集 + yuv420p10le，减少渐变 banding；不保留 >1.0 超白，光标叠加禁用。",
+   "en": "ARGB64 capture + yuv420p10le to reduce gradient banding; does not preserve >1.0 highlights and disables cursor overlay."
+  },
+  {
+   "key": "render.10bit.screen_note",
+   "zh": "游戏画面来源是 8-bit 后备缓冲；10-bit 只剩矩阵精度收益，banding 改善有限。",
+   "en": "WholeScreen captures an 8-bit backbuffer; 10-bit only improves matrix precision, with limited banding benefit."
+  },
  {
   "key": "render.codec.auto",
   "zh": "自动",

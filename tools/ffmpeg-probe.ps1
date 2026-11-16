@@ -179,6 +179,42 @@ foreach ($c in $containers) {
         $(if ($ok) { 'OK  ' } else { 'FAIL' }), $c.name, [int]($midSize/1KB), [int]((Get-Item $final).Length/1KB), $dur, $hasVideo, $hasAudio)
 }
 
+# ── 10-bit SDR 用例：libx264 / libx265 + yuv420p10le ───────────────
+# 2B-1 的编码链：ARGB64 采集在 C# 侧，ffmpeg 侧只关心 10-bit 像素格式与编码器接受度。
+$tenVf = $vf -replace 'format=yuv420p', 'format=yuv420p10le'
+$gop10 = [Math]::Max(1, $FPS * 2)
+foreach ($tenCodec in @(
+    @{ name = 'x264'; codec = 'libx264' },
+    @{ name = 'x265'; codec = 'libx265' }
+)) {
+    $tenTag = "10bit_$($tenCodec.name)"
+    $tenMid = Join-Path $work "temp_video_$tenTag.mp4"
+    $tenFinal = Join-Path $work "out_$tenTag.mp4"
+    $tenEncArgs = "-y -f rawvideo -pixel_format rgba -video_size ${W}x${H} -framerate $FPS -i `"$framesCat`" -an -vf `"$tenVf`" -c:v $($tenCodec.codec) -preset ultrafast -crf 28 -pix_fmt yuv420p10le -g $gop10 `"$tenMid`""
+    $p = Start-Process -FilePath $ff -ArgumentList $tenEncArgs -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e1.txt')
+    if ($p.ExitCode -ne 0) {
+        Write-Output ("  [FAIL] $tenTag encode exit={0}" -f $p.ExitCode)
+        Get-Content (Join-Path $work 'e1.txt') -Tail 4 | ForEach-Object { "      $_" }
+        $fail++; continue
+    }
+    $tenAudio = '-c:a aac -b:a 320k'
+    $tenMux = "-y -i `"$tenMid`" -i `"$wav`" -map 0:v:0 -map 1:a:0 -c:v copy $tenAudio -ac 2 `"$tenFinal`""
+    $p2 = Start-Process -FilePath $ff -ArgumentList $tenMux -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e2.txt')
+    if ($p2.ExitCode -ne 0) {
+        Write-Output ("  [FAIL] $tenTag mux exit={0}" -f $p2.ExitCode)
+        Get-Content (Join-Path $work 'e2.txt') -Tail 4 | ForEach-Object { "      $_" }
+        $fail++; continue
+    }
+    $probeFile = Join-Path $work 'probe.txt'
+    Start-Process -FilePath $ff -ArgumentList "-hide_banner -i `"$tenFinal`"" -Wait -NoNewWindow `
+        -RedirectStandardError $probeFile -RedirectStandardOutput (Join-Path $work 'probe_out.txt') | Out-Null
+    $probe = [IO.File]::ReadAllText($probeFile)
+    $ok = ($probe -match 'Audio:') -and ($probe -match 'Video:') -and ($probe -match 'yuv420p10le')
+    if (-not $ok) { $fail++ }
+    Write-Output ("  [{0}] $tenTag  video={1} audio={2} 10bit={3}" -f `
+        $(if ($ok) { 'OK  ' } else { 'FAIL' }), ($probe -match 'Video:'), ($probe -match 'Audio:'), ($probe -match 'yuv420p10le'))
+}
+
 # ── AV1 矩阵：svt/aom × ABR/CRF/CQP/CBR × mp4/mkv ──────────────────
 # 这一组专门抓「参数形状非法」：svt 不接受 -maxrate、aom 的 CRF 需要 -b:v 0、
 # MOV 不能装 AV1（所以只测 mp4/mkv）。

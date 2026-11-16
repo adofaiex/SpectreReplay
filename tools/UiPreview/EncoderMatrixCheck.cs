@@ -149,7 +149,7 @@ internal static class EncoderMatrixCheck
             && pages.Contains("render.codec.aom_slow", StringComparison.Ordinal)
             && pages.Contains("render.codec.hw_fallback", StringComparison.Ordinal),
             "⑥ 回退原因提示在（MOV/AV1、SVT CBR、libaom、硬件不可用）");
-        Check(enc.Contains("switch (ResolveCodec(container, videoCodec, hardware))", StringComparison.Ordinal)
+        Check(enc.Contains("switch (ResolveCodec(container, videoCodec, hardware, tenBit))", StringComparison.Ordinal)
             && !enc.Contains("ResolveCodec(quality, container, videoCodec", StringComparison.Ordinal),
             "⑦ DescribeEncoder 与 PickCodec 共用同一判定，quality 已退出后端判定");
         Check(enc.Contains("private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware, string exe)", StringComparison.Ordinal)
@@ -169,8 +169,9 @@ internal static class EncoderMatrixCheck
             && cap.Contains("'libx265'", StringComparison.Ordinal)
             && cap.Contains("'libvpx-vp9'", StringComparison.Ordinal)
             && cap.Contains("'aac'", StringComparison.Ordinal)
-            && cap.Contains("'libopus'", StringComparison.Ordinal),
-            "⑧ CI 能力断言覆盖核心编码器");
+            && cap.Contains("'libopus'", StringComparison.Ordinal)
+            && cap.Contains("-notmatch 'yuv420p10le'", StringComparison.Ordinal),
+            "⑧ CI 能力断言覆盖核心编码器与 10-bit");
         Check(cap.Contains("'libsvtav1'", StringComparison.Ordinal)
             && cap.Contains("'libaom-av1'", StringComparison.Ordinal)
             && cap.Contains("'av1_nvenc'", StringComparison.Ordinal)

@@ -21,7 +21,7 @@
 ## Verification
 - tools/verify.ps1 -Ci -SkipDeploy：全部通过。
 - 主项目 Release：0 错误，0 警告。
-- 离线套件：283 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
+- 离线套件：296 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
 - 只读审计：6 项全部通过。
 - MUT-TL1 至 MUT-TL7：全部被检出。
 
@@ -68,6 +68,12 @@
   - 若做 HDR10：必须先 gamma→linear 解码 + BT.709→BT.2020 色域转换，再 PQ 编码。
   - 不能把 Gamma 0–1 直接标 `smpte2084`；PNG 只作构图参照，测量以 `hdr-probe.txt` 为准。
 - 2B 走向：**2B-1 10-bit SDR（banding）独立推进；2B-2 HDR10 + 转换链单独立项**。
+
+## 2B-1 banding 对拍（2026-11-17 实机）
+- 同一相机链紧邻两帧分别渲到 ARGB32（8-bit）与 ARGB64（10-bit），统计每通道唯一量化值数与亮度相邻差非零比。
+- 数据：`ab_uniq8=255 / ab_uniq10=62992`（各自接近 256 / 65536 阶上限）、`ab_steps8=18% / ab_steps10=37%`。
+- **结论：10-bit 的相邻差非零比是 8-bit 的约 2 倍**（37% vs 18%）——同一渐变过渡带内 10-bit 走出两倍以上的独立亮度阶，banding 改善证实。
+- A/B 对拍由 `--spectre-hdr-probe` 顺带完成（`ab_*` 字段 + `hdr-probe-ab8/10.png`），断言 ④ 与 `MUT-HDR7` 守住。
 
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md

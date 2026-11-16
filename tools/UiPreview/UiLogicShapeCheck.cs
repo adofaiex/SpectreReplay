@@ -1100,7 +1100,7 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "㉛ 渲染作业必须把「录不录指针」交给画面源(否则开关只在界面上存在)",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
-                s => s.Contains("frames.DrawCursor = Settings.RenderCursorOn;", StringComparison.Ordinal));
+                s => s.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit;", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "㉜ 指针要在像素交付路径上画且位置随 Grab 采样(交付时现读会甩尾)",
                 "Features\\VideoRender\\Pipeline\\VideoFrameSource.cs",

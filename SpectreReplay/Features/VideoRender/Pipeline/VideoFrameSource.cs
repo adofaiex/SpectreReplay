@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using SpectreReplay.Features.Replay;
 using Unity.Collections;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 using Object = UnityEngine.Object;
 
@@ -56,6 +57,8 @@ internal sealed class VideoFrameSource
     // 抬高——满载时在飞 buffer 远超 8 个，池太小会每帧把几十 MB 大数组丢进 LOH
     private int spareLimit = 8;
     private readonly int frameBytes;
+    private readonly int bytesPerPixel;
+    internal int BytesPerPixel => bytesPerPixel;
     private readonly int screenW;
     private readonly int screenH;
 
@@ -96,16 +99,22 @@ internal sealed class VideoFrameSource
     {
         get
         {
+            // 先按像素保持 8-bit 原档位，再对 10-bit 减一档。
+            // 4K 8-bit 单帧 ~33MB，10-bit ~66MB；不能按字节阈值，否则 8-bit 4K 会被放宽。
             long pixels = (long)Width * Height;
-            if (pixels >= 7_500_000) return 3;  // 4K
-            if (pixels >= 3_500_000) return 4;  // 1440p
-            return 6;
+            int limit = pixels >= 7_500_000 ? 3 : pixels >= 3_500_000 ? 4 : 6;
+            if (bytesPerPixel == 8) limit = Math.Max(2, limit - 1);
+            return limit;
         }
     }
 
-    internal VideoFrameSource(VideoSurface surface, int width, int height)
+    internal VideoFrameSource(VideoSurface surface, int width, int height, bool tenBit = false)
     {
         this.surface = surface;
+        bytesPerPixel = tenBit ? 8 : 4;
+        RenderTextureFormat rtFormat = tenBit
+            ? RenderTextureFormat.ARGB64
+            : RenderTextureFormat.ARGB32;
         // 上报捕获面给渲染期补丁（判定飘字隐藏只拦 CleanCamera，见
         // Patch_VideoHideHitText）。构造失败由 CleanupOnConstructionFailure 清，
         // 正常收尾由 Dispose 清。
@@ -136,7 +145,7 @@ internal sealed class VideoFrameSource
                 oldBackground = camBackground.targetTexture;
                 oldMain = camMain.targetTexture;
 
-                texture = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32);
+                texture = new RenderTexture(width, height, 24, rtFormat);
                 // Create() 返回 false 表示显存/驱动拒绝（分辨率超限、显存耗尽、后台无设备）。
                 // 原实现无视返回值，于是异步回读每帧都 hasError，成片是一路黑帧却"渲染成功"
                 if (!texture.Create())
@@ -168,7 +177,7 @@ internal sealed class VideoFrameSource
                 Width = screenW = Screen.width;
                 Height = screenH = Screen.height;
                 // 截屏接口要求目标纹理不带深度缓冲
-                texture = new RenderTexture(Width, Height, 0, RenderTextureFormat.ARGB32);
+                texture = new RenderTexture(Width, Height, 0, rtFormat);
                 if (!texture.Create())
                 {
                     Object.Destroy(texture);
@@ -182,7 +191,7 @@ internal sealed class VideoFrameSource
             CleanupOnConstructionFailure();
             throw;
         }
-        frameBytes = Width * Height * 4;
+        frameBytes = Width * Height * bytesPerPixel;
     }
 
     private void CleanupOnConstructionFailure()
@@ -238,15 +247,18 @@ internal sealed class VideoFrameSource
             if (camBackground != null && camBackground.targetTexture != texture) camBackground.targetTexture = texture;
             if (camMain != null && camMain.targetTexture != texture) camMain.targetTexture = texture;
         }
-        AsyncGPUReadbackRequest request = AsyncGPUReadback.Request(
-            texture, 0, TextureFormat.RGBA32, _ => { });
+        AsyncGPUReadbackRequest request = bytesPerPixel == 8
+            ? AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_UNorm, _ => { })
+            : AsyncGPUReadback.Request(texture, 0, TextureFormat.RGBA32, _ => { });
         Flight flight = new Flight { Index = index, Request = request };
         // 指针位置在**这一帧**采样：见 Flight 里 CursorDrawn 的注释。
         // 两条来源：
         //   · 录制轨迹——按钉扎歌曲时间插值，与画面同源，渲染速度/管线波动
         //     都影响不到它。有轨迹（新录制的回放）一律走这条。
         //   · 活体捕获——旧回放没有轨迹时的回落，位置跑在墙钟上。
-        if (DrawCursor)
+        // 10-bit（8 字节/像素）第一版禁用光标叠加：CursorOverlay 仍按 4 字节绘制。
+        // 2B-2 再补 16-bit 光标路径；这里先保证不会把 8 字节缓冲当 4 字节写坏。
+        if (DrawCursor && bytesPerPixel == 4)
         {
             if (CursorTrack is { Count: > 0 }
                 && VideoRender.TryReadPinnedPosition(out double songPos)
