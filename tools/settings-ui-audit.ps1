@@ -27,7 +27,10 @@ foreach ($f in $files) {
 }
 
 $settingsFile = $files | Where-Object { $_.Name -eq 'Settings.cs' }
-$uiFiles = @($files | Where-Object { $_.Name -eq 'Pages.cs' -or $_.Name -eq 'OnGui.cs' })
+# 页面已按职责拆成 Pages\*.cs 多个 partial 文件（2026-11-18）：必须枚举整个 Pages
+# 目录。只认 Pages.cs 的话，拆出去那些页面里的控件引用就看不见了——报告会把
+# 「有界面入口」的设置项一律报成「无界面」，反向也会漏掉真正的孤儿字段。
+$uiFiles = @($files | Where-Object { $_.DirectoryName -like '*\Pages' -or $_.Name -eq 'OnGui.cs' })
 $uiText = ($uiFiles | ForEach-Object { $texts[$_.FullName] }) -join "`n"
 
 # 纯 UI 几何/主题字段白名单：本项目用 UMM 自带窗口，没有任何字段属于这一类。

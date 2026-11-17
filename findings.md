@@ -97,6 +97,27 @@
 - `Restore()` / `UnregisterExternal()` 复用 `RestoreEntry()`，行为不变、代码减少。
 - 断言：`UiLogicShapeCheck` JRP 检查已覆盖；`MUT-JRP1/2` 均实测变红。
 
+## 危险任务裁定：2C 硬件矩阵实机（2026-11-18）
+- 用户裁定：硬件编码矩阵实机探测（NVENC/QSV/AMF × H.264/H.265 × 8/10bit）会烧毁电脑显示屏，**属危险任务，禁止执行**。
+- 落地：`task_plan.md` 的「2C QSV/AMF 全矩阵」「硬件矩阵实机收口」「硬件 HDR10 实机」三项撤销；`tools/ffmpeg-probe.ps1` 的硬件矩阵段（逐个起真硬件编码会话）已移除，只留软件编码参数用例。
+- 仍保留的证据：离线形状断言（`EncoderMatrixCheck` ⑧ 只核对发布包 ffmpeg 的 `-encoders` 列表，不驱动硬件；`MUT-CI24` 守它）与 10-bit / HDR10 的参数形状断言。
+- 因此 QSV/AMF 永不写「已验证」；产品行为（10-bit 跳硬件 H.264、HDR10 仅 libx265）保持现状。
+
+## Pages 拆分（2026-11-18）
+- `Pages` 仍是 `internal static partial class`，3371 行按页拆成六个文件：
+  `RecordPage` / `PlaybackPage` / `RenderPage` / `EffectsPage` / `AboutPage` / `CloudPanel`；
+  `Pages.cs` 只剩共享壳（载入标记、待确认态、列表缓存、`Commit`/`FlushPending`/`ReplayList`）。
+- 交叉调到组外方法的成员（`SignMs`、`ApplyLoadedReplay`、预设相关）原地不动，不做大搬家。
+- 重复交互抽出一个组件：`Ui/ConfirmButton.cs`（回放删除 / 云端删除 / 预设删除共用），
+  状态仍归各调用点，两段式判定留在原地，闸门 ㉒b 的判据形状不变。
+- **闸门的路径问题**：一百多条判据写的是 `Pages\Pages.cs`。做法是把它保留成
+  **逻辑路径**——`SrcUtil.PagesSelector` 让所有按它读取的检查读到 `Pages/*.cs` 的拼接，
+  覆盖面从「一个文件」变成「所有页面文件」；`tools/mutate.ps1` 同样把该路径当集合处理
+  （`Backup` 备份全部页面、`Lines`/`SetLines` 用边界行拼接与拆回、`ReplaceExact` 仍要求整集合命中 1 次）。
+- 顺带修了 `LocCheck` 的一个真误报：`Loc.T("playback.info.err." + info.Error)` 的前缀字面量
+  被当成键（`ReplayInfoPanel.cs` 此前不在扫描面里，所以从没暴露）。现在紧跟 `+` 的字面量跳过。
+- 断言数拆分前后一致（315 条），MUT-D6 实跑仍变红并自动还原。
+
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md
 - D:/Projects/SpectreReplay/docs/verify.md

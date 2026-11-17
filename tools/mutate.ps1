@@ -50,24 +50,85 @@ function PathOf([string]$rel) {
     return Join-Path $src $rel
 }
 
-function Backup([string]$rel) {
-    $p = PathOf $rel
-    if (-not (Test-Path $p)) { throw "找不到 $rel" }
-    # 临时名要剥掉 repo: 前缀——冒号不是合法路径字符
-    $tag = (($rel -replace '^repo:', '') -replace '[\\/]', '__')
-    $saved = Join-Path $env:TEMP ('mut_' + $Which + '_' + $tag)
-    Copy-Item $p $saved -Force
-    [void]$touched.Add(@{ Rel = $rel; Saved = $saved })
+# ── 页面集合：逻辑路径 `Pages\Pages.cs` ───────────────────────────────
+#
+# 2026-11-18 把 3371 行的 Pages.cs 按职责拆成六个 partial 文件（RecordPage /
+# PlaybackPage / RenderPage / EffectsPage / AboutPage / CloudPanel），而本文件里
+# 有 51 条变异仍按 `Pages\Pages.cs` 定位锚点。若逐条改路径，一是要改 122 处、
+# 二是以后再加一页还得再改——所以这里把它保留成**逻辑路径**：
+#   · Backup / ReplaceExact / Lines / SetLines 认这个路径就等于「认全部页面文件」；
+#   · Lines 拼接时插入边界行，SetLines 按边界行拆回各自的文件，
+#     因此行内增删改（$ls[$i] = ... 这类）仍然成立；
+#   · ReplaceExact 仍要求**整个页面集合**里恰好命中 1 次，口径没放松。
+$PagesSelector = 'Pages\Pages.cs'
+$PagesBoundary = '// @@SRM-PAGE-BOUNDARY@@ '
+
+function ResolveTargets([string]$rel) {
+    if ($rel -eq $PagesSelector) {
+        $dir = Join-Path $src 'Pages'
+        if (-not (Test-Path $dir)) { throw "找不到 $rel（Pages 目录不存在）" }
+        # 严格与 SrcUtil.PageFiles 同口径：只收 partial class Pages 的 7 个文件，
+        # 排除独立类 ReplayInfoPanel.cs（拆分前不在 Pages.cs 内，避免无关重写与锚点污染）。
+        $all = @(Get-ChildItem $dir -Filter '*.cs' -File |
+            Where-Object { $_.Name -ne 'ReplayInfoPanel.cs' } |
+            Sort-Object Name |
+            ForEach-Object { $_.FullName })
+        if ($all.Count -eq 0) { throw "找不到 $rel（Pages 目录里没有源文件）" }
+        return $all
+    }
+    return @(PathOf $rel)
 }
 
-function Lines([string]$rel) { [IO.File]::ReadAllLines((PathOf $rel)) }
+function Backup([string]$rel) {
+    foreach ($p in (ResolveTargets $rel)) {
+        if (-not (Test-Path $p)) { throw "找不到 $rel" }
+        # 同一个文件只备份一次：二次备份会把**已变异**的内容存成"原件"，
+        # 还原时等于没还原（这类事故排查起来极其费时）。
+        $already = $false
+        foreach ($t in $touched) { if ($t.Full -eq $p) { $already = $true; break } }
+        if ($already) { continue }
+        # 临时名要剥掉 repo: 前缀——冒号不是合法路径字符
+        $tag = ((Split-Path -Leaf $p) -replace '[\\/]', '__')
+        $saved = Join-Path $env:TEMP ('mut_' + $Which + '_' + $tag)
+        Copy-Item $p $saved -Force
+        [void]$touched.Add(@{ Rel = $rel; Full = $p; Saved = $saved })
+    }
+}
 
-function SetLines([string]$rel, [string[]]$out) {
+function Lines([string]$rel) {
+    if ($rel -ne $PagesSelector) { return [IO.File]::ReadAllLines((PathOf $rel)) }
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($p in (ResolveTargets $rel)) {
+        $out.Add($PagesBoundary + (Split-Path -Leaf $p))
+        foreach ($l in [IO.File]::ReadAllLines($p)) { $out.Add($l) }
+    }
+    return $out.ToArray()
+}
+
+function WriteLinesTo([string]$path, $out) {
     # **必须自己拼行尾，不能用 WriteAllLines。** 它按 Environment.NewLine 写，
     # Windows 上把整文件 LF 改成 CRLF；而仓库 .gitattributes 强制 eol=lf，
     # 多行锚点判据（Contains 带 "\n"）随即假红——2026-11-15 实测：MUT-U130
     # 改 VideoRenderJob.cs 后，毫不相干的 ㊴g 一起变红。
-    [IO.File]::WriteAllText((PathOf $rel), ($out -join "`n") + "`n", $utf8)
+    [IO.File]::WriteAllText($path, ($out -join "`n") + "`n", $utf8)
+}
+
+function SetLines([string]$rel, [string[]]$out) {
+    if ($rel -ne $PagesSelector) { WriteLinesTo (PathOf $rel) $out; return }
+    $dir = Join-Path $src 'Pages'
+    $cur = $null
+    $buf = New-Object System.Collections.Generic.List[string]
+    foreach ($l in $out) {
+        if ($l.StartsWith($PagesBoundary)) {
+            if ($cur) { WriteLinesTo $cur $buf }
+            $cur = Join-Path $dir $l.Substring($PagesBoundary.Length)
+            $buf = New-Object System.Collections.Generic.List[string]
+            continue
+        }
+        if (-not $cur) { throw '页面拼接体缺少边界行（锚点被改到边界上了？）' }
+        $buf.Add($l)
+    }
+    if ($cur) { WriteLinesTo $cur $buf }
 }
 
 function ReplaceExact([string]$rel, [string]$old, [string]$new) {
@@ -89,7 +150,7 @@ function ReplaceExact([string]$rel, [string]$old, [string]$new) {
 function Cleanup() {
     $failed = @()
     foreach ($t in $touched) {
-        $dst = PathOf $t.Rel
+        $dst = $(if ($t.ContainsKey('Full')) { $t.Full } else { PathOf $t.Rel })
         if (-not (Test-Path $t.Saved)) {
             $failed += ($t.Rel + ' 的备份不见了（' + $t.Saved + '）')
             continue
@@ -269,7 +330,8 @@ switch ($Which) {
         # ⑪b：把"更改保存目录"的控件删掉，退回**只读展示**。
         #    这是本行的原始形态：界面**看着有这一项**（有一行 Gui.KeyValue 把路径
         #    摆出来），却没有任何控件能改它。Must 判据是 Loc 键出现在代码行里，
-        #    所以只把那个键换成别的键即可复现"控件不再存在"。
+        #    所以要把 Modern/Legacy 双分支的两处键全换成别的键才真正复现"控件不再存在"
+        #    （只改一处的话，另一处会让判据假绿）。
         #    注意不能改成 record.savedir（那是标签自己的键，仍然合法存在），
         #    否则判据看着有键、实际是标签的——那就成了同义反复。
         Backup 'Pages\Pages.cs'
@@ -283,7 +345,7 @@ switch ($Which) {
                 $n++
             }
         }
-        if ($n -ne 1) { throw "MUT-P12：代码行里 record.changedir 命中 $n 次（应为 1）" }
+        if ($n -ne 2) { throw "MUT-P12：代码行里 record.changedir 命中 $n 次（应为 2）" }
         SetLines 'Pages\Pages.cs' $ls
     }
     'MUT-P13' {
@@ -339,26 +401,17 @@ switch ($Which) {
         ReplaceExact 'Ui\Gui.cs' 'internal static readonly Color FieldBg = new Color(0.21f, 0.24f, 0.30f, 1f);' 'internal static readonly Color FieldBg = new Color(0.07f, 0.08f, 0.11f, 1f);'
     }
     'MUT-U9' {
-        # ⑥：把按钮的自定义样式**去掉**，退回吃内建皮肤（= 用户看到的"原生控件"）。
+        # ⑥c：把按钮的自定义样式**去掉**，退回吃内建皮肤（= 用户看到的"原生控件"）。
         #    注意这**不是**"改用 GUILayout.Button"——参考实现 ADOFAIMacro 也在用
         #    内建 Button，只是传了带圆角贴图的 GUIStyle（UIUtils.cs:326/674）。
         #    所以缺陷形态是"没传样式"，变异体也必须照这个形状注入。
-        #    **必须按行号改**：'Gui.ButtonStyle,' 在 Pages.cs 里合法出现 4 次
-        #    （回放/停止/停录/更改目录），ReplaceExact 会命中 4 次直接 throw。
+        #    **按钮调用跨行且 ButtonW 也传了 Gui.ButtonStyle**：ButtonsUseCustomStyle
+        #    会从 GUILayout.Button( 起往后扫 3 行找 Gui.*Style，若只改按钮参数行而不改
+        #    紧随其后的 Gui.ButtonW(..., Gui.ButtonStyle, ...) 测量行，判据仍会被第二行
+        #    骗过（假绿）。用 recStopLabel 这一唯一按钮组的两处精确锚点一并改为 GUIStyle.none。
         Backup 'Pages\Pages.cs'
-        $ls = Lines 'Pages\Pages.cs'
-        $n = 0
-        for ($i = 0; $i -lt $ls.Count; $i++) {
-            $t = $ls[$i].TrimStart()
-            if ($t.StartsWith('//') -or $t.StartsWith('*')) { continue }
-            # 只动「停止录制」那一行（其余三处是别的按钮，判据覆盖的是"有没有样式"）
-            if ($ls[$i] -match 'record\.stop' -and $ls[$i] -match 'Gui\.ButtonStyle') {
-                $ls[$i] = $ls[$i] -replace 'Gui\.ButtonStyle', 'GUIStyle.none'
-                $n++
-            }
-        }
-        if ($n -ne 1) { throw "MUT-U9：record.stop + Gui.ButtonStyle 命中 $n 次（应为 1）" }
-        SetLines 'Pages\Pages.cs' $ls
+        ReplaceExact 'Pages\Pages.cs' '                if (GUILayout.Button(recStopLabel, Gui.ButtonStyle,' '                if (GUILayout.Button(recStopLabel, GUIStyle.none,'
+        ReplaceExact 'Pages\Pages.cs' '                        GUILayout.Width(Gui.ButtonW(recStopLabel, Gui.ButtonStyle, 140f)),' '                        GUILayout.Width(Gui.ButtonW(recStopLabel, GUIStyle.none, 140f)),'
     }
     'MUT-U10' {
         # ⑥b：滑条退回内建 HorizontalSlider（轨道/滑块贴图来自内建皮肤，
@@ -514,7 +567,7 @@ switch ($Which) {
     'MUT-U38' {
         # ⑱d：渲染参数整块的 Dim 去掉（退回"总开关关了照样能调"）。
         Backup 'Pages\Pages.cs'
-        ReplaceExact 'Pages\Pages.cs' 'Gui.Section("render.options", Gui.Accent, () => Gui.Dim(!RenderOn, DrawRenderOptions));' 'Gui.Section("render.options", Gui.Accent, () => DrawRenderOptions());'
+        ReplaceExact 'Pages\Pages.cs' '            Gui.Dim(!RenderOn, DrawRenderOptions);' '            DrawRenderOptions();'
     }
     'MUT-U39' {
         # ⑱e：键盘音音量那一行的末参删掉（偏移那行仍在）。
@@ -1518,8 +1571,8 @@ switch ($Which) {
         #     （它们是 Label）是证明不了判据的。
         Backup 'Pages\Pages.cs'
         ReplaceExact 'Pages\Pages.cs' `
-            'if (GUILayout.Button(Loc.T(editorReplay ? "playback.openlevel.editor" : "playback.openlevel"),' `
-            'if (GUILayout.Button(Loc.T(editorReplay ? "playback.idle" : "playback.idle"),'
+            'string openLabel = Loc.T(editorReplay ? "playback.openlevel.editor" : "playback.openlevel");' `
+            'string openLabel = Loc.T(editorReplay ? "playback.idle" : "playback.idle");'
     }
     'MUT-V6' {
         # ⑬：编辑器跳转**不等场景就绪**就定位起始砖。
@@ -1872,7 +1925,7 @@ switch ($Which) {
         }
         if ($start -lt 0) { throw "MUT-K2：找不到 Gui.Section 里 record.keybd 的起点" }
         $end = -1
-        for ($j = $start; $j -lt $ls.Count -and $j -lt $start + 24; $j++) {
+        for ($j = $start; $j -lt $ls.Count -and $j -lt $start + 60; $j++) {
             if ($ls[$j].Trim() -eq '});') { $end = $j; break }
         }
         if ($end -lt 0) { throw "MUT-K2：找不到该段收尾（起点行 $($start+1)）" }

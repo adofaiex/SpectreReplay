@@ -26,28 +26,46 @@ namespace UiPreview
             "zh", "zh-t", "en", "ko", "ja", "es", "pt", "fr", "de", "pl", "cs", "ro", "ru", "vi",
         };
 
-        /// <summary>直接扫页面源码，收集所有以字面量形式传入的键。</summary>
+        /// <summary>
+        /// 直接扫页面源码，收集所有以字面量形式传入的键。
+        ///
+        /// **拼接前缀不算键**：`Loc.T("playback.info.err." + info.Error)` 里的
+        /// `"playback.info.err."` 是一个前缀字面量，不是可解析的键——按它去取词
+        /// 必然返回键名本身。2026-11-18 拆分页面时把 `ReplayInfoPanel.cs` 也纳入
+        /// 扫描面（它此前不在 Pages.cs 里），这条前缀当场被当成缺键报红。
+        /// 判据要的是「真键都能解析」，不是「所有以点结尾的字面量都是键」。
+        /// </summary>
         internal static HashSet<string> CollectUsedKeys()
         {
             var used = new HashSet<string>(StringComparer.Ordinal);
             foreach (var f in SourceFiles())
             {
                 if (!File.Exists(f)) continue;
-                foreach (Match m in Regex.Matches(File.ReadAllText(f),
-                    @"""([a-z][a-z0-9]*\.[a-z0-9_.]+)"""))
+                string text = File.ReadAllText(f);
+                foreach (Match m in Regex.Matches(text,
+                    @"""([a-z][a-z0-9]*\.[a-z0-9_.]+)""(\s*\+)?"))
                 {
+                    // 紧跟着 + 的是拼接前缀，跳过（整条键由运行期拼出来，无法静态核对）。
+                    if (m.Groups[2].Success && m.Groups[2].Value.Length > 0) continue;
                     used.Add(m.Groups[1].Value);
                 }
             }
             return used;
         }
 
-        private static IEnumerable<string> SourceFiles() => new[]
+        private static IEnumerable<string> SourceFiles()
         {
-            // 走 Driver.ProjectDir（从程序集位置向上推导），不再依赖工作目录
-            Path.Combine(Driver.ProjectDir, "Pages", "Pages.cs"),
-            Path.Combine(Driver.ProjectDir, "Ui", "OnGui.cs"),
-        };
+            // 走 Driver.ProjectDir（从程序集位置向上推导），不再依赖工作目录。
+            // **页面已按职责拆成多个 partial 文件**（Pages\*.cs）：只写 Pages.cs 的话，
+            // 拆出去那些页面里用到的键就不再被核对，文案漏翻会静默通过；
+            // 同时显式纳入独立类 ReplayInfoPanel.cs（它不属于 PageFiles 集合，但同样有文案键）。
+            foreach (string f in SrcUtil.PageFiles(Driver.ProjectDir))
+            {
+                yield return f;
+            }
+            yield return Path.Combine(Driver.ProjectDir, "Pages", "ReplayInfoPanel.cs");
+            yield return Path.Combine(Driver.ProjectDir, "Ui", "OnGui.cs");
+        }
 
         internal static int Run(HashSet<string> used)
         {

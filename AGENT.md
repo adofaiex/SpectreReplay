@@ -27,6 +27,7 @@
 | 上游参照 | `D:/Projects/Spectre` | 闸门会核对它没被污染。**只作参照，不做内容比对**（2026-10-30 起）：两库已大幅分叉 |
 | 引用 | **全部 `Private=false`** | 输出目录只允许 `SpectreReplay.dll(+pdb)`；多一个 dll 会污染游戏 |
 | 产物 | `SpectreReplay.dll` + `info.json` | UMM 用 `info.json` 的 `EntryMethod` 找入口 |
+| 危险任务（禁止执行） | 硬件编码矩阵实机探测：NVENC/QSV/AMF × H.264/H.265 × 8/10bit 真机编码，以及硬件 HDR10 实机 | 2026-11-18 用户裁定：会烧毁电脑显示屏，属危险任务。`tools/ffmpeg-probe.ps1` 的硬件矩阵段已删除，**不要重写、不要在任何人机器上跑**；2C 只保留离线形状断言 |
 
 **运行形态**：不是独立程序，是热补丁进游戏进程的库。`Main.Load` 只做最轻的事（配置/文案/界面回调），重活全在 `OnToggle`（`Main.cs:14`、`:61-150`）。
 
@@ -55,7 +56,16 @@ SpectreReplay/
     EffectRemover/       去特效：解码期在内存里摘事件 + 编辑器保存拦截
   State/                  Settings（配置字段）、SpectreState（全局状态）、ConfigManager、
                           LocalizationManager、MainThread（主线程调度）、AudioRecorder、WavLoader
-  Pages/                 五个页面的绘制逻辑（录制/回放/渲染/去特效/关于）
+  Pages/                 五个页面的绘制逻辑，按页拆成 partial 文件（同一个 Pages 类）
+    Pages.cs             壳：_loadedPath/_pendingDelete/列表缓存/Commit/FlushPending/ReplayList
+    RecordPage.cs        录制页（录制开关、保存策略、热键、特殊按键、键音、键位映射、保存目录）
+    PlaybackPage.cs      回放页（当前回放、文件列表、云端列表、键盘音覆盖、开局信息）
+    RenderPage.cs        渲染页（状态、编码参数、格式转换、去特效预设）
+    EffectsPage.cs       去特效页（总开关与各分组开关）
+    AboutPage.cs         关于页（版本/更新检查、调试分区）
+    CloudPanel.cs        Steam 云面板（状态、配置备份上传/取回）
+    ReplayInfoPanel.cs   独立详情面板类（不属 partial class Pages，也不在 Pages\Pages.cs 逻辑路径内）
+  Ui/ConfirmButton.cs    两段式破坏性按钮组件（回放删除/云端删除/预设删除共用）
   Ui/                    OnGui（UMM 面板宿主）、Gui（手绘控件库）、Loc/LocData（文案）、TextField、Status（游戏内提示条）
 
 tools/                    验证与工具链（对产品的改动一律先过这里）
@@ -241,6 +251,12 @@ private static bool Hit_Prefix(...) { ... }
 ### 6.5 界面
 
 - 全部**手绘 IMGUI**：`Ui/Gui.cs` 提供 `Fill/Text/Card/Slider/Toggle/TextField/RowHotkey`，页面上没有 Unity 原生控件。
+- **页面按职责拆成 `Pages/*.cs` 的 partial 文件**（2026-11-18，同一个 `Pages` 类），页面之间
+  共享的壳（`Commit`/落盘、列表缓存、载入标记、待确认态）留在 `Pages.cs`。拆文件不改行为：
+  控件顺序、文案键、压暗门控都在原处。**新加一页就往 `Pages/` 下加一个文件**，
+  不要退回往 `Pages.cs` 里堆。
+- 重复的交互要抽成 `Ui/` 下的组件（例：`ConfirmButton` 的两段式删除），但**两段式的判定
+  留在调用点**——闸门按方法体形状判「第一次点击不许删文件」，抽进组件就看不见了。
 - 宿主是 UMM 面板（`Ui/OnGui.cs`）：`_visible` 由 `OnShow/OnHide` 控制；滚动位置由 UMM 维护，**不自己建 ScrollView**。
 - 五个页签固定顺序：录制/回放/视频渲染/去特效/关于；页签宽度固定，避免长短页名让整排跳动。
 - **帧状态放静态字段**并在每趟绘制开头归零（`_openRow`/`_openSeq`/`_capturing` 这类）；IMGUI 一帧可能画多趟，放局部变量会让下拉和改键错乱。

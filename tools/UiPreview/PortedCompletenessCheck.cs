@@ -1029,8 +1029,11 @@ namespace UiPreview
         // 后者太松：注释里提一句就过。声明文件自己不算调用点。
         private static int CheckPredicate(string projectRoot, string name, string rel,
             Func<string, bool> predicate)        {
-            string ok = Path.Combine(projectRoot, rel);
-            if (!File.Exists(ok))
+            // 页面源码是**逻辑路径**（见 SrcUtil.PagesSelector）：拆分后它对应
+            // Pages\*.cs 全部文件，覆盖每一个页面而不是只剩某一个。
+            bool isPages = SrcUtil.IsPagesSelector(rel);
+            string ok = isPages ? "" : Path.Combine(projectRoot, rel);
+            if (!isPages && !File.Exists(ok))
             {
                 Console.WriteLine("    ✗ " + name + "：找不到 " + rel);
                 return 1;
@@ -1039,7 +1042,7 @@ namespace UiPreview
             // 的注释里必然要写出 X 本身（本例中"360" 与 "GetLastRect" 都写在
             // 注释里解释这个坑）。不剥的话三条会同时变红——看上去像判据全中，
             // 实际是把说明文字当成了缺陷（这就叫自证的同义反复）。
-            string code = SrcUtil.Clean(File.ReadAllText(ok));
+            string code = SrcUtil.Source(projectRoot, rel);
             if (!predicate(code))
             {
                 Console.WriteLine("    ✗ " + name + "（" + rel + "）");
@@ -1057,13 +1060,14 @@ namespace UiPreview
         /// </summary>
         private static int CheckAbsent(string projectRoot, string name, string rel, string[] symbols)
         {
-            string ok = Path.Combine(projectRoot, rel);
-            if (!File.Exists(ok))
+            bool isPages = SrcUtil.IsPagesSelector(rel);
+            string ok = isPages ? "" : Path.Combine(projectRoot, rel);
+            if (!isPages && !File.Exists(ok))
             {
                 Console.WriteLine("    ✗ " + name + "：找不到 " + rel);
                 return 1;
             }
-            string text = File.ReadAllText(ok);
+            string text = SrcUtil.Read(projectRoot, rel);
             foreach (string s in symbols)
             {
                 if (HasCodeUse(text, s))
@@ -1169,13 +1173,14 @@ namespace UiPreview
         {
             foreach (string rel in files)
             {
-                string ok = Path.Combine(projectRoot, rel);
-                if (!File.Exists(ok))
+                bool isPages = SrcUtil.IsPagesSelector(rel);
+                string ok = isPages ? "" : Path.Combine(projectRoot, rel);
+                if (!isPages && !File.Exists(ok))
                 {
                     Console.WriteLine("    ✗ " + name + "：找不到 " + rel);
                     return 1;
                 }
-                string text = File.ReadAllText(ok);
+                string text = SrcUtil.Read(projectRoot, rel);
                 foreach (string s in symbols)
                 {
                     if (!HasCodeUse(text, s))

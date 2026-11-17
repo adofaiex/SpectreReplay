@@ -385,3 +385,50 @@
 | MUT-U130~U135 | 各自实测变红 | 全部检出 | pass |
 | tag v0.3.2 | 附注+SSH 签名 | HitMargin 签名附注 tag | pass |
 | 推送 | master + tag | 58131b7..4c62f79、[new tag] v0.3.2 | pass |
+
+## Session: 2026-11-18
+
+### Current Status
+- **Task:** 2C 硬件矩阵实机收口 → 用户裁定为危险任务（会烧毁显示屏），撤销
+- **Result:** 已完成撤销与文档落库
+
+### Actions Taken
+- `task_plan.md` Phase 9：「2C QSV/AMF 全矩阵」「硬件矩阵实机收口」「硬件 HDR10 实机」三项标 `[撤销]`；Next Step 改为「只剩 Pages 拆分与静态状态收敛」。
+- `tools/ffmpeg-probe.ps1`：删除硬件矩阵段（NVENC/QSV/AMF × H.264/H.265 × 8/10bit 的真硬件编码会话，78 行），原位留注释说明禁止重写；软件参数 / 10-bit / HDR10 / AV1 用例不变。
+- `AGENT.md` §1 硬约束表新增「危险任务（禁止执行）」行，把这条钉成红线。
+- `findings.md` 新增裁定记录：QSV/AMF 永不写「已验证」，只保留离线形状断言。
+
+### Test Results
+| Test | Expected | Actual | Status |
+|------|----------|--------|--------|
+| 脚本解析 | 0 错误 | `[Parser]::ParseFile` 0 错误 | pass |
+| 产品代码 | 未触碰 | 只改 `tools/` 与文档 | pass |
+
+## Session: 2026-11-18 (2)
+
+### Current Status
+- **Task:** Pages 拆分重构（按职责拆组件、同步引用路径、保持行为不变）
+- **Result:** 已完成；构建 0 警告，离线套件 315 条 0 失败
+
+### Actions Taken
+- 3371 行 `Pages/Pages.cs` 按页拆成六个 partial 文件：`RecordPage`（447 行）、`PlaybackPage`（1288 行）、
+  `RenderPage`（582 行）、`EffectsPage`（228 行）、`AboutPage`（301 行）、`CloudPanel`（391 行）；
+  共享壳（载入标记、待确认态、列表缓存、`Commit`/`FlushPending`/`ReplayList`）留在 `Pages.cs`（278 行）；
+  `ReplayInfoPanel.cs`（419 行）为既有独立类，不在 `partial class Pages` 与 `Pages\Pages.cs` 逻辑路径内。
+  逐行核对覆盖：原 `Pages.cs` 全部逻辑行全部分配且无重叠，纯行段搬移，仅三处删除按钮抽成 `ConfirmButton.Draw`。
+- 抽组件 `Ui/ConfirmButton.cs`：回放删除、云端删除、预设删除三处的「确认态换文案 + 换样式 + 实测宽度 + tip + 点击判定」
+  共用一份；待确认态与两段式判定留在各调用点（闸门 ㉒b 按方法体形状判，抽走就失去覆盖）。
+- 闸门同步：`SrcUtil` 新增 `PagesSelector`/`PageFiles`，`Pages\Pages.cs` 变成**逻辑路径**，
+  `UiLogicShapeCheck`/`PortedCompletenessCheck`/`LocCheck` 及各检查的 `Read` 全部走它；
+  `mutate.ps1` 把同一路径当页面集合（`Backup` 全量、`Lines`/`SetLines` 边界行拼接、`ReplaceExact` 仍要求整集合命中 1 次）。
+- `settings-ui-audit.ps1` 的界面文件集合从 `Pages.cs` 改为整个 `Pages` 目录。
+- 顺带修 `LocCheck` 真误报：`Loc.T("playback.info.err." + info.Error)` 的前缀被当成键。
+- 断言数拆分前后一致（315 条），未出现「拆分后断言变少」的假绿；`MUT-D6` 实跑变红并自动还原。
+
+### Test Results
+| Test | Expected | Actual | Status |
+|------|----------|--------|--------|
+| Release 构建 | 0 警告 0 错误 | 0 警告 0 错误 | pass |
+| 离线套件 | 0 失败且条数与拆分前一致 | 315 条，0 失败 | pass |
+| MUT-D6（Pages 锚点） | 变红且自动还原 | 失败 1 条，已还原 | pass |
+| 只读审计 | 全过 | 全过 | pass |

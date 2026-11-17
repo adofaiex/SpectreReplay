@@ -7,7 +7,7 @@
 
 ## Next Step
 
-完成 P0 文档/仓库卫生后，依次处理原子写入、生命周期回滚、配置校验和门禁加固。
+Pages 已按页拆分完成；Phase 9 只剩「静态状态收敛」（要先补状态归属断言再动）。
 
 ## Current Phase
 
@@ -120,19 +120,25 @@ Phase 6（加固）
   - [x] 禁止把 Gamma 0–1 直接标 `smpte2084`；PNG 仅作构图参照，测量以 `hdr-probe.txt` 为准
   - [x] 实机 ffprobe：`hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084)`，三项全过
   - [x] WholeScreen 跳过 HDR10 时打 `Debug.LogWarning`
-  - [x] 吞吐实测：SDR 63fps / HDR10 6.2fps；2C 硬件 hevc_nvenc Main10 是优化方向
-- [ ] 2C QSV/AMF 全矩阵（需 Intel/AMD 实机；无实机只做形状断言，不宣称已验证）
+  - [x] 吞吐实测：SDR 63fps / HDR10 6.2fps；硬件 hevc_nvenc Main10 曾是优化方向，2026-11-18 按用户裁定撤销（危险任务，禁止实机）
+- [撤销] 2C QSV/AMF 全矩阵（2026-11-18 用户裁定为危险任务，禁止执行；只保留离线形状断言，永远不写「已验证」）
   - [x] 2C-1 10-bit × 硬件 H.264 豁口收口：`tenBit` 时 NVENC/QSV/AMF 三档 H.264 硬件全跳过直落 libx264（此前只跳 QsvH264，nvenc/amf 会被 auto-scale 静默降 8-bit）；`MUT-10B4` 重锚 + `MUT-2C1`
   - [x] 2C-2 HDR10 硬件「再评估」落笔成决定：维持 libx265-only（master-display/max-cll 元数据注入只有 x265 已验证，preflight 只探 nv12/yuv420p 探不到 10-bit）；注释 + `Hdr10Check` 负断言 + `MUT-2C2`
   - [x] 2C-3 CI 能力断言 QSV/AMF 名单钉住：`EncoderMatrixCheck` ⑧ 锁 `h264_qsv/hevc_qsv/h264_amf/hevc_amf`（只锁存在，不锁能跑）；`MUT-CI24`
-  - [x] 2C-4 实机验证清单落进 tools：`ffmpeg-probe.ps1` 硬件矩阵用例（NVENC/QSV/AMF × H.264/H.265 × 8/10bit，1 帧探测 + 位深判读）
-  - [ ] 硬件矩阵实机收口：本机 NVENC 已实证（见 findings）；QSV/AMF 待 Intel/AMD 实机跑 `tools/ffmpeg-probe.ps1` 判读
-  - [ ] 硬件 HDR10（hevc_nvenc Main10 + 元数据注入）单独立项，等 Intel/AMD 实机
+  - [撤销] 2C-4 硬件矩阵用例曾落进 `ffmpeg-probe.ps1`；2026-11-18 按用户裁定整段移除（危险任务），只留软件编码参数用例
+  - [撤销] 硬件矩阵实机收口（危险任务，禁止执行）：本机 NVENC 的历史实证只作留档；QSV/AMF 不再安排实机判读
+  - [撤销] 硬件 HDR10（hevc_nvenc Main10 + 元数据注入）：同上，禁止实机，不再立项
 - [x] 2D 组件类型过滤（不手填 GameObject 名）
   - [x] `RenderOverlayExcludeTypes` 数组持久化 + 空值/去重/限长
   - [x] `RenderOverlayCapture` 按组件类型全名/短名排除
   - [x] UI 显示「已排除 N 个对象」；配置错误不表现为空白
-- [ ] Pages 拆分与静态状态收敛
+- [x] Pages 拆分（2026-11-18）
+  - [x] 3371 行按页拆成 `Pages/*.cs` 六个 partial 文件 + 共享壳留在 `Pages.cs`
+  - [x] 重复交互抽 `Ui/ConfirmButton.cs`（回放/云端/预设三处删除共用，两段式判定留在调用点）
+  - [x] 闸门保持按逻辑路径 `Pages\Pages.cs` 读取（`SrcUtil.PagesSelector` 覆盖全部页面文件）
+  - [x] `mutate.ps1` 把该逻辑路径当集合处理（备份全部页面、边界行拼接/拆回）
+  - [x] 构建 0 警告、离线套件 315 条 0 失败、`MUT-D6` 实跑变红并还原
+- [ ] 静态状态收敛（拆分后静态字段仍集中在 `Pages.cs` 壳里；再收敛要先补「状态归属」断言）
 - **Status:** in_progress
 
 ## Decisions Made

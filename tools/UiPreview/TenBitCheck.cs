@@ -68,5 +68,5 @@ internal static class TenBitCheck
     }
 
     private static string Read(string rel)
-        => SrcUtil.Clean(File.ReadAllText(Path.Combine(Driver.ProjectDir, rel)));
+        => SrcUtil.Source(Driver.ProjectDir, rel);
 }
