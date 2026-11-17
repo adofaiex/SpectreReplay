@@ -21,7 +21,7 @@
 ## Verification
 - tools/verify.ps1 -Ci -SkipDeploy：全部通过。
 - 主项目 Release：0 错误，0 警告。
-- 离线套件：296 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
+- 离线套件：307 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
 - 只读审计：6 项全部通过。
 - MUT-TL1 至 MUT-TL7：全部被检出。
 
@@ -74,6 +74,17 @@
 - 数据：`ab_uniq8=255 / ab_uniq10=62992`（各自接近 256 / 65536 阶上限）、`ab_steps8=18% / ab_steps10=37%`。
 - **结论：10-bit 的相邻差非零比是 8-bit 的约 2 倍**（37% vs 18%）——同一渐变过渡带内 10-bit 走出两倍以上的独立亮度阶，banding 改善证实。
 - A/B 对拍由 `--spectre-hdr-probe` 顺带完成（`ab_*` 字段 + `hdr-probe-ab8/10.png`），断言 ④ 与 `MUT-HDR7` 守住。
+
+## 2B-2 HDR10 首段（2026-11-17）
+- 采集：`RenderTextureFormat.ARGBHalf` + `GraphicsFormat.R16G16B16A16_SFloat`。
+- C#→ffmpeg：`half→float32` + 打包 RGBA→平面 G/B/R，输出 `gbrpf32le`；不能直接喂 half RGB。
+- 转换：ffmpeg `zscale=transferin=iec61966-2-1:primariesin=bt709:matrixin=bt709:transfer=smpte2084:primaries=bt2020:matrix=bt2020nc`。
+- 编码：`libx265`，`yuv420p10le`，`-colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084`，x265 `hdr10=1` 元数据。
+- 边界：仅 H.265 + CleanCamera；WholeScreen 自动不按 HDR10 处理；光标叠加禁用。
+- >1.0 的处理：zscale 的 sRGB 曲线按解析式延拓；不把它写成标准 EOTF，最终 nits 取决于 mastering display。
+- 实测：`ffmpeg-probe.ps1` 的 `gbrpf32le → zscale → libx265 HDR10` 全链退出 0；ffprobe 确认 `yuv420p10le (bt2020nc/bt2020/smpte2084)`。
+- 断言：`Hdr10Check` 11 条；`MUT-HDR10-1..3` 全部变红。
+- 待实机：HDR 显示器/SDR 屏视觉确认；`max-cll` 首版固定 `1800,600`（按 2B-0 峰值估计），实机再校准。
 
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md

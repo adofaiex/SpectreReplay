@@ -201,6 +201,9 @@ public static class Settings
     // 10-bit SDR：ARGB64 采集 + yuv420p10le / BT.709，减少渐变 banding。
     // 不保留 >1.0 的超白（HDR10 是 2B-2 的独立转换链）；光标叠加在此模式禁用。
     public static bool Render10Bit;
+    // HDR10：ARGBHalf 采集 + zscale(sRGB→PQ, BT.709→BT.2020) + x265 HDR10。
+    // 仅 H.265 + CleanCamera；光标叠加禁用。源是 Gamma/sRGB，>1.0 按 sRGB 曲线解析延拓。
+    public static bool RenderHdr10;
     // 码率控制：0 ABR（目标码率）1 CRF（质量）2 CQP（量化）3 CBR（恒定码率）。
     // CRF/CQP 的数值域与 x264/x265 一致；WebM 的 VP9 只支持 ABR/CRF，CQP/CBR 会
     // 自动退回 ABR（见 VideoEncoder.EncoderArguments）。

@@ -619,6 +619,21 @@
    "zh": "游戏画面来源是 8-bit 后备缓冲；10-bit 只剩矩阵精度收益，banding 改善有限。",
    "en": "WholeScreen captures an 8-bit backbuffer; 10-bit only improves matrix precision, with limited banding benefit."
   },
+  {
+   "key": "render.hdr10",
+   "zh": "HDR10",
+   "en": "HDR10"
+  },
+  {
+   "key": "render.hdr10.tip",
+   "zh": "ARGBHalf + zscale(sRGB→PQ, BT.709→BT.2020) + x265 HDR10；仅 H.265 + CleanCamera，光标叠加禁用。",
+   "en": "ARGBHalf + zscale (sRGB→PQ, BT.709→BT.2020) + x265 HDR10; H.265 + CleanCamera only, cursor overlay disabled."
+  },
+  {
+   "key": "render.hdr10.note",
+   "zh": "HDR10 仅支持 H.265 + CleanCamera；当前选择会被忽略或回退。",
+   "en": "HDR10 requires H.265 + CleanCamera; the current selection will be ignored or fall back."
+  },
  {
   "key": "render.codec.auto",
   "zh": "自动",

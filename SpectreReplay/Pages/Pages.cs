@@ -1866,6 +1866,10 @@ namespace SpectreReplay.Pages
                     v => { Render10Bit = v; Commit(); });
                 if (RenderCaptureMode == 1 && Render10Bit)
                     OnGui.Note("render.10bit.screen_note");
+                OnGui.Row("render.hdr10", RenderHdr10,
+                    v => { RenderHdr10 = v; Commit(); });
+                if (RenderHdr10 && (RenderVideoCodec != 1 || RenderCaptureMode != 0))
+                    OnGui.Note("render.hdr10.note");
             }, RenderOn);
 
             Gui.Section("render.codec", Gui.Accent, () =>
@@ -1943,7 +1947,7 @@ namespace SpectreReplay.Pages
                     container,
                     (VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 2),
                     (VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4),
-                    Render10Bit);
+                    Render10Bit, RenderHdr10);
                 Gui.KeyValue("render.codec.current", name, Gui.DimCol);
                 // 回退原因必须可见：玩家选了 AV1/MOV、或选了 QSV 但落到软件，
                 // 只显示 libx264/libx265 会让人以为设置没生效。

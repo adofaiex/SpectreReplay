@@ -58,6 +58,7 @@ internal sealed class VideoFrameSource
     private int spareLimit = 8;
     private readonly int frameBytes;
     private readonly int bytesPerPixel;
+    private readonly bool hdr10;
     internal int BytesPerPixel => bytesPerPixel;
     private readonly int screenW;
     private readonly int screenH;
@@ -108,13 +109,16 @@ internal sealed class VideoFrameSource
         }
     }
 
-    internal VideoFrameSource(VideoSurface surface, int width, int height, bool tenBit = false)
+    internal VideoFrameSource(VideoSurface surface, int width, int height, bool tenBit = false, bool hdr10 = false)
     {
         this.surface = surface;
-        bytesPerPixel = tenBit ? 8 : 4;
-        RenderTextureFormat rtFormat = tenBit
-            ? RenderTextureFormat.ARGB64
-            : RenderTextureFormat.ARGB32;
+        this.hdr10 = hdr10;
+        bytesPerPixel = (tenBit || hdr10) ? 8 : 4;
+        RenderTextureFormat rtFormat = hdr10
+            ? RenderTextureFormat.ARGBHalf
+            : tenBit
+                ? RenderTextureFormat.ARGB64
+                : RenderTextureFormat.ARGB32;
         // 上报捕获面给渲染期补丁（判定飘字隐藏只拦 CleanCamera，见
         // Patch_VideoHideHitText）。构造失败由 CleanupOnConstructionFailure 清，
         // 正常收尾由 Dispose 清。
@@ -248,7 +252,9 @@ internal sealed class VideoFrameSource
             if (camMain != null && camMain.targetTexture != texture) camMain.targetTexture = texture;
         }
         AsyncGPUReadbackRequest request = bytesPerPixel == 8
-            ? AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_UNorm, _ => { })
+            ? (hdr10
+                ? AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_SFloat, _ => { })
+                : AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_UNorm, _ => { }))
             : AsyncGPUReadback.Request(texture, 0, TextureFormat.RGBA32, _ => { });
         Flight flight = new Flight { Index = index, Request = request };
         // 指针位置在**这一帧**采样：见 Flight 里 CursorDrawn 的注释。

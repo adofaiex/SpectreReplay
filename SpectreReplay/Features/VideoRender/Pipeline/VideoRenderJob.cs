@@ -350,7 +350,9 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 提前起不改变任何行为。
         System.Diagnostics.Stopwatch encSw = System.Diagnostics.Stopwatch.StartNew();
             bool cleanCamera = (VideoSurface)Settings.RenderCaptureMode == VideoSurface.CleanCamera;
-            bool tenBit = Settings.Render10Bit;
+            bool hdr10 = Settings.RenderHdr10
+                && (VideoSurface)Settings.RenderCaptureMode == VideoSurface.CleanCamera;
+            bool tenBit = Settings.Render10Bit || hdr10;
         int preW = cleanCamera ? Settings.RenderWidth : Screen.width;
         int preH = cleanCamera ? Settings.RenderHeight : Screen.height;
         bool preFlip = cleanCamera;
@@ -367,7 +369,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
                     (VideoEncoder.RateControlMode)Settings.RenderRateControl,
                     Settings.RenderCrf, Settings.RenderCqp,
                     Settings.RenderBitrateMbps, Settings.RenderPreset,
-                    hardware, tenBit);
+                    hardware, tenBit, hdr10);
                 enc.Begin();
                 if (tornDown)
                 {
@@ -466,11 +468,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         // 就位：画面源 + 混音轨 + 编码器
         System.Diagnostics.Stopwatch setupSw = System.Diagnostics.Stopwatch.StartNew();
-            frames = new VideoFrameSource((VideoSurface)Settings.RenderCaptureMode, Settings.RenderWidth, Settings.RenderHeight, tenBit);
+            frames = new VideoFrameSource((VideoSurface)Settings.RenderCaptureMode, Settings.RenderWidth, Settings.RenderHeight, tenBit, hdr10);
         LogTiming("frame-src", setupSw.ElapsedMilliseconds + "ms");
         // 指针是否进成片，由设置决定；具体在哪一层画见 CursorOverlay 与 VideoFrameSource.Flight。
             // 10-bit（8 字节/像素）第一版禁用光标叠加：CursorOverlay 仍按 4 字节绘制。
-            frames.DrawCursor = Settings.RenderCursorOn && !tenBit;
+            frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;
         // 指针轨迹随回放数据一起进来：有轨迹 = 位置走确定性时间轴（与画面同源，
         // 渲染快慢/管线波动都影响不到）；没有（旧回放）= 帧源回落到活体捕获。
         frames.CursorTrack = data?.CursorTrack;
@@ -518,7 +520,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
                 (VideoEncoder.RateControlMode)Settings.RenderRateControl,
                 Settings.RenderCrf, Settings.RenderCqp,
                 Settings.RenderBitrateMbps, Settings.RenderPreset,
-                hardware, tenBit);
+                hardware, tenBit, hdr10);
             encoder.Begin();
             LogTiming("encoder-begin", setupSw.ElapsedMilliseconds + "ms (rebuilt)");
         }

@@ -111,10 +111,14 @@ Phase 6（加固）
   - [x] MaxInFlight 先按像素、再对 10-bit 减一档；4K 10-bit 单帧 ~66MB
   - [x] 实机同链双帧 ARGB32 vs ARGB64 回读对比：`ab_uniq8=255 / ab_uniq10=62992`、`ab_steps8=18% / ab_steps10=37%`，10-bit 相邻差非零比翻倍 → banding 改善证实
 - [x] 2B-1 10-bit SDR（代码 + 实机对拍全部完成）
-  - [ ] 采集改 `ARGBHalf` / `R16G16B16A16_SFloat`，不能用 UNorm 测/存 >1.0
-  - [ ] gamma→linear EOTF 解码 + BT.709→BT.2020 色域转换（Unity blit shader 或 ffmpeg `zscale`/`colorspace`）
-  - [ ] 输出 `yuv420p10le` + BT.2020 + PQ/SMPTE2084；仅 H.265 + CleanCamera
-  - [ ] 禁止把 Gamma 0–1 直接标 `smpte2084`；PNG 仅作构图参照，测量以 `hdr-probe.txt` 为准
+- [~] 2B-2 HDR10 + 转换链（首段代码完成，待实机）
+  - [x] 采集改 `ARGBHalf` / `R16G16B16A16_SFloat`，不能用 UNorm 测/存 >1.0
+  - [x] C# 回读 half→float32 平面 `gbrpf32le`（G/B/R 三平面），不能直接喂 half RGB
+  - [x] gamma→linear EOTF 解码 + BT.709→BT.2020 色域转换（ffmpeg `zscale`）
+  - [x] 输出 `yuv420p10le` + BT.2020 + PQ/SMPTE2084；仅 H.265 + CleanCamera
+  - [x] `tools/ffmpeg-probe.ps1` 增加 `gbrpf32le → zscale → libx265 HDR10` 用例
+  - [x] 禁止把 Gamma 0–1 直接标 `smpte2084`；PNG 仅作构图参照，测量以 `hdr-probe.txt` 为准
+  - [ ] 实机 ffprobe：`pix_fmt=yuv420p10le`、`color_space=bt2020nc`、`color_trc=smpte2084`；HDR/SDR 屏各看一遍
 - [ ] 2C QSV/AMF 全矩阵（需 Intel/AMD 实机；无实机只做形状断言，不宣称已验证）
 - [ ] 2D 组件类型过滤（不手填 GameObject 名）
   - [ ] `RenderOverlayExcludeTypes` 字符串数组：`ConfigManager` 目前只有 int/bool/string/float 四类读写路径，需新增数组持久化 + 空值/分隔符归一化（预留 0.25–0.5 天）

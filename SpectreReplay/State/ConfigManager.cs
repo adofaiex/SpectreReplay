@@ -112,6 +112,7 @@ public static class ConfigManager
         public bool render_on { get; set; }
         public bool render_cursor_on { get; set; }
         public bool render_10bit { get; set; }
+        public bool render_hdr10 { get; set; }
         public bool render_stop_on { get; set; }
         public int render_stop_key { get; set; }
         /// <summary>音画偏移毫秒（见 Settings.RenderAudioOffsetMs）。</summary>
@@ -245,6 +246,7 @@ public static class ConfigManager
                 render_on = Settings.RenderOn,
                 render_cursor_on = Settings.RenderCursorOn,
                 render_10bit = Settings.Render10Bit,
+                render_hdr10 = Settings.RenderHdr10,
                 render_stop_on = Settings.RenderStopOn,
                 render_stop_key = Settings.RenderStopKey,
                 render_audio_offset_ms = Settings.RenderAudioOffsetMs,
@@ -576,6 +578,7 @@ public static class ConfigManager
                     Settings.RenderOn = ints.Value<bool?>("render_on") ?? Settings.RenderOn;
                     Settings.RenderCursorOn = ints.Value<bool?>("render_cursor_on") ?? Settings.RenderCursorOn;
                     Settings.Render10Bit = ints.Value<bool?>("render_10bit") ?? Settings.Render10Bit;
+                    Settings.RenderHdr10 = ints.Value<bool?>("render_hdr10") ?? Settings.RenderHdr10;
                     Settings.RenderStopOn = ints.Value<bool?>("render_stop_on") ?? Settings.RenderStopOn;
                     // 键值不 Clamp：它是 KeyCode 数值域，合法集合由 Enum.IsDefined
                     // 在轮询处把关（见 VideoRenderJob.StopRequestedByHotkey）。

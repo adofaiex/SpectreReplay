@@ -39,21 +39,21 @@ internal static class TenBitCheck
             "② 采集用 ARGB64 + GraphicsFormat 回读");
         Check(fs.Contains("if (bytesPerPixel == 8) limit = Math.Max(2, limit - 1);", StringComparison.Ordinal),
             "② MaxInFlight 先按像素，再对 10-bit 减一档");
-        Check(fs.Contains("bytesPerPixel = tenBit ? 8 : 4;", StringComparison.Ordinal)
+        Check(fs.Contains("bytesPerPixel = (tenBit || hdr10) ? 8 : 4;", StringComparison.Ordinal)
             && fs.Contains("frameBytes = Width * Height * bytesPerPixel;", StringComparison.Ordinal),
             "② 帧字节按 8/4 切换");
         Check(enc.Contains("\"rgba64le\"", StringComparison.Ordinal)
             && enc.Contains("\"yuv420p10le\"", StringComparison.Ordinal),
             "② ffmpeg 输入 rgba64le / 输出 yuv420p10le");
-        Check(enc.Contains("QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * bytesPerPixel)));", StringComparison.Ordinal),
-            "② 队列容量按 bytesPerPixel 限容");
+        Check(enc.Contains("QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * (hdr10 ? 12 : bytesPerPixel))));", StringComparison.Ordinal),
+            "② 队列容量按 bytesPerPixel/HDR10 限容");
         Check(enc.Contains("if (tenBit && candidate == Codec.QsvH264)", StringComparison.Ordinal),
             "② h264_qsv 无 10-bit 输入，10-bit 时跳过");
-        Check(job.Contains("bool tenBit = Settings.Render10Bit;", StringComparison.Ordinal)
-            && job.Contains("Settings.RenderHeight, tenBit)", StringComparison.Ordinal),
+        Check(job.Contains("bool tenBit = Settings.Render10Bit || hdr10;", StringComparison.Ordinal)
+            && job.Contains("Settings.RenderHeight, tenBit, hdr10)", StringComparison.Ordinal),
             "③ 渲染作业把 tenBit 传给帧源");
-        Check(job.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit;", StringComparison.Ordinal),
-            "③ 10-bit 模式禁用光标叠加");
+        Check(job.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;", StringComparison.Ordinal),
+            "③ 10-bit/HDR10 模式禁用光标叠加");
 
         Console.WriteLine($"  10-bit SDR：{total} 条，失败 {failed}");
         return (total, failed);

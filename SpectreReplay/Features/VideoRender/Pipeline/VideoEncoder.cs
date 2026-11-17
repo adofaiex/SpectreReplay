@@ -82,6 +82,7 @@ internal sealed class VideoEncoder : IDisposable
     private readonly bool flipRows;
     private readonly OutContainer container;
     private readonly int bytesPerPixel;
+    private readonly bool hdr10;
     private readonly VideoCodec videoCodec;
     private readonly HardwareBackend hardware;
     private readonly RateControlMode rateControl;
@@ -112,7 +113,7 @@ internal sealed class VideoEncoder : IDisposable
         OutContainer container = OutContainer.Mp4,
         VideoCodec videoCodec = VideoCodec.H264, RateControlMode rateControl = RateControlMode.Abr,
         int crf = 20, int cqp = 23, int bitrateMbps = 0, int preset = 0,
-        HardwareBackend hardware = HardwareBackend.Auto, bool tenBit = false)
+        HardwareBackend hardware = HardwareBackend.Auto, bool tenBit = false, bool hdr10 = false)
     {
         this.exePath = exePath;
         this.rawVideoPath = rawVideoPath;
@@ -124,7 +125,8 @@ internal sealed class VideoEncoder : IDisposable
         this.qualityTier = Math.Max(0, Math.Min(3, qualityTier));
         this.flipRows = flipRows;
         this.container = container;
-        this.bytesPerPixel = tenBit ? 8 : 4;
+        this.bytesPerPixel = (tenBit || hdr10) ? 8 : 4;
+        this.hdr10 = hdr10;
         this.videoCodec = videoCodec;
         this.hardware = hardware;
         this.rateControl = rateControl;
@@ -259,7 +261,8 @@ internal sealed class VideoEncoder : IDisposable
                 var container = (OutContainer)Mathf.Clamp(SpectreReplay.Settings.RenderOutputFormat, 0, 3);
                 var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 2);
                 var hardware = (HardwareBackend)Mathf.Clamp(SpectreReplay.Settings.RenderHardware, 0, 4);
-                ResolveCodec(container, codec, hardware, SpectreReplay.Settings.Render10Bit);
+                ResolveCodec(container, codec, hardware, SpectreReplay.Settings.Render10Bit,
+                    SpectreReplay.Settings.RenderHdr10);
             }
             catch { /* 预热失败不影响后续按需探测 */ }
         });
@@ -275,11 +278,14 @@ internal sealed class VideoEncoder : IDisposable
             + " -framerate " + fps
             + " -i - -an -vf " + Quote(RowFilter())
             + " " + EncoderArguments()
-            + " -pix_fmt " + TargetFormat() + " -colorspace bt709 -color_primaries bt709 -color_trc bt709 "
+            + " -pix_fmt " + TargetFormat() + " "
+            + (hdr10
+                ? "-colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084 "
+                : "-colorspace bt709 -color_primaries bt709 -color_trc bt709 ")
             + Quote(rawVideoPath);
         pipe = Spawn(args, redirectInput: true);
         // 帧队列缓存上限约 256 MiB
-        QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * bytesPerPixel)));
+        QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * (hdr10 ? 12 : bytesPerPixel))));
         queue = new BlockingCollection<PendingFrame>(QueueCapacity);
         pumpFailure = null;
         pump = new Thread(PumpLoop)
@@ -464,12 +470,23 @@ internal sealed class VideoEncoder : IDisposable
     {
         try
         {
+            byte[] hdrBuffer = hdr10 ? new byte[width * height * 12] : null;
             foreach (PendingFrame frame in queue.GetConsumingEnumerable())
             {
                 try
                 {
                     for (int i = 0; i < frame.Repeat; i++)
-                        pipe.StandardInput.BaseStream.Write(frame.Data, 0, frame.Length);
+                    {
+                        if (hdr10)
+                        {
+                            int outLen = ConvertHdrFrame(frame.Data, frame.Length, hdrBuffer);
+                            pipe.StandardInput.BaseStream.Write(hdrBuffer, 0, outLen);
+                        }
+                        else
+                        {
+                            pipe.StandardInput.BaseStream.Write(frame.Data, 0, frame.Length);
+                        }
+                    }
                 }
                 finally
                 {
@@ -483,7 +500,54 @@ internal sealed class VideoEncoder : IDisposable
         }
     }
 
-    private string PixelFormat() => bytesPerPixel == 8 ? "rgba64le" : "rgba";
+    /// <summary>
+    /// Unity 回读是打包的 RGBA16F（R16G16B16A16_SFloat），ffmpeg 的 zimg 不认 half RGB。
+    /// 转成平面 gbrpf32le：G 平面、B 平面、R 平面，每个 float32 little-endian。
+    /// </summary>
+    private int ConvertHdrFrame(byte[] src, int srcLength, byte[] dst)
+    {
+        int pixels = Math.Min(srcLength / 8, width * height);
+        int plane = width * height * 4;
+        for (int p = 0; p < pixels; p++)
+        {
+            int s = p * 8;
+            WriteFloatBits(dst, p * 4, HalfToFloatBits(src, s + 2)); // G
+            WriteFloatBits(dst, plane + p * 4, HalfToFloatBits(src, s + 4)); // B
+            WriteFloatBits(dst, plane * 2 + p * 4, HalfToFloatBits(src, s + 0)); // R
+        }
+        return plane * 3;
+    }
+
+    private static void WriteFloatBits(byte[] dst, int offset, int bits)
+    {
+        dst[offset] = (byte)bits;
+        dst[offset + 1] = (byte)(bits >> 8);
+        dst[offset + 2] = (byte)(bits >> 16);
+        dst[offset + 3] = (byte)(bits >> 24);
+    }
+
+    private static int HalfToFloatBits(byte[] src, int offset)
+    {
+        int h = src[offset] | (src[offset + 1] << 8);
+        int sign = (h >> 15) & 1;
+        int exp = (h >> 10) & 0x1F;
+        int mant = h & 0x3FF;
+        if (exp == 0)
+        {
+            if (mant == 0) return sign << 31;
+            int shift = 0;
+            while ((mant & 0x400) == 0) { mant <<= 1; shift++; }
+            mant &= 0x3FF;
+            int e = 127 - 15 - shift + 1;
+            return (sign << 31) | (e << 23) | (mant << 13);
+        }
+        if (exp == 31)
+            return (sign << 31) | (0xFF << 23) | (mant << 13);
+        return (sign << 31) | ((exp - 15 + 127) << 23) | (mant << 13);
+    }
+
+    private string PixelFormat()
+        => hdr10 ? "gbrpf32le" : bytesPerPixel == 8 ? "rgba64le" : "rgba";
 
     private string TargetFormat() => bytesPerPixel == 8 ? "yuv420p10le" : "yuv420p";
 
@@ -492,6 +556,14 @@ internal sealed class VideoEncoder : IDisposable
     private string RowFilter()
     {
         const string pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
+        if (hdr10)
+        {
+            // Gamma/sRGB → linear → BT.2020/PQ。>1.0 由 zscale 的 sRGB 曲线解析延拓。
+            // 不能把 Gamma 0–1 直接标 smpte2084；必须走这条转换链。
+            string hdr = ",zscale=transferin=iec61966-2-1:primariesin=bt709:matrixin=bt709"
+                + ":transfer=smpte2084:primaries=bt2020:matrix=bt2020nc,format=" + TargetFormat();
+            return (flipRows ? "vflip," : "") + pad + hdr;
+        }
         string color = ",scale=out_color_matrix=bt709,format=" + TargetFormat();
         return (flipRows ? "vflip," : "") + pad + color;
     }
@@ -629,10 +701,13 @@ internal sealed class VideoEncoder : IDisposable
     }
 
     private static Codec ResolveCodec(OutContainer container, VideoCodec videoCodec,
-        HardwareBackend hardware, bool tenBit)
+        HardwareBackend hardware, bool tenBit, bool hdr10)
     {
         // webm 容器只认 VP8/VP9 + Vorbis/Opus；H.264/H.265 都不能进 WebM。
         if (container == OutContainer.WebM) return Codec.Vp9;
+        // HDR10 第一版固定软件 libx265：只保证 H.265 + 10-bit + 转换链正确，
+        // 不扩展到 NVENC/QSV/AMF。硬件 HDR10 在 2C 再评估。
+        if (hdr10) return Codec.X265;
         // mov muxer 直接拒绝 AV1（"av1 only supported in MP4 and AVIF"），
         // 而且失败发生在整场渲染后的收尾合成。这里提前回退 H.265。
         if (container == OutContainer.Mov && videoCodec == VideoCodec.Av1)
@@ -673,13 +748,13 @@ internal sealed class VideoEncoder : IDisposable
     }
 
     private Codec PickCodec(OutContainer container)
-        => ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8);
+        => ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8, hdr10);
 
     internal static string DescribeEncoder(OutContainer container,
         VideoCodec videoCodec = VideoCodec.H264, HardwareBackend hardware = HardwareBackend.Auto,
-        bool tenBit = false)
+        bool tenBit = false, bool hdr10 = false)
     {
-        switch (ResolveCodec(container, videoCodec, hardware, tenBit))
+        switch (ResolveCodec(container, videoCodec, hardware, tenBit, hdr10))
         {
             case Codec.Vp9: return "libvpx-vp9 (CPU)";
             case Codec.NvencH265: return "hevc_nvenc (GPU)";
@@ -788,8 +863,11 @@ internal sealed class VideoEncoder : IDisposable
             case Codec.X265:
                 {
                     string x265Preset = SoftwarePreset();
+                    string hdr = hdr10
+                        ? " -x265-params " + Quote("hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1800,600")
+                        : "";
                     return "-c:v libx265 -preset " + Quote(x265Preset)
-                        + " " + BuildRateControl(false) + " -g " + gop;
+                        + " " + BuildRateControl(false) + " -g " + gop + hdr;
                 }
             default:
                 {

@@ -149,7 +149,7 @@ internal static class EncoderMatrixCheck
             && pages.Contains("render.codec.aom_slow", StringComparison.Ordinal)
             && pages.Contains("render.codec.hw_fallback", StringComparison.Ordinal),
             "⑥ 回退原因提示在（MOV/AV1、SVT CBR、libaom、硬件不可用）");
-        Check(enc.Contains("switch (ResolveCodec(container, videoCodec, hardware, tenBit))", StringComparison.Ordinal)
+        Check(enc.Contains("switch (ResolveCodec(container, videoCodec, hardware, tenBit, hdr10))", StringComparison.Ordinal)
             && !enc.Contains("ResolveCodec(quality, container, videoCodec", StringComparison.Ordinal),
             "⑦ DescribeEncoder 与 PickCodec 共用同一判定，quality 已退出后端判定");
         Check(enc.Contains("private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware, string exe)", StringComparison.Ordinal)

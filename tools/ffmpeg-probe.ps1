@@ -215,6 +215,46 @@ foreach ($tenCodec in @(
         $(if ($ok) { 'OK  ' } else { 'FAIL' }), ($probe -match 'Video:'), ($probe -match 'Audio:'), ($probe -match 'yuv420p10le'))
 }
 
+# ── HDR10 链路：gbrpf32le → zscale(sRGB→PQ/BT.2020) → libx265 HDR10 ──
+# 2B-2 的关键：half RGB 不被 swscale/zimg 接受，必须转平面 float32。
+$hdrRaw = Join-Path $work 'hdr10_gbrpf32le.raw'
+$hdrMid = Join-Path $work 'temp_video_hdr10.mp4'
+$hdrFinal = Join-Path $work 'out_hdr10.mp4'
+$hdrConv = "-y -f rawvideo -pixel_format rgba -video_size ${W}x${H} -framerate $FPS -i `"$framesCat`" -pix_fmt gbrpf32le -f rawvideo `"$hdrRaw`""
+$p = Start-Process -FilePath $ff -ArgumentList $hdrConv -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e1.txt')
+if ($p.ExitCode -ne 0) {
+    Write-Output ("  [FAIL] hdr10 convert exit={0}" -f $p.ExitCode)
+    Get-Content (Join-Path $work 'e1.txt') -Tail 4 | ForEach-Object { "      $_" }
+    $fail++
+} else {
+    $hdrVf = 'zscale=transferin=iec61966-2-1:primariesin=bt709:matrixin=bt709:transfer=smpte2084:primaries=bt2020:matrix=bt2020nc,format=yuv420p10le'
+    $hdrX = 'hdr10=1:repeat-headers=1:colorprim=bt2020:transfer=smpte2084:colormatrix=bt2020nc:master-display=G(13250,34500)B(7500,3000)R(34000,16000)WP(15635,16450)L(10000000,1):max-cll=1800,600'
+    $hdrEncArgs = "-y -f rawvideo -pixel_format gbrpf32le -video_size ${W}x${H} -framerate $FPS -i `"$hdrRaw`" -an -vf `"$hdrVf`" -c:v libx265 -preset ultrafast -crf 28 -pix_fmt yuv420p10le -x265-params $hdrX -g $gop10 `"$hdrMid`""
+    $p = Start-Process -FilePath $ff -ArgumentList $hdrEncArgs -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e1.txt')
+    if ($p.ExitCode -ne 0) {
+        Write-Output ("  [FAIL] hdr10 encode exit={0}" -f $p.ExitCode)
+        Get-Content (Join-Path $work 'e1.txt') -Tail 4 | ForEach-Object { "      $_" }
+        $fail++
+    } else {
+        $hdrMux = "-y -i `"$hdrMid`" -i `"$wav`" -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 320k -ac 2 `"$hdrFinal`""
+        $p2 = Start-Process -FilePath $ff -ArgumentList $hdrMux -Wait -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e2.txt')
+        if ($p2.ExitCode -ne 0) {
+            Write-Output ("  [FAIL] hdr10 mux exit={0}" -f $p2.ExitCode)
+            Get-Content (Join-Path $work 'e2.txt') -Tail 4 | ForEach-Object { "      $_" }
+            $fail++
+        } else {
+            $probeFile = Join-Path $work 'probe.txt'
+            Start-Process -FilePath $ff -ArgumentList "-hide_banner -i `"$hdrFinal`"" -Wait -NoNewWindow `
+                -RedirectStandardError $probeFile -RedirectStandardOutput (Join-Path $work 'probe_out.txt') | Out-Null
+            $probe = [IO.File]::ReadAllText($probeFile)
+            $ok = ($probe -match 'Audio:') -and ($probe -match 'Video:') -and ($probe -match 'yuv420p10le') -and ($probe -match 'bt2020') -and ($probe -match 'smpte2084')
+            if (-not $ok) { $fail++ }
+            Write-Output ("  [{0}] hdr10  video={1} audio={2} 10bit={3} bt2020={4} pq={5}" -f `
+                $(if ($ok) { 'OK  ' } else { 'FAIL' }), ($probe -match 'Video:'), ($probe -match 'Audio:'), ($probe -match 'yuv420p10le'), ($probe -match 'bt2020'), ($probe -match 'smpte2084'))
+        }
+    }
+}
+
 # ── AV1 矩阵：svt/aom × ABR/CRF/CQP/CBR × mp4/mkv ──────────────────
 # 这一组专门抓「参数形状非法」：svt 不接受 -maxrate、aom 的 CRF 需要 -b:v 0、
 # MOV 不能装 AV1（所以只测 mp4/mkv）。
