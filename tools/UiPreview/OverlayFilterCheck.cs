@@ -32,9 +32,9 @@ internal static class OverlayFilterCheck
             "② 按组件类型全名/短名排除");
         Check(overlay.Contains("ExcludedCount()", StringComparison.Ordinal),
             "② 有「已匹配 N 个对象」计数");
-        Check(pages.Contains("render.overlay_exclude", StringComparison.Ordinal)
+        Check(pages.Contains("OnGui.RowTextField(\"render.overlay_exclude\"", StringComparison.Ordinal)
             && pages.Contains("render.overlay_excluded", StringComparison.Ordinal),
-            "③ UI 有输入框与匹配数量提示");
+            "③ UI 有自绘输入框与匹配数量提示");
 
         Console.WriteLine($"  组件类型过滤：{total} 条，失败 {failed}");
         return (total, failed);

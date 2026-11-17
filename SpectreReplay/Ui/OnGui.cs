@@ -1141,6 +1141,42 @@ namespace SpectreReplay.Ui
             }
         }
 
+        /// <summary>
+        /// 自绘单行文本框：走 Gui 的行栈与 TextField.Draw，和下拉/滑条同一套布局。
+        /// **不要用 GUILayout.TextField**——原生 IMGUI 控件在自绘行栈里不落地。
+        /// </summary>
+        internal static void RowTextField(string labelKey, string value, Action<string> onCommit)
+        {
+            TextField field = GetField(labelKey);
+            SyncField(field, value ?? "");
+            if (Gui.ModernMode)
+            {
+                Gui.BeginModernRow();
+                DrawModernTextStack(labelKey);
+                GUILayout.Space(6f);
+                GUILayout.BeginHorizontal();
+                Rect box = GUILayoutUtility.GetRect(1f, 28f,
+                    GUILayout.ExpandWidth(true), GUILayout.Height(28f));
+                bool canceled;
+                bool commit = field.Draw(box, Gui.LabelStyle, "", out canceled);
+                if (canceled) field.Text = value ?? "";
+                else if (commit) onCommit?.Invoke(field.Text);
+                GUILayout.EndHorizontal();
+                Gui.EndModernRow();
+                return;
+            }
+
+            GUILayout.BeginHorizontal();
+            GUILayout.Label(Loc.T(labelKey), Gui.LabelStyle, GUILayout.Width(Gui.LabelW));
+            Rect classicBox = GUILayoutUtility.GetRect(1f, 28f,
+                GUILayout.ExpandWidth(true), GUILayout.Height(28f));
+            bool classicCanceled;
+            bool classicCommit = field.Draw(classicBox, Gui.LabelStyle, "", out classicCanceled);
+            if (classicCanceled) field.Text = value ?? "";
+            else if (classicCommit) onCommit?.Invoke(field.Text);
+            GUILayout.EndHorizontal();
+        }
+
         internal static void RowInput(string labelKey)
         {
             if (Gui.ModernMode)

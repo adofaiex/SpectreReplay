@@ -124,7 +124,7 @@
     "render.hdr10.tip": "ARGBHalf + zscale (sRGB→PQ, BT.709→BT.2020) + x265 HDR10; tylko H.265 + CleanCamera, kursor wyłączony.",
     "render.hdr10.note": "HDR10 wymaga H.265 + CleanCamera; bieżący wybór zostanie zignorowany lub zastąpiony.",
     "render.overlay_exclude": "Wykluczone typy komponentów",
-    "render.overlay_exclude.tip": "Jeden pełny/krótki nazwa w wierszu; pasujące Canvas pozostają poza czystą kamerą. Puste = automatycznie.",
+    "render.overlay_exclude.tip": "Pełne/krótkie nazwy oddzielone przecinkami; pasujące Canvas pozostają poza czystą kamerą. Puste = automatycznie.",
     "render.overlay_excluded": "Wykluczono {0} obiektów",
     "render.codec.auto": "Automatycznie",
     "render.codec.fastest": "Najszybciej",

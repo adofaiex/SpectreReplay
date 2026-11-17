@@ -1872,18 +1872,14 @@ namespace SpectreReplay.Pages
                     OnGui.Note("render.hdr10.note");
 
                 // 组件类型排除：不手填 GameObject 名；空表 = 自动接管。
-                string overlayJoined = string.Join("\n",
+                // 用自绘 RowTextField（不是 GUILayout.TextField）：原生控件在 Gui 行栈里不落地。
+                string overlayJoined = string.Join(", ",
                     RenderOverlayExcludeTypes ?? new List<string>());
-                GUILayout.BeginHorizontal();
-                GUILayout.Label(Loc.T("render.overlay_exclude"), Gui.LabelStyle);
-                string overlayEdited = GUILayout.TextField(overlayJoined, Gui.LabelStyle,
-                    GUILayout.ExpandWidth(true));
-                GUILayout.EndHorizontal();
-                if (overlayEdited != overlayJoined)
+                OnGui.RowTextField("render.overlay_exclude", overlayJoined, v =>
                 {
-                    RenderOverlayExcludeTypes = ParseOverlayTypes(overlayEdited);
+                    RenderOverlayExcludeTypes = ParseOverlayTypes(v);
                     Commit();
-                }
+                });
                 GUILayout.Label(Loc.T("render.overlay_exclude.tip"), Gui.NoteStyle,
                     GUILayout.ExpandWidth(true));
                 int overlayExcluded = Features.VideoRender.RenderOverlayCapture.ExcludedCount();
@@ -1964,7 +1960,7 @@ namespace SpectreReplay.Pages
         {
             var list = new List<string>();
             if (string.IsNullOrEmpty(text)) return list;
-            foreach (string line in text.Split('\n'))
+            foreach (string line in text.Split(new[] { ',', '\n' }, StringSplitOptions.RemoveEmptyEntries))
             {
                 string s = line.Trim();
                 if (s.Length > 0) list.Add(s);

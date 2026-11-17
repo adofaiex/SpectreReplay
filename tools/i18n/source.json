@@ -641,8 +641,8 @@
   },
   {
    "key": "render.overlay_exclude.tip",
-   "zh": "每行一个类型全名或短名；匹配的 Canvas 不进入纯净相机。空 = 自动接管。",
-   "en": "One type full/short name per line; matching canvases stay out of the clean camera. Empty = auto."
+   "zh": "用逗号分隔多个类型全名或短名；匹配的 Canvas 不进入纯净相机。空 = 自动接管。",
+   "en": "Comma-separated type full/short names; matching canvases stay out of the clean camera. Empty = auto."
   },
   {
    "key": "render.overlay_excluded",

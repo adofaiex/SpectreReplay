@@ -124,7 +124,7 @@
     "render.hdr10.tip": "ARGBHalf + zscale(sRGB→PQ, BT.709→BT.2020) + x265 HDR10. H.265 + CleanCamera만 지원하며 커서 오버레이는 비활성화됩니다.",
     "render.hdr10.note": "HDR10은 H.265 + CleanCamera만 지원합니다. 현재 선택은 무시되거나 폴백됩니다.",
     "render.overlay_exclude": "제외할 컴포넌트 유형",
-    "render.overlay_exclude.tip": "한 줄에 형식 전체/짧은 이름 하나. 일치하는 Canvas는 클린 카메라에 들어가지 않습니다. 비어 있으면 자동.",
+    "render.overlay_exclude.tip": "형식 전체/짧은 이름을 쉼표로 구분해 여러 개 입력. 일치하는 Canvas는 클린 카메라에 들어가지 않습니다. 비어 있으면 자동.",
     "render.overlay_excluded": "{0}개 객체 제외됨",
     "render.codec.auto": "자동",
     "render.codec.fastest": "가장 빠름",

@@ -124,7 +124,7 @@
     "render.hdr10.tip": "ARGBHalf + zscale (sRGB→PQ, BT.709→BT.2020) + x265 HDR10; chỉ H.265 + CleanCamera, con trỏ bị tắt.",
     "render.hdr10.note": "HDR10 yêu cầu H.265 + CleanCamera; lựa chọn hiện tại sẽ bị bỏ qua hoặc thay thế.",
     "render.overlay_exclude": "Loại thành phần bị loại",
-    "render.overlay_exclude.tip": "Mỗi dòng một tên đầy đủ/ngắn; Canvas khớp sẽ nằm ngoài camera sạch. Trống = tự động.",
+    "render.overlay_exclude.tip": "Tên đầy đủ/ngắn cách nhau bằng dấu phẩy; Canvas khớp sẽ nằm ngoài camera sạch. Trống = tự động.",
     "render.overlay_excluded": "Đã loại {0} đối tượng",
     "render.codec.auto": "Tự động",
     "render.codec.fastest": "Nhanh nhất",
