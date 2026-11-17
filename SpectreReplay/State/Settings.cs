@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Newtonsoft.Json;
 using UnityEngine;
 
@@ -204,6 +205,9 @@ public static class Settings
     // HDR10：ARGBHalf 采集 + zscale(sRGB→PQ, BT.709→BT.2020) + x265 HDR10。
     // 仅 H.265 + CleanCamera；光标叠加禁用。源是 Gamma/sRGB，>1.0 按 sRGB 曲线解析延拓。
     public static bool RenderHdr10;
+    // 纯净相机 overlay 排除：按组件类型全名/短名匹配；空 = 自动接管。
+    // 不手填 GameObject 名——运行时对象名不稳定，组件类型更可靠。
+    public static List<string> RenderOverlayExcludeTypes = new();
     // 码率控制：0 ABR（目标码率）1 CRF（质量）2 CQP（量化）3 CBR（恒定码率）。
     // CRF/CQP 的数值域与 x264/x265 一致；WebM 的 VP9 只支持 ABR/CRF，CQP/CBR 会
     // 自动退回 ABR（见 VideoEncoder.EncoderArguments）。
@@ -359,6 +363,15 @@ public static class Settings
         RenderCqp = Mathf.Clamp(RenderCqp, 0, 51);
         RenderBitrateMbps = Mathf.Clamp(RenderBitrateMbps, 0, 160);
         RenderPreset = Mathf.Clamp(RenderPreset, 0, 10);
+        // overlay 排除类型：去空、去重、限长；非法项不影响其它项。
+        if (RenderOverlayExcludeTypes == null)
+            RenderOverlayExcludeTypes = new List<string>();
+        RenderOverlayExcludeTypes = RenderOverlayExcludeTypes
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .Select(s => s.Trim())
+            .Distinct(StringComparer.Ordinal)
+            .Take(64)
+            .ToList();
         checklang();
         BuildKeyCodeConvertTable();
         // 这里不能有 `== 0xFFFF → num` 的兜底：BuildKeyCodeConvertTable 已保证末态

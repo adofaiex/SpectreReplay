@@ -103,6 +103,12 @@ internal static class RenderOverlayCapture
                 entries.RemoveAt(i);
                 continue;
             }
+            if (IsExcluded(e.Canvas))
+            {
+                // 被玩家排除：若之前已切换，先还原；本轮不再接管。
+                RestoreEntry(e);
+                continue;
+            }
             if (e.Switched) continue;
             e.OldMode = e.Canvas.renderMode;
             e.OldWorldCamera = e.Canvas.worldCamera;
@@ -114,6 +120,53 @@ internal static class RenderOverlayCapture
             e.Canvas.sortingOrder = OverlayOrder;
             e.Switched = true;
         }
+    }
+
+    private static void RestoreEntry(Entry e)
+    {
+        if (!e.Switched) return;
+        try
+        {
+            e.Canvas.sortingOrder = e.OldSortingOrder;
+            e.Canvas.renderMode = e.OldMode;
+            e.Canvas.worldCamera = e.OldWorldCamera;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogException(ex);
+        }
+        e.Switched = false;
+    }
+
+    /// <summary>
+    /// 画布上是否有组件类型命中排除表。按类型全名或短名匹配；空表 = 不排除。
+    /// 不手填 GameObject 名：运行时对象名不稳定。
+    /// </summary>
+    private static bool IsExcluded(Canvas canvas)
+    {
+        if (canvas == null) return false;
+        List<string> list = SpectreReplay.Settings.RenderOverlayExcludeTypes;
+        if (list == null || list.Count == 0) return false;
+        foreach (Component c in canvas.GetComponents<Component>())
+        {
+            if (c == null) continue;
+            Type type = c.GetType();
+            if (list.Contains(type.FullName, StringComparer.Ordinal)
+                || list.Contains(type.Name, StringComparer.Ordinal))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>当前被排除的登记画布数量（UI 显示「已匹配 N 个对象」）。</summary>
+    internal static int ExcludedCount()
+    {
+        int count = 0;
+        foreach (Entry e in entries)
+        {
+            if (e.Canvas != null && IsExcluded(e.Canvas)) count++;
+        }
+        return count;
     }
 
     /// <summary>渲染会话结束时调一次（幂等，两种来源都调）。时钟补丁卸载、已切换的画布恢复。</summary>

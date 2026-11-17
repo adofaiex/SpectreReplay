@@ -122,9 +122,10 @@ Phase 6（加固）
   - [x] WholeScreen 跳过 HDR10 时打 `Debug.LogWarning`
   - [x] 吞吐实测：SDR 63fps / HDR10 6.2fps；2C 硬件 hevc_nvenc Main10 是优化方向
 - [ ] 2C QSV/AMF 全矩阵（需 Intel/AMD 实机；无实机只做形状断言，不宣称已验证）
-- [ ] 2D 组件类型过滤（不手填 GameObject 名）
-  - [ ] `RenderOverlayExcludeTypes` 字符串数组：`ConfigManager` 目前只有 int/bool/string/float 四类读写路径，需新增数组持久化 + 空值/分隔符归一化（预留 0.25–0.5 天）
-  - [ ] UI 显示「已匹配 N 个对象」；配置错误不能表现为「什么都没显示」
+- [x] 2D 组件类型过滤（不手填 GameObject 名）
+  - [x] `RenderOverlayExcludeTypes` 数组持久化 + 空值/去重/限长
+  - [x] `RenderOverlayCapture` 按组件类型全名/短名排除
+  - [x] UI 显示「已排除 N 个对象」；配置错误不表现为空白
 - [ ] Pages 拆分与静态状态收敛
 - **Status:** in_progress
 

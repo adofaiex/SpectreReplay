@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using SpectreReplay.Features.Cloud;
@@ -113,6 +114,7 @@ public static class ConfigManager
         public bool render_cursor_on { get; set; }
         public bool render_10bit { get; set; }
         public bool render_hdr10 { get; set; }
+        public System.Collections.Generic.List<string> render_overlay_exclude_types { get; set; }
         public bool render_stop_on { get; set; }
         public int render_stop_key { get; set; }
         /// <summary>音画偏移毫秒（见 Settings.RenderAudioOffsetMs）。</summary>
@@ -145,6 +147,22 @@ public static class ConfigManager
     /// （UM4 回调、退出钩子）忽略即可——它们无法向用户呈现失败。
     /// </para>
     /// </summary>
+    private static List<string> ParseOverlayTypes(Newtonsoft.Json.Linq.JToken token)
+    {
+        if (!(token is Newtonsoft.Json.Linq.JArray arr))
+            return new List<string>();
+        var list = new List<string>();
+        foreach (var item in arr)
+        {
+            string s = item?.ToString()?.Trim();
+            if (!string.IsNullOrEmpty(s)) list.Add(s);
+        }
+        return list
+            .Distinct(StringComparer.Ordinal)
+            .Take(64)
+            .ToList();
+    }
+
     internal static bool SaveConfigs(string filePath)
     {
         // 路径为 null 时后续 Path.GetDirectoryName(null) 会抛 ArgumentNullException，
@@ -247,6 +265,7 @@ public static class ConfigManager
                 render_cursor_on = Settings.RenderCursorOn,
                 render_10bit = Settings.Render10Bit,
                 render_hdr10 = Settings.RenderHdr10,
+                render_overlay_exclude_types = Settings.RenderOverlayExcludeTypes,
                 render_stop_on = Settings.RenderStopOn,
                 render_stop_key = Settings.RenderStopKey,
                 render_audio_offset_ms = Settings.RenderAudioOffsetMs,
@@ -579,6 +598,7 @@ public static class ConfigManager
                     Settings.RenderCursorOn = ints.Value<bool?>("render_cursor_on") ?? Settings.RenderCursorOn;
                     Settings.Render10Bit = ints.Value<bool?>("render_10bit") ?? Settings.Render10Bit;
                     Settings.RenderHdr10 = ints.Value<bool?>("render_hdr10") ?? Settings.RenderHdr10;
+                    Settings.RenderOverlayExcludeTypes = ParseOverlayTypes(ints["render_overlay_exclude_types"]);
                     Settings.RenderStopOn = ints.Value<bool?>("render_stop_on") ?? Settings.RenderStopOn;
                     // 键值不 Clamp：它是 KeyCode 数值域，合法集合由 Enum.IsDefined
                     // 在轮询处把关（见 VideoRenderJob.StopRequestedByHotkey）。

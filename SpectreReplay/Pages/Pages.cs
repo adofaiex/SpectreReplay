@@ -1870,6 +1870,28 @@ namespace SpectreReplay.Pages
                     v => { RenderHdr10 = v; Commit(); });
                 if (RenderHdr10 && (RenderVideoCodec != 1 || RenderCaptureMode != 0))
                     OnGui.Note("render.hdr10.note");
+
+                // 组件类型排除：不手填 GameObject 名；空表 = 自动接管。
+                string overlayJoined = string.Join("\n",
+                    RenderOverlayExcludeTypes ?? new List<string>());
+                GUILayout.BeginHorizontal();
+                GUILayout.Label(Loc.T("render.overlay_exclude"), Gui.LabelStyle);
+                string overlayEdited = GUILayout.TextField(overlayJoined, Gui.LabelStyle,
+                    GUILayout.ExpandWidth(true));
+                GUILayout.EndHorizontal();
+                if (overlayEdited != overlayJoined)
+                {
+                    RenderOverlayExcludeTypes = ParseOverlayTypes(overlayEdited);
+                    Commit();
+                }
+                GUILayout.Label(Loc.T("render.overlay_exclude.tip"), Gui.NoteStyle,
+                    GUILayout.ExpandWidth(true));
+                int overlayExcluded = Features.VideoRender.RenderOverlayCapture.ExcludedCount();
+                if (overlayExcluded > 0)
+                {
+                    GUILayout.Label(Loc.F("render.overlay_excluded", overlayExcluded),
+                        Gui.NoteStyle, GUILayout.ExpandWidth(true));
+                }
             }, RenderOn);
 
             Gui.Section("render.codec", Gui.Accent, () =>
@@ -1938,6 +1960,18 @@ namespace SpectreReplay.Pages
         /// ffmpeg 那行会**在首次且仅当模组目录没有 exe 时**探一次系统 PATH，
         /// 但结果带 30s 冷却缓存（VideoEncoder.Cooling），不会每帧拉进程。
         /// </summary>
+        private static List<string> ParseOverlayTypes(string text)
+        {
+            var list = new List<string>();
+            if (string.IsNullOrEmpty(text)) return list;
+            foreach (string line in text.Split('\n'))
+            {
+                string s = line.Trim();
+                if (s.Length > 0) list.Add(s);
+            }
+            return list;
+        }
+
         private static void DrawEncoderNote()
         {
             try

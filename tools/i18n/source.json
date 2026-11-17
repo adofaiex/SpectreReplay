@@ -634,6 +634,21 @@
    "zh": "HDR10 仅支持 H.265 + CleanCamera；当前选择会被忽略或回退。",
    "en": "HDR10 requires H.265 + CleanCamera; the current selection will be ignored or fall back."
   },
+  {
+   "key": "render.overlay_exclude",
+   "zh": "排除组件类型",
+   "en": "Excluded component types"
+  },
+  {
+   "key": "render.overlay_exclude.tip",
+   "zh": "每行一个类型全名或短名；匹配的 Canvas 不进入纯净相机。空 = 自动接管。",
+   "en": "One type full/short name per line; matching canvases stay out of the clean camera. Empty = auto."
+  },
+  {
+   "key": "render.overlay_excluded",
+   "zh": "已排除 {0} 个对象",
+   "en": "{0} objects excluded"
+  },
  {
   "key": "render.codec.auto",
   "zh": "自动",
