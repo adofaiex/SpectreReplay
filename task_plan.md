@@ -122,6 +122,12 @@ Phase 6（加固）
   - [x] WholeScreen 跳过 HDR10 时打 `Debug.LogWarning`
   - [x] 吞吐实测：SDR 63fps / HDR10 6.2fps；2C 硬件 hevc_nvenc Main10 是优化方向
 - [ ] 2C QSV/AMF 全矩阵（需 Intel/AMD 实机；无实机只做形状断言，不宣称已验证）
+  - [x] 2C-1 10-bit × 硬件 H.264 豁口收口：`tenBit` 时 NVENC/QSV/AMF 三档 H.264 硬件全跳过直落 libx264（此前只跳 QsvH264，nvenc/amf 会被 auto-scale 静默降 8-bit）；`MUT-10B4` 重锚 + `MUT-2C1`
+  - [x] 2C-2 HDR10 硬件「再评估」落笔成决定：维持 libx265-only（master-display/max-cll 元数据注入只有 x265 已验证，preflight 只探 nv12/yuv420p 探不到 10-bit）；注释 + `Hdr10Check` 负断言 + `MUT-2C2`
+  - [x] 2C-3 CI 能力断言 QSV/AMF 名单钉住：`EncoderMatrixCheck` ⑧ 锁 `h264_qsv/hevc_qsv/h264_amf/hevc_amf`（只锁存在，不锁能跑）；`MUT-CI24`
+  - [x] 2C-4 实机验证清单落进 tools：`ffmpeg-probe.ps1` 硬件矩阵用例（NVENC/QSV/AMF × H.264/H.265 × 8/10bit，1 帧探测 + 位深判读）
+  - [ ] 硬件矩阵实机收口：本机 NVENC 已实证（见 findings）；QSV/AMF 待 Intel/AMD 实机跑 `tools/ffmpeg-probe.ps1` 判读
+  - [ ] 硬件 HDR10（hevc_nvenc Main10 + 元数据注入）单独立项，等 Intel/AMD 实机
 - [x] 2D 组件类型过滤（不手填 GameObject 名）
   - [x] `RenderOverlayExcludeTypes` 数组持久化 + 空值/去重/限长
   - [x] `RenderOverlayCapture` 按组件类型全名/短名排除

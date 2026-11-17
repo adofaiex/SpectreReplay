@@ -47,8 +47,9 @@ internal static class TenBitCheck
             "② ffmpeg 输入 rgba64le / 输出 yuv420p10le");
         Check(enc.Contains("QueueCapacity = Math.Max(2, Math.Min(64, 268435456 / (width * height * (hdr10 ? 12 : bytesPerPixel))));", StringComparison.Ordinal),
             "② 队列容量按 bytesPerPixel/HDR10 限容");
-        Check(enc.Contains("if (tenBit && candidate == Codec.QsvH264)", StringComparison.Ordinal),
-            "② h264_qsv 无 10-bit 输入，10-bit 时跳过");
+        Check(enc.Contains("bool h264Hw = candidate == Codec.NvencH264 || candidate == Codec.QsvH264 || candidate == Codec.AmfH264;", StringComparison.Ordinal)
+            && enc.Contains("if (tenBit && h264Hw)", StringComparison.Ordinal),
+            "② H.264 硬件三档（nvenc/qsv/amf）无 10-bit 输入，10-bit 时整排跳过");
         Check(job.Contains("bool tenBit = Settings.Render10Bit || hdr10;", StringComparison.Ordinal)
             && job.Contains("Settings.RenderHeight, tenBit, hdr10)", StringComparison.Ordinal),
             "③ 渲染作业把 tenBit 传给帧源");

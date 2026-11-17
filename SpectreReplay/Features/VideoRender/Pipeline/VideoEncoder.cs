@@ -705,8 +705,12 @@ internal sealed class VideoEncoder : IDisposable
     {
         // webm 容器只认 VP8/VP9 + Vorbis/Opus；H.264/H.265 都不能进 WebM。
         if (container == OutContainer.WebM) return Codec.Vp9;
-        // HDR10 第一版固定软件 libx265：只保证 H.265 + 10-bit + 转换链正确，
-        // 不扩展到 NVENC/QSV/AMF。硬件 HDR10 在 2C 再评估。
+        // HDR10 固定软件 libx265（2C 落笔：硬件 HDR10 维持不启用）。
+        // 原因：master-display/max-cll 元数据注入只有 x265 的 -x265-params
+        // 链路实机验证过；硬件 hevc_* 的 10-bit 接受度 preflight 探不到
+        //（ProbeEncoderSync 只探 nv12/yuv420p）。将来放行必须等 Intel/AMD
+        // 实机跑通 ffprobe 三件套（Main10 + yuv420p10le + bt2020/smpte2084）
+        // 再单独立项，那时一并验证硬件元数据注入。
         if (hdr10) return Codec.X265;
         // mov muxer 直接拒绝 AV1（"av1 only supported in MP4 and AVIF"），
         // 而且失败发生在整场渲染后的收尾合成。这里提前回退 H.265。
@@ -725,9 +729,14 @@ internal sealed class VideoEncoder : IDisposable
             if (candidate == Codec.X264 || candidate == Codec.X265
                 || candidate == Codec.SvtAv1 || candidate == Codec.AomAv1)
                 return candidate;
-            // h264_qsv 在本构建里只有 nv12，没有任何 10-bit 输入格式。
-            // 10-bit 时跳过它，继续尝试后面的 AMF/软件，避免 ffmpeg 静默 auto-select nv12。
-            if (tenBit && candidate == Codec.QsvH264)
+            // H.264 硬件三档在 10-bit 下都没有可靠行为（probe 实测，见 findings）：
+            // qsv 把 yuv420p10le 输入静默降成 8-bit 输出；nvenc 对 10-bit 输入是
+            // auto-select p010le（HEVC 的 4:2:0 10-bit 格式直接交给 H.264，行为
+            // 未定义）；amf 未实证。10-bit 时整排跳过直落 libx264；H.265/AV1
+            // 硬件保留（Main10/AV1 是规格能力），preflight 超时与 2A-5 CPU 重跑
+            // 兜底（本机 hevc_qsv init 自旋即被 15s 探测超时拦下）。
+            bool h264Hw = candidate == Codec.NvencH264 || candidate == Codec.QsvH264 || candidate == Codec.AmfH264;
+            if (tenBit && h264Hw)
                 continue;
 
             int state = EncoderStateFor(exe, EncoderName(candidate));

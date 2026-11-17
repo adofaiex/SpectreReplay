@@ -296,6 +296,85 @@ foreach ($codec in @('svt', 'aom')) {
     }
 }
 
+# ── 硬件矩阵：NVENC/QSV/AMF × H.264/H.265 × 8/10bit（1 帧探测 + 位深判读）──
+# 2C 的实机证据面：模组按 2C 规则在 10-bit 时跳过 H.264 硬件三档，这里观察
+# ffmpeg 本身对 10-bit 输入的真实表现（init 拒绝 / auto-scale 静默降 8-bit），
+# 以及 H.265 硬件 Main10 是否真出 yuv420p10le（保留 H.265 硬件的依据）。
+# 本机没有对应 GPU 时 init 失败属预期：打印 [SKIP] 不计失败；有硬件却跑不通
+# 的情况由人工判读。结论写进 findings.md；QSV/AMF 等 Intel/AMD 实机。
+$hwW = 64; $hwH = 64
+$hw8 = Join-Path $work 'hw_bgra.raw'
+$hw10 = Join-Path $work 'hw_rgba64.raw'
+$hw8b = New-Object byte[] ($hwW * $hwH * 4)
+for ($j = 0; $j -lt $hw8b.Length; $j += 4) {
+    $hw8b[$j] = [byte](($j * 7) % 256); $hw8b[$j+1] = [byte](($j * 3) % 256)
+    $hw8b[$j+2] = [byte](($j * 11) % 256); $hw8b[$j+3] = 255
+}
+[IO.File]::WriteAllBytes($hw8, $hw8b)
+$hw10b = New-Object byte[] ($hwW * $hwH * 8)
+for ($j = 0; $j -lt $hw10b.Length; $j += 8) {
+    $px = $j / 8
+    $v1 = [BitConverter]::GetBytes([uint16]((($px * 13) % 1024) * 64))
+    $v2 = [BitConverter]::GetBytes([uint16]((($px * 5) % 1024) * 64))
+    $v3 = [BitConverter]::GetBytes([uint16]((($px * 29) % 1024) * 64))
+    [Array]::Copy($v1, 0, $hw10b, $j, 2); [Array]::Copy($v2, 0, $hw10b, $j + 2, 2)
+    [Array]::Copy($v3, 0, $hw10b, $j + 4, 2)
+    $hw10b[$j+6] = 0xFF; $hw10b[$j+7] = 0xFF
+}
+[IO.File]::WriteAllBytes($hw10, $hw10b)
+$hwEncs = @{
+    nvenc = @{ h264 = 'h264_nvenc'; hevc = 'hevc_nvenc'; extra = '-preset p1' }
+    qsv   = @{ h264 = 'h264_qsv';  hevc = 'hevc_qsv';  extra = '-preset veryfast' }
+    amf   = @{ h264 = 'h264_amf';  hevc = 'hevc_amf';  extra = '-quality speed' }
+}
+$hwOk = 0; $hwSkip = 0
+foreach ($hwBackend in @('nvenc', 'qsv', 'amf')) {
+    foreach ($hwCodec in @('h264', 'hevc')) {
+        foreach ($hwDepth in @('8', '10')) {
+            $tag = "{0}_{1}_{2}bit" -f $hwBackend, $hwCodec, $hwDepth
+            $inFile = $(if ($hwDepth -eq '8') { $hw8 } else { $hw10 })
+            $inFmt = $(if ($hwDepth -eq '8') { 'rgba' } else { 'rgba64le' })
+            $outFmt = $(if ($hwDepth -eq '8') { 'yuv420p' } else { 'yuv420p10le' })
+            $hwMid = Join-Path $work ("hw_${tag}.mkv")
+            $hwEncArgs = "-y -f rawvideo -pixel_format $inFmt -video_size ${hwW}x${hwH} -framerate 30 -i `"$inFile`"" +
+                " -an -vf `"scale=out_color_matrix=bt709,format=$outFmt`"" +
+                " -c:v $($hwEncs[$hwBackend][$hwCodec]) $($hwEncs[$hwBackend].extra)" +
+                " -b:v 4M -maxrate 6M -bufsize 8M -g 60 -pix_fmt $outFmt `"$hwMid`""
+            # 硬件会话可能 init 自旋（实测 hevc_qsv 在本机 64x64 单帧 >40 分钟
+            # 不返回），必须给探测设上限，否则整条脚本被一个用例挂死。
+            $p = Start-Process -FilePath $ff -ArgumentList $hwEncArgs -PassThru -NoNewWindow -RedirectStandardError (Join-Path $work 'e1.txt')
+            if (-not $p.WaitForExit(60000)) {
+                try { $p.Kill() } catch { }
+                $p.WaitForExit()
+                $hwSkip++
+                Write-Output ("  [TIMEOUT] {0}  >60s 无返回，已终止（本机自旋属实机判读项）" -f $tag)
+                continue
+            }
+            if ($p.ExitCode -ne 0) {
+                $hwSkip++
+                Write-Output ("  [SKIP] {0}  exit={1}（后端不可用：无设备/驱动不满足/被拒——实机判读）" -f $tag, $p.ExitCode)
+                Get-Content (Join-Path $work 'e1.txt') -Tail 6 | ForEach-Object { "      $_" }
+                continue
+            }
+            $probeFile = Join-Path $work 'probe.txt'
+            Start-Process -FilePath $ff -ArgumentList "-hide_banner -i `"$hwMid`"" -Wait -NoNewWindow `
+                -RedirectStandardError $probeFile -RedirectStandardOutput (Join-Path $work 'probe_out.txt') | Out-Null
+            $probe = [IO.File]::ReadAllText($probeFile)
+            if ($probe -notmatch 'Video:') {
+                $fail++
+                Write-Output ("  [FAIL] {0}  编码 exit=0 但解回无视频流" -f $tag)
+                continue
+            }
+            $pix = if ($probe -match 'Video:.*?,\s*([a-z0-9_]+)\b') { $Matches[1] } else { '?' }
+            $hwOk++
+            $down = ''
+            if ($hwDepth -eq '10' -and $pix -notmatch '10le|p010') { $down = '（10-bit 被静默降 8-bit）' }
+            Write-Output ("  [OK  ] {0}  pix={1}{2}" -f $tag, $pix, $down)
+        }
+    }
+}
+Write-Output ("  硬件矩阵：跑通 {0}，未跑通 {1}（未跑通含无硬件，属预期；Intel/AMD 实机复核）" -f $hwOk, $hwSkip)
+
 Write-Output ""
 if ($fail -eq 0) { Write-Output "  全部通过" } else { Write-Output ("  {0} 项不通过" -f $fail) }
 exit $fail

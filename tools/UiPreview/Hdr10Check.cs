@@ -52,6 +52,9 @@ internal static class Hdr10Check
             "② x265 写 HDR10 元数据");
         Check(enc.Contains("if (hdr10) return Codec.X265;", StringComparison.Ordinal),
             "③ HDR10 固定软件 H.265");
+        Check(!enc.Contains("hdr10 && hardware", StringComparison.Ordinal)
+            && !enc.Contains("hdr10 && candidate", StringComparison.Ordinal),
+            "③ HDR10 判定不与硬件候选/后端耦合（元数据注入只有 x265 已验证）");
         Check(job.Contains("bool hdr10 = Settings.RenderHdr10", StringComparison.Ordinal)
             && job.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;", StringComparison.Ordinal),
             "③ 渲染作业传 hdr10 并禁用光标");

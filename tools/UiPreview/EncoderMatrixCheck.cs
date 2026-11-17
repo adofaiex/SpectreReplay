@@ -178,6 +178,11 @@ internal static class EncoderMatrixCheck
             && cap.Contains("'av1_qsv'", StringComparison.Ordinal)
             && cap.Contains("'av1_amf'", StringComparison.Ordinal),
             "⑧ CI 能力断言覆盖 AV1 变体");
+        Check(cap.Contains("'h264_qsv'", StringComparison.Ordinal)
+            && cap.Contains("'hevc_qsv'", StringComparison.Ordinal)
+            && cap.Contains("'h264_amf'", StringComparison.Ordinal)
+            && cap.Contains("'hevc_amf'", StringComparison.Ordinal),
+            "⑧ CI 能力断言覆盖 QSV/AMF H.264/H.265 名单");
         Check(cap.Contains("ffmpeg-encoders.txt", StringComparison.Ordinal)
             && wf.Contains("ffmpeg-capability.ps1", StringComparison.Ordinal)
             && wf.Contains("upload-artifact", StringComparison.Ordinal),
