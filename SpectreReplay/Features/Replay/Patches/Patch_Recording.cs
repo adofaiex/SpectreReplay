@@ -195,9 +195,11 @@ internal class Patch_OnLandOnPortal
         // 全自动判定读「过关瞬间」的 RDC.auto：这是模式级开关（编辑器自动演示、
         // Otto、调试键），自动砖每击的临时翻转由 scrPlayer 当击恢复，污染不到
         // 这里。原先按「每击快照全带 auto」判，纯手打的自动砖测试关会被整局
-        // 误杀（2026-11-07 实测）。编辑器试玩是作者自己的测试，不受此设置约束。
-        bool editorPlaytest = data.SceneName == "scnEditor";
-        if (!editorPlaytest && Settings.DontSaveWhenAuto && RDC.auto)
+        // 误杀（2026-11-07 实测）。
+        // 编辑器试玩不再豁免（2026-11-18 实机：中途开 Otto 跑完，退出试玩时仍落盘）。
+        // 判据只看过关瞬间的模式级开关：纯手打的编辑器试玩 RDC.auto 仍为 false，
+        // 不会被这条挡住；只有真的开了自动播放的局才跳过。
+        if (Settings.DontSaveWhenAuto && RDC.auto)
         {
             NotifySaveSkipped(LocalizationManager.GetLocalizedText("note.save_skip_auto"),
                 "auto run (DontSaveWhenAuto)");
