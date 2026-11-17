@@ -55,6 +55,8 @@ internal static class Hdr10Check
         Check(job.Contains("bool hdr10 = Settings.RenderHdr10", StringComparison.Ordinal)
             && job.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;", StringComparison.Ordinal),
             "③ 渲染作业传 hdr10 并禁用光标");
+        Check(job.Contains("HDR10 需要 CleanCamera", StringComparison.Ordinal),
+            "③ WholeScreen 跳过 HDR10 时有日志");
 
         Console.WriteLine($"  HDR10：{total} 条，失败 {failed}");
         return (total, failed);

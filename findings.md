@@ -21,7 +21,7 @@
 ## Verification
 - tools/verify.ps1 -Ci -SkipDeploy：全部通过。
 - 主项目 Release：0 错误，0 警告。
-- 离线套件：307 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
+- 离线套件：308 条断言，0 失败（2026-11-17 本机实跑；提交前工作区有未提交改动，「工作区干净」一项会红，提交后需再跑一次）。
 - 只读审计：6 项全部通过。
 - MUT-TL1 至 MUT-TL7：全部被检出。
 
@@ -82,9 +82,13 @@
 - 编码：`libx265`，`yuv420p10le`，`-colorspace bt2020nc -color_primaries bt2020 -color_trc smpte2084`，x265 `hdr10=1` 元数据。
 - 边界：仅 H.265 + CleanCamera；WholeScreen 自动不按 HDR10 处理；光标叠加禁用。
 - >1.0 的处理：zscale 的 sRGB 曲线按解析式延拓；不把它写成标准 EOTF，最终 nits 取决于 mastering display。
-- 实测：`ffmpeg-probe.ps1` 的 `gbrpf32le → zscale → libx265 HDR10` 全链退出 0；ffprobe 确认 `yuv420p10le (bt2020nc/bt2020/smpte2084)`。
-- 断言：`Hdr10Check` 11 条；`MUT-HDR10-1..3` 全部变红。
-- 待实机：HDR 显示器/SDR 屏视觉确认；`max-cll` 首版固定 `1800,600`（按 2B-0 峰值估计），实机再校准。
+- 实机 ffprobe：`hevc (Main 10), yuv420p10le(tv, bt2020nc/bt2020/smpte2084)`，1920x1080/60fps；三项全过。
+- 吞吐：SDR 8-bit 约 63fps（≈1.05× 实时）；HDR10 约 6.2fps（≈0.10× 实时）。瓶颈排序：x265 10-bit 编码反压 > `ConvertHdrFrame` 逐像素 half→float32 > zscale。
+- 边界：仅 H.265 + CleanCamera；WholeScreen 跳过 HDR10 时打 `Debug.LogWarning`；光标叠加禁用。
+- >1.0 的处理：zscale 的 sRGB 曲线按解析式延拓；不把它写成标准 EOTF，最终 nits 取决于 mastering display。
+- `max-cll` 首版固定 `1800,600`（按 2B-0 峰值估计），实机再校准。
+- 断言：`Hdr10Check` 12 条；`MUT-HDR10-1..4` 全部变红。
+- 结论：2B-2 首段链路正确，性能是 HDR10 的真实成本；2C 硬件 hevc_nvenc Main10 是主要优化方向。
 
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md

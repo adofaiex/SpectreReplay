@@ -352,6 +352,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
             bool cleanCamera = (VideoSurface)Settings.RenderCaptureMode == VideoSurface.CleanCamera;
             bool hdr10 = Settings.RenderHdr10
                 && (VideoSurface)Settings.RenderCaptureMode == VideoSurface.CleanCamera;
+            if (Settings.RenderHdr10 && !hdr10)
+                Debug.LogWarning("[SpectreReplay] HDR10 需要 CleanCamera，本次按 SDR 渲染。");
             bool tenBit = Settings.Render10Bit || hdr10;
         int preW = cleanCamera ? Settings.RenderWidth : Screen.width;
         int preH = cleanCamera ? Settings.RenderHeight : Screen.height;
