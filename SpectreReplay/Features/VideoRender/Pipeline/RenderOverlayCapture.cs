@@ -176,19 +176,7 @@ internal static class RenderOverlayCapture
         UninstallClockPatch();
         foreach (Entry e in entries)
         {
-            if (!e.Switched) continue;
-            try
-            {
-                e.Canvas.sortingOrder = e.OldSortingOrder;
-                e.Canvas.renderMode = e.OldMode;
-                e.Canvas.worldCamera = e.OldWorldCamera;
-            }
-            catch (Exception ex)
-            {
-                // 画布可能随场景销毁：恢复失败不影响相机还原，记日志即可
-                Debug.LogException(ex);
-            }
-            e.Switched = false;
+            RestoreEntry(e);
         }
         captureCamera = null;
         anchorTaken = false;
@@ -208,19 +196,7 @@ internal static class RenderOverlayCapture
         {
             Entry e = entries[i];
             if (e.Canvas != canvas) continue;
-            if (e.Switched)
-            {
-                try
-                {
-                    e.Canvas.sortingOrder = e.OldSortingOrder;
-                    e.Canvas.renderMode = e.OldMode;
-                    e.Canvas.worldCamera = e.OldWorldCamera;
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogException(ex);
-                }
-            }
+            RestoreEntry(e);
             entries.RemoveAt(i);
         }
     }
@@ -262,6 +238,9 @@ internal static class RenderOverlayCapture
             Type updater = kv.GetNestedType("KeyViewerUpdater",
                 BindingFlags.Public | BindingFlags.NonPublic);
             if (updater != null) patched += InstallCallSitePatch(updater, "Update");
+
+            // 主线程预取锚点；运行期只读，避免并发首写。
+            PrimeAnchor();
 
             if (patched == 0)
             {
@@ -373,6 +352,14 @@ internal static class RenderOverlayCapture
         quartzKey = null;
         quartzEnd = null;
         quartzClock = null;
+        // 会话结束清空 held：下一次会话不能对上次遗留的 vk 发抬起，
+        // 否则可能把新会话刚按下的同名键提前抬起。
+        ClearQuartzHeldOnUninstall();
+    }
+
+    private static void ClearQuartzHeldOnUninstall()
+    {
+        quartzHeld.Clear();
     }
 
     /// <summary>
@@ -454,25 +441,33 @@ internal static class RenderOverlayCapture
     }
 
     // 渲染期 KeyViewer.CurrentTicks 的替身：锚点 + 虚拟时钟增量。
-    // 锚点惰性取自首次调用（此时 UnscaledDeltaPin 必已安装——帧源构造晚于
-    // 渲染时钟装配），未安装则放行走 JRP 墙钟。
+    // 锚点在主线程 InstallClockPatch 时预取（PrimeAnchor），运行期只读；
+    // 避免 JRP 显示线程与 RainManager 并发首写 long/double 的撕裂/竞态。
     private static bool TryVirtualTicks(out long ticks)
     {
         ticks = 0;
         if (!VideoRender.Active || !UnscaledDeltaPin.Installed) return false;
-        if (!anchorTaken)
-        {
-            // 取 JRP 自己 Stopwatch 的当前刻度，保证与 StartTime 同域。
-            anchorJrpTicks = ReadJrpClockTicks();
-            anchorVirtualSeconds = UnscaledDeltaPin.CurrentUnscaledD;
-            anchorTaken = true;
-            Debug.Log("[SpectreReplay] JRP 雨滴时钟已换轨：锚点 " + anchorJrpTicks
-                + "，虚拟 " + anchorVirtualSeconds.ToString("0.000") + "s");
-        }
+        // 锚点只由主线程 PrimeAnchor 写；运行期若仍未预取，直接退回墙钟，
+        // 不在输入线程补写，彻底关闭并发首窗口。
+        if (!anchorTaken) return false;
         // CurrentUnscaledF 每帧推进 1/captureFramerate（钉扎语义），雨滴由此跟拍游戏时间
         ticks = anchorJrpTicks
             + (long)((UnscaledDeltaPin.CurrentUnscaledF - (float)anchorVirtualSeconds) * 10_000_000L);
         return true;
+    }
+
+    /// <summary>主线程预取锚点；运行期只读，避免并发首写。</summary>
+    private static void PrimeAnchor()
+    {
+        if (anchorTaken) return;
+        if (!VideoRender.Active || !UnscaledDeltaPin.Installed) return;
+        long jrp = ReadJrpClockTicks();
+        double virtualSeconds = UnscaledDeltaPin.CurrentUnscaledD;
+        anchorJrpTicks = jrp;
+        anchorVirtualSeconds = virtualSeconds;
+        anchorTaken = true;
+        Debug.Log("[SpectreReplay] JRP 雨滴时钟已换轨：锚点 " + anchorJrpTicks
+            + "，虚拟 " + anchorVirtualSeconds.ToString("0.000") + "s");
     }
 
     private static bool CurrentTicksPrefix(ref long __result)
@@ -488,6 +483,14 @@ internal static class RenderOverlayCapture
     /// </summary>
     internal static long RainClockTicks()
         => TryVirtualTicks(out long ticks) ? ticks : ReadJrpClockTicks();
+
+    /// <summary>
+    /// ToStopwatchTicks(long) 调用点的替换桥：必须保持 `(long)→long` 签名。
+    /// 当前先忽略事件时间戳、直接返回虚拟时钟；参数本身是 JRP 事件域，
+    /// 2A-2 之后若发现事件时刻也需换算，再在这里补映射。
+    /// </summary>
+    private static long RainClockToStopwatchTicks(long eventTicks)
+        => RainClockTicks();
 
     /// <summary>
     /// 复刻 JRP 的 get_CurrentTicks 刻度：Frequency==1e7 时用 ElapsedTicks，
@@ -521,22 +524,36 @@ internal static class RenderOverlayCapture
     {
         var list = instructions.ToList();
         MethodInfo bridge = AccessTools.Method(typeof(RenderOverlayCapture), nameof(RainClockTicks));
+        MethodInfo bridgeLong = AccessTools.Method(typeof(RenderOverlayCapture),
+            nameof(RainClockToStopwatchTicks));
         int patched = 0;
         for (int i = 0; i < list.Count; i++)
         {
             if (list[i].opcode != OpCodes.Call
-                || !(list[i].operand is MethodInfo callee)
-                || (callee.Name != "get_CurrentTicks"
-                    && callee.Name != "ToStopwatchTicks"))
+                || !(list[i].operand is MethodInfo callee))
                 continue;
-            list[i].opcode = OpCodes.Call;
-            list[i].operand = bridge;
-            patched++;
+            if (callee.Name == "get_CurrentTicks")
+            {
+                list[i].opcode = OpCodes.Call;
+                list[i].operand = bridge;
+                patched++;
+            }
+            else if (callee.Name == "ToStopwatchTicks"
+                && callee.GetParameters().Length == 1
+                && callee.GetParameters()[0].ParameterType == typeof(long))
+            {
+                // ToStopwatchTicks(long) 的调用点也换成虚拟时钟。
+                // 必须用同签名 (long)->long 桥：直接换无参桥会让栈上已压入的
+                // 事件时间戳无人消费，JIT 编译时 InvalidProgramException。
+                list[i].opcode = OpCodes.Call;
+                list[i].operand = bridgeLong;
+                patched++;
+            }
         }
         if (patched == 0)
         {
             Debug.LogWarning("[SpectreReplay] JRP 雨滴时钟：目标方法里没找到 "
-                + "get_CurrentTicks 调用（JRP 更新后雨滴可能继续跟随墙钟）");
+                + "get_CurrentTicks/ToStopwatchTicks 调用（JRP 更新后雨滴可能继续跟随墙钟）");
         }
         return list;
     }

@@ -90,6 +90,13 @@
 - 断言：`Hdr10Check` 12 条；`MUT-HDR10-1..4` 全部变红。
 - 结论：2B-2 首段链路正确，性能是 HDR10 的真实成本；2C 硬件 hevc_nvenc Main10 是主要优化方向。
 
+## JRP 雨滴时钟复核修复（2026-11-17）
+- `RainClockTranspiler` 按 callee 签名分派：`get_CurrentTicks` → 无参桥；`ToStopwatchTicks(long)` → `RainClockToStopwatchTicks(long)` 同签名桥，避免 IL 栈失衡。
+- `UninstallQuartzDriver` 增加 `ClearQuartzHeldOnUninstall()`，下次会话不再对遗留 vk 发抬起。
+- 锚点改为主线程 `PrimeAnchor()` 预取，运行期只读，避免并发首写。
+- `Restore()` / `UnregisterExternal()` 复用 `RestoreEntry()`，行为不变、代码减少。
+- 断言：`UiLogicShapeCheck` JRP 检查已覆盖；`MUT-JRP1/2` 均实测变红。
+
 ## Resources
 - D:/Projects/SpectreReplay/AGENT.md
 - D:/Projects/SpectreReplay/docs/verify.md
