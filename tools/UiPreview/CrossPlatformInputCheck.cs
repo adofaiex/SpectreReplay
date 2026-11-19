@@ -358,6 +358,28 @@ namespace UiPreview
                 "⑬ 命中推进没有单帧上限 —— 角度一旦异常，整份 HitSnapshots 会在一帧内吃完");
             Expect(playback.Contains("ReplayAngleGuard.IsSane("),
                 "⑬ 命中推进没有挡 ±Infinity —— Infinity 让 `angle >= CurrAngle` 恒真");
+
+            // ⑬b 推进兜底的接线（2026-11-19 Atohs Strict 卡死实测）。
+            //
+            //     回放不是重放按键，而是拿录制角度重判；录制那一击判的是音频 tick。
+            //     两侧窗口 = max(角度下限 60/45/30°, 时间下限换算的角度)，Normal 0.065s、
+            //     Strict 0.040s —— 有效 BPM 高的段落（SetSpeed 到 780/975）同一次按键
+            //     会「Normal 计入、Strict 不计入」。不计入 → 砖块不推进 → 泵的条件
+            //     「当前砖 == 快照砖」再也不会成立：行星原地打转、曲子照放、零报错。
+            //
+            //     纯算术在 HitAdvanceGuard 里（HitAdvanceGuardCheck 拿真源码跑断言），
+            //     这里钉"泵真的用了它"——只测纯函数不测接线，等于没修。
+            Expect(playback.Contains("ReplayPlayer.AdvanceClampAngle(__instance.playerOne, hc, nextAdvances)"),
+                "⑬b 泵没有调 AdvanceClampAngle —— 重判拒绝的一击会让回放永久卡在那一砖");
+            Expect(Has(playback, @"ReplayHit\(__instance\.playerOne, hc,\s+ReplayPlayer\.AdvanceClampAngle"),
+                "⑬b 兜底角度没有交给 ReplayHit —— 算完丢掉，卡死照旧");
+            Expect(Has(playback, @"hitSnapshots\[PlayIndex \+ 1\]\.CurrentFloorID > hc\.CurrentFloorID"),
+                "⑬b 兜底没按「下一条快照在当前砖之后」认定录制推进过 —— 会去改本来就不推进的击（多按/漏拍）的角度，判定被篡改");
+            // 自由漫游段里 SwitchChosen 走的是落点选择分支（scrPlanet.cs:659-682），
+            // 角度只用来 snap 选砖、不参与判定。兜底必须跳过，否则行星会被挪到别的
+            // 方向、落点选错——这是比"卡死"更糟的静默篡改（2026-11-19 复核补）。
+            Expect(Has(player, @"!\s*controller\.gameworld"),
+                "⑬b 兜底没排除自由漫游段 —— gameworld=false 时角度只用于选落点，收角度会把行星挪到别的砖");
             // ⑫a 的就绪判据现在在 CurrentSongPosition 里（PumpInput 已不再自行算时钟）。
 
             // ⑭ 键码换算缓存（2026-11-13 性能审查）：Unity KeyCode → 原生 VK 每次

@@ -260,6 +260,10 @@ public static class SpectreState
             PlayActions.StopRecording();
             Features.Replay.ReplayManager.UnLoadReplay(out data);
             PlayActions.SwitchToRecordMode();
+            // 命中分布图是静态缓存的贴图，判据里有"上一份 data 的引用"：
+            // 卸载后不丢，下一份回放若条数与指纹恰好相同就会沿用旧图（图的注释
+            // 一直写着"换回放/关页面时调用"，此前全仓库没有调用点）。
+            Ui.HitScatter.Reset();
         }
 
         // 启停事件只在状态真正翻转时触发（Start/Stop 内部各有守卫，重复调用无害）；
@@ -725,8 +729,10 @@ public static class SpectreState
         Debug.Log("[SpectreReplay] replay not auto-saved: " + reason);
     }
 
-    public static bool ReplayHit(scrPlayer player, HitSnapshot hitdata)
-        => ReplayPlayer.ReplayHit(player, hitdata);
+    // angleOverride：回放推进兜底给出的"收进窗口"角度（ReplayPlayer.AdvanceClampAngle）；
+    // 平时为 null = 用录制角度原样重判。
+    public static bool ReplayHit(scrPlayer player, HitSnapshot hitdata, double? angleOverride = null)
+        => ReplayPlayer.ReplayHit(player, hitdata, angleOverride);
 
     internal static void Play_keybd_event(bool flag)
         => ReplayPlayer.PlayKeyboardEvent(flag);

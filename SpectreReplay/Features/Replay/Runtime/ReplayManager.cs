@@ -228,10 +228,10 @@ internal static class ReplayManager
     internal static bool SaveReplayNew(ReplayData replayData, string filePath, bool no_encryption = false,
         bool embedKeybdSound = true)
     {
-        // 截断标记：File.WriteAllBytes 内部是 Create 打开（先截断）再写，写到一半失败
-        // （磁盘满/IO 错误）会留下残缺文件，而末尾的 File.Exists 会把它当成功——
-        // 调用方 SpectreState 据此告诉用户保存成功，用户直到回放时才发现文件坏了。
-        bool opened = false;
+        // 原子写入（先落同目录 .tmp，再 File.Replace）：直接以 FileStream 的 Create 模式打开
+        // 会先把目标截断，写到一半崩溃/断电/磁盘满就留下残缺回放，而末尾的
+        // File.Exists 仍返回真——调用方会告诉用户「保存成功」，玩家直到回放时才发现
+        // 文件坏了（2026-11-18 审计 P1-1；配置与云端回填都走 AtomicFile，唯独这里没有）。
         try
         {
             // 先尝试把键盘音压进本体（失败不影响保存）。必须在 FromReplayData
@@ -252,24 +252,17 @@ internal static class ReplayManager
                 data = ReplayCrypto.Encrypt(data);
 
             EnsureDirectory(filePath);
-
-            using (FileStream fs = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None))
-            {
-                opened = true;
-                fs.Write(data, 0, data.Length);
-            }
+            AtomicFile.WriteAllBytes(filePath, data);
             Debug.Log("replay saved! (" + ext + ")");
+            return true;
         }
         catch (Exception ex)
         {
-            // 仅在已截断目标文件后才删除；编码/加密阶段失败不动原文件
-            if (opened)
-            {
-                try { File.Delete(filePath); } catch { }
-            }
+            // 原子写入失败时旧目标没有被截断（tmp 里是这次完整的新内容），玩家数据
+            // 仍然可用——所以不再删文件。旧实现删的是被 Create 截断后的残缺目标。
             Debug.Log("SaveReplay error: " + ex);
+            return false;
         }
-        return File.Exists(filePath);
     }
 
     internal static void UnLoadReplay(out ReplayData replayData)

@@ -102,7 +102,7 @@ internal static class ReplayAnalyzer
                 // 解析不出来时填 0：HitScatterMath.Windows 见非正值会自动退回 25/60ms 兜底，
                 // 所以这里不需要让整个分析失败——误差值本身仍然是对的。
                 if (GameCompat.AngleBoundary(GCS.difficulty, bpmTimesSpeed, pitch, 1.0,
-                        out double perfectDeg, out double pureDeg))
+                        out _, out double perfectDeg, out double pureDeg))
                 {
                     perfectWins.Add((float)(perfectDeg * degToMs));
                     pureWins.Add((float)(pureDeg * degToMs));

@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 线上 dll 与构建产物的 sha256 一致、上游 Spectre 工作区干净。
 （后两项只在本地跑，`-Ci` 跳过；上游路径优先读 `SPECTRE_UPSTREAM`。）
 
-> **当前打印 313 条断言 0 失败**（2026-11-17 实测；14 语言 × 518 键）。
+> **当前打印 339 条断言 0 失败**（2026-11-19 实测；14 语言 × 518 键）。
 > 这个数字会随轮次变，引用前先跑一遍 `verify.ps1` 看真实条数。
 > **注意它是「✓ 行数」而不是判据数**——`UiLogicShapeCheck` 现有 195 条判据只印 1 行，
 > 所以加判据这个数字不变。
@@ -82,8 +82,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 | MuxOffsetCheck | 音画偏移（2026-11-12 加，20 行）：mux 侧 `-itsoffset` 正负两分支都存在且由偏移参数驱动（负向必须走视频侧，对音频用负 itsoffset 会把起始 PTS 推到负数被 muxer 拒收）、零偏移命令行与历史版本逐字一致、itsoffset 注入点恰好各 2 处（编码器与抢救命令）、快照必须带「-1 跟随校准」语义且在主线程落值、设置项四件套（字段/落盘/读取/界面）、抢救命令与 `MuxWith` 同参。变异 `MUT-MUX1`（正偏移分支失效）/`MUT-MUX2`（跟随分支读成 0）守 |
 | ApiSurfaceCheck | 回放按键查询 API 对外契约（2026-11-12 加）：`SpectreAPI` 六个成员在位且委托同源（拉取接口必须与补丁桥同一套键码换算）、`ReplayKeyChanged` 事件与 raiser 同在、`ManagedInput.Note` 在**状态写入之后**发事件、`GetHeldReplayKeys` 无回放分支永不返回 null、两参 Raise 走主线程封送 + 逐订阅者异常隔离、`ApiVersion` 随成员升级。变异 `MUT-API1`（Note 不再发事件）/`MUT-API2`（无回放分支返回 null）/`MUT-API3`（事件成员删除）守 |
 | ReplayInputBridgeCheck | ReplayInput 推桥接线（2026-11-12 加，跨 KV 通用约定）：Start/Stop/PumpInput 边沿/Rebuild 重播种/Main 复位五处在位、**按类型名 `ReplayInput` 扫描全部程序集（不许绑死某一家程序集——同类 mod 多、接口通用）**、四方法全解析、VK→KeyCode 走 SkyHook 逆链（与 `KeyViewerBridge.ToNativeVk` 互逆）且保留 VK_APPS=93 ↔ KeyCode.Menu 特判。这类 KV 受控模式只认显式调用，桥断在游戏里毫无异常。变异 `MUT-RI1`（不喂边沿）/`MUT-RI2`（不发 OnEndInputs）守 |
+| ReplayTimingContextCheck | 设置页分布图缓存含样本和窗口指纹，卸载清图。`MUT-U142` 守 |
 
-**总数以 `verify.ps1` 实跑为准**（2026-11-17 实测 313 条 `✓` 行、0 失败）。
+**总数以 `verify.ps1` 实跑为准**（2026-11-19 实测 339 条 `✓` 行、0 失败）。
 这个数字会随轮次变；引用前先跑一遍。**它是「✓ 行数」而不是判据数**，
 `UiLogicShapeCheck` 的 195 条判据只印 1 行，所以加判据这个数字不变。
 

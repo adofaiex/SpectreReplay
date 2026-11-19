@@ -124,6 +124,13 @@ internal static class SpectrePatchHub
             _guardedMethods.Clear();
             _guardStats.Clear();
             _warnedUnregistered.Clear();
+            // 失败账本必须随装配复位：ApplyFailures / failureSummaryShown 是**跨会话**
+            // 的状态，不复位会让设置页常驻的 ui.patchfailed (N) 继续显示上一次会话的
+            // 失败项（那是「补丁没挂上」唯一的常驻信号），新失败也不再弹汇总通知；
+            // _jalibProbed 不复位则重装后不再重新探测 JALib 补丁集（2026-11-18 审计 P1-2）。
+            ApplyFailures.Clear();
+            failureSummaryShown = false;
+            _jalibProbed = false;
             _initialRefresh = true;
             int index = 0;
             foreach (Type type in assembly.GetTypes())

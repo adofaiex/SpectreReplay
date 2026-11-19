@@ -432,3 +432,68 @@
 | 离线套件 | 0 失败且条数与拆分前一致 | 315 条，0 失败 | pass |
 | MUT-D6（Pages 锚点） | 变红且自动还原 | 失败 1 条，已还原 | pass |
 | 只读审计 | 全过 | 全过 | pass |
+
+## Session: 2026-11-19 (3)
+
+### Current Status
+- **Task:** 修「回放设置里的静态准度与判定数据不随倍速走、与游戏里的判定对不上」
+- **Result:** 已完成（后被同日晚些时候的 (4) 取代：录制倍速改由命中 tick 推断）；构建 0 警告，离线套件 334 条 0 失败，MUT-U141/U142 被检出
+
+### Actions Taken
+- 根因（用户复现：0.8x 改 1x 后设置页数字不动、进关后判定变了）：`ReplayAnalyzer` 用 `conductor.song.pitch`
+  换算角度→毫秒、算窗口，而那个值只在进关时被 `SetupConductorWithLevelData` 写过——改倍速不刷新它。
+  角度是**录制那一刻角速度**的产物（`TimeToAngleInRad`），换回毫秒与比窗口都必须用录制 pitch。
+- 新增纯算术 `ReplayContext`（`TryRecordingPitch`/`ResolvePitch`/`RecordingBpm`/`IsUsableSpeedFactor`）：
+  录制 pitch = `Pitch/100 × (QuickPitched ? PlaybackSpeed : 1) × (SpeedTrailMode ? SpeedTrail : 1)`；
+  官方关卡 `Pitch=0` 是「未知」按原调 1.0（0 会让窗口无穷大）；倍速值 0/负/NaN/∞ 一律拒绝还原而不是猜 1x。
+- `ReplayAnalyzer` 改走它；`bpm×speed` 按 `(float)` 收敛（与 `GetHitMarginInDeg` 同口径），
+  窗口的 `marginScale` 改取**目标块**（`SwitchChosen` 用 `currfloor.nextfloor.marginScale`），越界退回 1。
+  录制 pitch 与会话值不一致时记一条日志（同一份数据只说一次，不刷屏）。
+- `HitScatter` 缓存加了样本+窗口指纹（`HitScatterMath.Fingerprint`，等距抽 64 点 + 必看末点）：
+  此前只看「同一份 data + 同样条数」，换难度/倍速后误差与窗口都变了却一直画旧贴图；
+  并把注释里承诺的 `HitScatter.Reset()` 接到 `PlayActions.UnloadReplay`（审计 D-F6 的第二个建议）。
+- 闸门：新增 `ReplayTimingContextCheck`（11 条：还原规则、官方 0 音高、损坏值拒绝、BPM、接线、指纹、卸载清图），
+  登记进 `Driver` 与 `UiPreview.csproj`（链接 `ReplayContext.cs` 真源码）；配 `MUT-U141`/`MUT-U142`。
+- 文档：`docs/verify.md` 增行并更新 ✓ 计数口径（334）、`AGENT.md` 增一条纪律、`CHANGELOG.md` 增两条玩家可见修复。
+
+### Test Results
+| Test | Expected | Actual | Status |
+|------|----------|--------|--------|
+| Release 构建 | 0 警告 0 错误 | 0 警告 0 错误 | pass |
+| 离线套件 | 0 失败 | 334 条，0 失败 | pass |
+| MUT-U141（丢倍速乘数） | 变红且自动还原 | 失败 3 条，已还原 | pass |
+| MUT-U142（缓存退回只比条数） | 变红且自动还原 | 失败 1 条，已还原 | pass |
+| 只读审计 | 全过 | 全过 | pass |
+
+## Session: 2026-11-19 (4)
+
+### Current Status
+- **Task:** 用户澄清后重做——「用工具改已录制回放文件里的倍速，回放重判出的准度/判定全变」要修
+- **Result:** 历史方案，现已撤去 tick 反推和回放判定补偿。Strict / TooEarly 原地转圈的推进兜底仍保留；静态成绩同步由外部工具负责。
+
+### Actions Taken
+- 复核用户文件：`20261119013516_..._98.00(.sprp / -2.sprp)` 元数据写 `PlaybackSpeed=1.0`，但命中 tick 跨度 207s
+  对应谱面歌曲时长 165s → 实际录制于 0.8x；`..._41-54.sprp`(0.8) 与 `..._41-54-1.sprp`(1.0) 是同一份内容的两份
+  拷贝（HitSnapshots/JudgmentList/PercentXacc 全同），确认是"工具改倍速字段"造成，不是重录。
+- 根因：`PlaybackSpeed` 可编辑；编辑器试玩的 pitch 乘它、`currentSpeedTrial` 恒为 1，时间下限换算出的角度窗口
+  随 pitch 伸缩 → 同角度重判出不同判定档。角度本身是录制时角速度的产物，换算/比较必须用录制倍速。
+- 新增 `ReplayContext.TryInferSpeedFactor`（纯算术）：`tick秒 = 歌曲时间/倍速 + 常数`，对 (tick, entryTime) 做
+  最小二乘 + 一轮截尾，按 1% 量化收边；样本 <16、跨度 <4s、退化数据一律拒绝。离线合成样本（±0.1s 噪声、
+  5 种倍速、10% 点整体偏移 2s）验证精度与鲁棒；实测三份文件推断值 0.8002/0.8002/0.8（rms 0.014~0.022s）。
+- 新增 `ReplayJudgmentContext`：从 `floors[hit.CurrentFloorID+1].entryTime` + 命中 tick 组装样本（跳过 auto/
+  midspin/自由漫游），结果按 (ReplayData, 楼层表) 缓存；`ResolveSpeedFactor` **推断优先、元数据只作后备**。
+- `ReplayAnalyzer`：pitch = 谱面基准音高 × 推断倍速；分析期间 `currentSpeedTrial` 强制取录制上下文
+  （飙速录像取倍速，编辑器试玩取 1），窗口 `marginScale` 取目标砖块；分布图缓存加样本+窗口指纹，卸载清图。
+- 回放期（`ReplayPlayer.ApplyRecordedJudgmentContext`）：仅「编辑器试玩 + 文件倍速被改」时把
+  `GCS.currentSpeedTrial` 钉到 `实际倍速/录制倍速`（1.0x 播 0.8x 录像 = 1.25），角度窗口回到录制宽度；
+  Stop、`TryStartPlayback` 失败路径、`Won_Update` Prefix（官方/CLS speed tier 存档）三处还原。
+- 闸门：`ReplayTimingContextCheck` 扩到 16 条（推断精度/拒绝/鲁棒、推断优先、钉扎换算、三处还原、指纹、
+  卸载清缓存）；新增 MUT-U143（元数据优先）/U144（不钉扎）/U145（斜率不取倒数）/U146（不还原）/U147（结算前不还原）。
+
+### Test Results
+| Test | Expected | Actual | Status |
+|------|----------|--------|--------|
+| Release 构建 | 0 警告 0 错误 | 0 警告 0 错误 | pass |
+| 离线套件 | 0 失败 | 339 条，0 失败 | pass |
+| MUT-U143~U147 | 全部变红并自动还原 | 分别 1/1/2/1/1 条失败 | pass |
+| 只读审计 | 全过 | 全过 | pass |

@@ -17,6 +17,12 @@ internal static class ReplayPlayer
     private static bool _loggedMirrorFallback;
     // 首键注入偏差日志的武装位：Start 与 FastForward 各自重新武装
     private static bool _pendingFirstKeyLog = true;
+    // 推进兜底的一次性日志武装位：只在每次回放的第一处兜底打一行（铁律：不许静默
+    // 跳过——不兜底就是卡死，兜底了也必须能在日志里看见，否则玩家只会看到"这次又
+    // 卡住了"，我们把这条路径改坏也没人发现）。
+    private static bool _pendingAdvanceClampLog = true;
+    // 推进卡住告警的一次性武装位（兜底之外的最后一道可观测性，见 ReportAdvanceStall）。
+    private static bool _pendingAdvanceStallLog = true;
 
     internal static void Start()
     {
@@ -33,6 +39,8 @@ internal static class ReplayPlayer
             // 检查点/中途开局的对齐由 Patch_Lifecycle 调 FastForward 负责。
             KeyEventIndex = 0;
             _pendingFirstKeyLog = true;
+            _pendingAdvanceClampLog = true;
+            _pendingAdvanceStallLog = true;
             is_playing = true;
             is_recording = false;
             HitLocked = true;
@@ -584,7 +592,119 @@ internal static class ReplayPlayer
         KeyboardSimulation.SendInputs(inputs);
     }
 
-    internal static bool ReplayHitOld(scrPlayer player, HitSnapshot hitdata)
+    /// <summary>
+    /// 回放推进兜底：这一击"按角度重判"不会计入、而录制里它推进了砖块时，返回改写后的
+    /// 星球角度（落进游戏一定会计入的窗口边缘）；不需要改写时返回 null。
+    ///
+    /// <para><b>为什么必须有。</b>泵的推进条件是"当前砖 == 快照砖"：重判拒绝这一击，
+    /// 砖块不动，而下一条快照记在下一块砖上——条件再也不会成立，行星原地打转、曲子照放，
+    /// 而游戏的 noFail 兜底（<c>Die()</c> 里那次强制 <c>Hit(null)</c>）被 HitLocked 挡掉，
+    /// 没有任何自愈路径。触发条件是"重判窗口比录制时窄"，不是坏文件：录制判的是音频
+    /// tick（时间），回放判的是角度，两者只在有效 BPM 低时等价（详见
+    /// <see cref="HitAdvanceGuard"/> 的说明与 2026-11-19 Atohs 实测）。</para>
+    ///
+    /// <para><b>为什么不按 60/45/30 复刻窗口。</b>高倍速段真实窗口由时间下限决定
+    /// （780 BPM 下 Counted 是 152°/94°，不是 60°），自己算就会在边界上判错：该收的
+    /// 没收 → 还是卡死；不该收的收了 → 判定被篡改。这里取游戏自己的
+    /// <c>scrMisc.GetAdjustedAngleBoundaryInDeg</c>，与本帧判定用的是同一个函数。</para>
+    ///
+    /// <para><b>为什么还要看 HitMarginLimit。</b>档位抬高门槛：None 只要求"计入"，
+    /// PerfectsOnly / PurePerfectOnly 分别要求 Perfect / Pure 档，窗口更窄。</para>
+    /// </summary>
+    internal static double? AdvanceClampAngle(scrPlayer player, HitSnapshot hitdata, bool nextAdvances)
+    {
+        if (player == null || hitdata == null || !nextAdvances) return null;
+        // 这些情况游戏本来就会无条件计入（SwitchChosen:661 的判据），不存在"重判不认"，
+        // 别去动角度：midspin / nofail 兜底命中 / 下一块砖是 auto / 录制那一击是 autoplay。
+        // （autoplay 看 hitdata.IsAuto，不看 player.auto：后者含上一击的 RDC.auto 残留。）
+        if (hitdata.MidspinInfiniteMargin || hitdata.NoFailHit || hitdata.NextFloorAuto) return null;
+        if (hitdata.IsAuto && !RDC.useOldAuto) return null;
+        // **自由漫游段必须原样重放。** gameworld == false 时 SwitchChosen 走的是落点
+        // 选择分支（scrPlanet.cs:659-682）：角度只用来 snap 到某块砖、不参与判定。
+        // 把录制角度收进判定窗口，等于把行星挪到另一个方向、选错落点——和"判定被
+        // 篡改"同级。这里读的就是 SwitchChosen 自己的那个源
+        // （scrPlanet.controller => scrController.instance），不是另一份状态。
+        scrController controller = scrController.instance;
+        if (controller == null || !controller.gameworld) return null;
+
+        scrPlanet planet = player.planetarySystem?.chosenPlanet;
+        scrConductor conductor = ADOBase.conductor;
+        if (planet == null || conductor == null || conductor.song == null) return null;
+
+        // 与游戏同口径：SwitchChosen 传给 GetHitMarginInDeg 的是 (float)(bpm * speed)，
+        // 这里也按 float 收敛——边界上的最后一两度差异会让"收不收"翻面。
+        double bpmTimesSpeed = (float)((double)conductor.bpm * player.planetarySystem.speed);
+        if (Math.Abs(bpmTimesSpeed) < 1e-6) return null;
+        // marginScale 与 SwitchChosen 同源：取下一块砖的（没有下一块就是 1）。
+        double marginScale = player.currFloor != null && player.currFloor.nextfloor != null
+            ? player.currFloor.nextfloor.marginScale
+            : 1.0;
+        if (!GameCompat.AngleBoundary(GCS.difficulty, bpmTimesSpeed, conductor.song.pitch, marginScale,
+                out double countedDeg, out double perfectDeg, out double pureDeg))
+            return null;
+
+        double boundaryDeg = HitAdvanceGuard.RequiredBoundaryDeg(
+            (int)GCS.hitMarginLimit, countedDeg, perfectDeg, pureDeg);
+        if (!HitAdvanceGuard.TryClampCurrAngle(hitdata.CurrAngle, boundaryDeg, forceCounted: false,
+                nextAdvances: true, out double clampedRad))
+            return null;
+
+        // CurrAngle = (angle - targetExitAngle) * dir，dir = isCW ? +1 : -1；dir 是 ±1，
+        // 所以反解用乘不用除。返回的仍是"星球角度"字段值。
+        double dir = player.planetarySystem.isCW ? 1.0 : -1.0;
+
+        if (_pendingAdvanceClampLog)
+        {
+            _pendingAdvanceClampLog = false;
+            // 角度按"偏早/偏晚 + 绝对值"打，别打带符号的 ±：录制角度是负的时
+            // 会印成「收进 ±-93.59°」（第一版就是这么出的洋相）。
+            double recordedDeg = hitdata.CurrAngle * HitAdvanceGuard.RadToDeg;
+            double clampedDeg = clampedRad * HitAdvanceGuard.RadToDeg;
+            Debug.Log("[SpectreReplay] 推进兜底：floor=" + hitdata.CurrentFloorID
+                + (recordedDeg < 0.0 ? " 录制偏早 " : " 录制偏晚 ") + Math.Abs(recordedDeg).ToString("F2")
+                + "° 超出窗口 ±" + boundaryDeg.ToString("F2") + "°（" + GCS.difficulty
+                + " / " + GCS.hitMarginLimit + "）→ 收进 " + Math.Abs(clampedDeg).ToString("F2") + "° 再判");
+        }
+
+        return hitdata.TargetExitAngle + clampedRad * dir;
+    }
+
+    /// <summary>
+    /// 推进卡住的**只报告**诊断（不改任何状态）。
+    ///
+    /// <para><b>为什么需要。</b>泵的条件是"当前砖 == 快照砖"：数据砖跑在游戏砖前面、
+    /// 而角度早已越过该击的触发角 = 这一击不会被消费，后面每一条也都不会被消费——
+    /// 回放从此静止（曲子照放、行星原地打转、没有任何报错）。2026-11-19 那次 Strict
+    /// 卡死就是这种形态，日志里一个字都没有，只能靠离线复刻整份数据才定位。
+    /// 兜底（<see cref="AdvanceClampAngle"/>）负责能修的那一类，这条负责"再出别的
+    /// 原因时至少能看见"。</para>
+    ///
+    /// <para>只记一次：同一份回放重复打印没有信息量，反而会把真线索挤出日志。</para>
+    /// </summary>
+    internal static void ReportAdvanceStall(scrController controller, HitSnapshot expected, float angle)
+    {
+        if (!_pendingAdvanceStallLog || controller == null || expected == null) return;
+        // 自由漫游段的角度不参与判定（落点选择分支），砖号也不代表顺序；那里没有
+        // "重判拒绝导致卡死"这回事，别报。
+        if (!controller.gameworld) return;
+        scrFloor gameFloor = controller.currFloor;
+        if (gameFloor == null) return;
+        // 自由漫游区里砖号不代表顺序（行星可能落在任意一块），此时"数据砖在前"是正常
+        // 现象而不是卡死；只有同一区内才谈推进顺序。
+        if (expected.curFreeRoamSection != controller.curFreeRoamSection) return;
+        if (expected.CurrentFloorID <= gameFloor.seqID) return;
+        // 角度还没到触发角：属于正常等待，不是卡死。
+        if ((double)angle < expected.CurrAngle) return;
+        _pendingAdvanceStallLog = false;
+        Debug.LogWarning("[SpectreReplay] 回放推进卡住：数据砖=" + expected.CurrentFloorID
+            + " 游戏砖=" + gameFloor.seqID
+            + " playIndex=" + PlayIndex
+            + " 本帧角度=" + angle.ToString("F3")
+            + " 触发角=" + expected.CurrAngle.ToString("F3")
+            + "（这一击没有推进砖块，泵会永远等它）");
+    }
+
+    internal static bool ReplayHitOld(scrPlayer player, HitSnapshot hitdata, double? angleOverride = null)
     {
         player.consecMultipressCounter = 0;
         // 命中路径上 controller 一定存在（游戏正是在派发命中），但场景卸载的中间态里
@@ -602,7 +722,7 @@ internal static class ReplayPlayer
         player.planetarySystem.chosenPlanet.SetTargetExitAngle(hitdata.TargetExitAngle);
         player.midspinInfiniteMargin = hitdata.MidspinInfiniteMargin;
         player.failBar.overloadCounter = hitdata.OverloadCounter;
-        player.planetarySystem.chosenPlanet.angle = hitdata.CachedAngle;
+        player.planetarySystem.chosenPlanet.angle = angleOverride ?? hitdata.CachedAngle;
         RDC.auto = hitdata.IsAuto;
         player.responsive = true;
         IgnoreMarkFail = false;
@@ -727,11 +847,11 @@ internal static class ReplayPlayer
         return result;
     }
 
-    internal static bool ReplayHit(scrPlayer player, HitSnapshot hitdata)
+    internal static bool ReplayHit(scrPlayer player, HitSnapshot hitdata, double? angleOverride = null)
     {
         if (debug_use_old_hit)
         {
-            return ReplayHitOld(player, hitdata);
+            return ReplayHitOld(player, hitdata, angleOverride);
         }
         player.consecMultipressCounter = 0;
         // 同 ReplayHitOld：只跳过依赖 controller 的两项，其余照常
@@ -746,7 +866,9 @@ internal static class ReplayPlayer
         player.planetarySystem.chosenPlanet.SetTargetExitAngle(hitdata.TargetExitAngle);
         player.midspinInfiniteMargin = hitdata.MidspinInfiniteMargin;
         player.failBar.overloadCounter = hitdata.OverloadCounter;
-        player.planetarySystem.chosenPlanet.angle = hitdata.CachedAngle;
+        // angleOverride 只由 AdvanceClampAngle 给出（重判窗口比录制时窄的那些击），
+        // 平时就是录制角度本身。
+        player.planetarySystem.chosenPlanet.angle = angleOverride ?? hitdata.CachedAngle;
         RDC.auto = hitdata.IsAuto;
         player.responsive = true;
         IgnoreMarkFail = false;

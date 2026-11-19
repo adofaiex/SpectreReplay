@@ -19,7 +19,7 @@ namespace UiPreview
         private static readonly string[] Skip =
         {
             "Loc.cs",                       // 选择逻辑（数据在 LocData.cs）
-            "LocData.cs",                   // 14 语言 × 325 键的数据表，由 _gen_locdata.py 生成
+            "LocData.cs",                   // 14 语言 × 518 键的数据表，由 gen-locdata.ps1 生成
             "LocalizationManager.cs",       // 移植 Spectre 的 14 语言文案表，同 Loc.cs 性质
         };
 

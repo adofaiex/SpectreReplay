@@ -220,8 +220,8 @@ private static bool Hit_Prefix(...) { ... }
 **容器（改这里最危险）**
 
 - 三层：加密信封（`SRC2`，PBKDF2 → AES-256-CBC + HMAC-SHA256，**先验 MAC 再解密**）→ 压缩封装（`0` 裸 / `1` gzip / `2` Brotli，带长度；`0x1F` 是历史遗留的裸 gzip）→ 段流。
-- 段序固定：`metadata → EndTime(v≥2) → keys → hits → cursor → KbdAudio → KbdPrefs`。后两段是**尾部可选段**（键音波形与其覆盖项）：老代码读完 `cursor` 就返回，天然无视，所以 `FormatVersion` 不用动。版本常量集中在 `Data/ReplayConstants.cs`（`Magic`、`FormatVersion = 2`、`MetadataVersion = 3`、各段版本），**不要散落魔数**。
-- 每条读路径都要有界：`ReadCount` + 4096 预分配上限、命中记录最小长度（41 或 42 字节，随段版本）、512MB 解压上限、尾部段版本不认识时**回退而不是猜**。
+- 段序固定：`metadata → EndTime(v≥2) → keys → hits → cursor → KbdAudio → KbdPrefs → StruHash → HashesV2 → ChkCount`。`cursor` 之后的全是**尾部可选段**（键音波形与其覆盖项、结构校验哈希、四个 FNV-1a 稳定哈希、检查点次数）：老代码读完 `cursor` 就返回，天然无视，所以 `FormatVersion` 不用动。版本常量集中在 `Data/ReplayConstants.cs`（`Magic`、`FormatVersion = 2`、`MetadataVersion = 3`、各段版本），**不要散落魔数**。
+- 每条读路径都要有界：`ReadCount` + 4096 预分配上限、命中记录最小长度（41 或 42 字节，随段版本）、64 MB 解压上限（见 `ReplayCompression.MaxDecompressed`）、尾部段版本不认识时**回退而不是猜**。
 - 只读本模组格式；Spectre 或别的模组录的文件读不了，这是设计。
 
 **回放与注入**
@@ -231,6 +231,8 @@ private static bool Hit_Prefix(...) { ... }
 - **泵必须在游戏读输入之前**：挂在 `PlayerControl_Update`/`UpdateInput` 的 **Prefix**（`Patch_InputInjection.cs:16-30`）。挂 Postfix 就晚一帧。
 - **单帧上限**：事件 64 条、命中 256 条；超出留到下一帧，**没有追赶/重对齐**。删掉上限 = 卡帧雪崩。
 - **角度闸**：非有限角度时这一帧一条命中都不消费（`Patch_Playback.cs:29-31`）。
+- **改倍速后的回放判定以当前播放条件为准**：不反推录制倍速，也不钉扎 `currentSpeedTrial`。设置页按当前导体的 BPM 和 pitch 估算点击毫秒，静态 `JudgmentList` / `PercentXacc` 则由外部工具用实机复播结算更新。分布图缓存含样本和窗口指纹，卸载时 `HitScatter.Reset()`。
+- **录制认为成立的推进必须成立**：回放按**角度**重判（刻意不传录制 tick），录制按**音频 tick** 判——高倍速段（谱面 SetSpeed 到 780/975）Strict/PerfectsOnly 的窗口比录制时窄，重判可能不认这一击；砖块不推进 = 泵的条件「当前砖 == 快照砖」永久不成立，行星原地打转、曲子照放、零报错。`ReplayPlayer.AdvanceClampAngle` 按游戏自己的 `GetAdjustedAngleBoundaryInDeg` 取窗口、把角度收进窗口边缘再判（纯算术在 `HitAdvanceGuard`，闸门 ⑬b + MUT-U136~U139 守）。别删，也别改成「收到 0」——那是把擦边命中伪造成 XPerfect。
 - **`holdKeys` 只有一份真相**：每帧清空重建，来自 `RDInput.GetMainHeldKeys` 或 `ManagedInput.Append`。`Append` 必须构造 `AsyncKeyCode`（`ManagedInput.cs:211-220`）：塞 `KeyCode` 会被按引用比较判成「已松开」，长按块直接死。
 - **`ManagedInput.Active` 只等于 `is_playing`**（`ManagedInput.cs:44`），不许掺 `isFocused` 或键鼠 DLL 可用性。
 - 收场必须干净：`Stop()` 还原难度/`noFail`/`hitMarginLimit`、松开残留键、清托管状态、停键音。收场三处（Start/Stop/FastForward）缺一不可，Stop 里「先快照、再翻标志、最后发松开」的顺序是有意的（`ReplayPlayer.cs:53-67`）。
@@ -322,7 +324,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 
 - **只加不改**：老文件必须还能读。加字段就升 `MetadataVersion` 或对应段版本，读侧按版本分支。
 - 新尾部段：版本不认识时**回退游标**，不许猜长度。
-- 任何 `ReadCount`/长度都要过上限（4096 预分配、512MB 解压）。
+- 任何 `ReadCount`/长度都要过上限（4096 预分配、64 MB 解压）。
 - `ReplayCheck` 直接编真实 Encoder/Decoder 做往返；再加一条负例（垃圾 count 必须被拒）。
 - 加密前的历史格式不打算读，就别顺手加兼容——半吊子兼容比明确不支持更糟。
 - **首选形态是尾部可选段**：本次键音（`KbdAudio`）与覆盖（`KbdPrefs`）就是照这个模子加的——追加在最后、老构建读完 `cursor` 自然无视、`FormatVersion` 不动；段内「有没有某项」用标志位，三态值用 `NaN` 而不是 `0`（见 §8.2）。
@@ -372,7 +374,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 ### 8.2 容器
 
 - 先验 MAC，再解密。
-- 所有计数读取有界（4096 预分配、512MB 解压上限、命中记录最小长度）。
+- 所有计数读取有界（4096 预分配、64 MB 解压上限、命中记录最小长度）。
 - 尾部段版本不认识时回退，不猜。
 - 版本常量只出现在 `ReplayConstants`。
 - **尾部可选段**：新段一律追加在最后，`FormatVersion` 不动；老构建读完 `cursor` 就返回（`KbdAudio` / `KbdPrefs` 就是这个范例）。
@@ -385,6 +387,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 - 录制时间戳 = `songposition_minusi`；回放刻意不读它。
 - 泵在 **Prefix**；单帧 64 事件 / 256 命中上限；角度闸不能删。
 - **命中推进的角度源 = 本帧现算**（`GetAngleThisFrame`，与 `Update_RefreshAngles` 同式同常数）：星球角度是歌曲位置的导出值、刷新跑在 controller Postfix 之后，直读 `chosenPlanet.angle` 字段拿到的是上一帧旧值 → 命中固定晚一帧 → 越界帧先冲过砖块再弹回录制角度（成片「新球飘移」）。禁止改判定、禁止给星球另设时间源（六版实测全败，`MUT-U130~U134` 守）。
+- **数据说这一击推进了砖块，游戏就必须推进**：重判窗口在高倍速段比录制时窄（Strict/PerfectsOnly），不兜底就是永久卡死（行星原地打转、曲子照放）。兜底在 `AdvanceClampAngle` + `HitAdvanceGuard`，窗口必须取游戏自己的 `GetAdjustedAngleBoundaryInDeg`（不许按 60/45/30 复刻），收角度必须保留偏早/偏晚方向、不许收到 0（`MUT-U136~U139` 守）。**自由漫游段不兜底**：`gameworld == false` 时 `SwitchChosen` 走落点选择分支，角度只用于选砖，收角度会把行星挪到别的落点（⑬b 守）。
 - `ManagedInput.Active` 只等于 `is_playing`。
 - `holdKeys` 单一来源；`Append` 必须用 `AsyncKeyCode`。
 - `Stop` 顺序：快照 → 翻标志 → 发松开；难度/`noFail`/`hitMarginLimit` 必须在所有校验之后接管，并在 Stop 与两条失败路径都还原。
@@ -459,7 +462,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 |---|---|---|
 | D-F2 去特效内存残留 | 已加原始快照/还原 | Decode 前 `LevelData.Encode()` 存快照，关闭模组/功能时 `Decode` 原地还原；`SaveLevelAs` 与导出/上传路径仍需实机确认 |
 | A-F1 `string.GetHashCode` | 已修（双写迁移） | 新录制走 `StableHash`（FNV-1a）尾部可选段；旧字段保留供旧构建读取，播放侧优先新段 |
-| A-F2 `.psprp` 解压无上限 | 已修（64 MB） | `ReplayCompression.MaxDecompressed = 64 MB`，预分配受压缩比约束；异常文本仍写 512 MB（待修） |
+| A-F2 `.psprp` 解压无上限 | 已修（64 MB） | `ReplayCompression.MaxDecompressed = 64 MB`，预分配受压缩比约束；异常文本用 `MaxDecompressed` 实值（64 MB），不再硬写 512 |
 | E-F2 审计把注释算进去 | 部分未修 | 4 个审计仍可能把注释示例算进去，计数偏多 |
 | E-F5 变异回归不在 CI | 未修 | 断言腐烂无人发现 |
 | C-F4 NVENC 探针管道死锁 | 已修 | 探测改为 `BeginOutputReadLine`/`BeginErrorReadLine` + 15 秒超时；C-F5..C-F8 仍需实机确认 |

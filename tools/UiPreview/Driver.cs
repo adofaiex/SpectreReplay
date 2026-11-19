@@ -134,9 +134,24 @@ namespace UiPreview
             // （KV 全程不亮 / 结束后卡死在受控模式）。离线钉住五处接线与通用扫描。
             int rkBridgeFail = ReplayInputBridgeCheck.Run(
                 ProjectDir);
+            // 补丁失败账本必须随装配复位：不复位则「补丁没挂上」的常驻行会跨会话残留
+            // （审计 P1-2）。缺陷在游戏里毫无异常，只表现为设置页显示着上次的失败数。
+            int ledgerFail = PatchLedgerCheck.Run(
+                ProjectDir);
+            // info.json 的 GameVersion 必须与 AGENT.md 的「游戏基线」一致（审计 P1-4）：
+            // UMM 按这个字段做版本匹配/提示，写错时构建与闸门全绿、只有玩家看到「版本不符」。
+            int verBaseFail = VersionBaselineCheck.Run(
+                ProjectDir);
+            // 回放命中推进兜底（2026-11-19 Atohs Strict 卡死）：重判窗口比录制时窄时，
+            // 录制认为成立的一击必须仍然成立，否则砖块不推进、泵永久卡住。纯算术
+            // 落在 HitAdvanceGuard 里，这里拿真源码跑断言（不是复刻公式）。
+            int advanceGuardFail = HitAdvanceGuardCheck.Run();
+            // 分布图缓存必须随样本与窗口更新。
+            int timingContextFail = ReplayTimingContextCheck.Run(
+                ProjectDir);
             int orphanFail = PortedCompletenessCheck.NoOrphanChecks(
                 ProjectDir);
-            int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + cpuRetryFail + hdrProbeFail + tenBitFail + hdr10Fail + overlayFilterFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + orphanFail;
+            int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + cpuRetryFail + hdrProbeFail + tenBitFail + hdr10Fail + overlayFilterFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + ledgerFail + verBaseFail + advanceGuardFail + timingContextFail + orphanFail;
             Console.WriteLine();
             Console.WriteLine(total == 0
                 ? "  全部通过"

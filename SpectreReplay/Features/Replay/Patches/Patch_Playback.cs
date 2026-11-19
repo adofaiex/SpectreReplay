@@ -203,7 +203,15 @@ internal class Patch_PlayerControlUpdate
                 // 用补丁入参 __instance 而不是 scrController.instance：入参由 Harmony 传入、
                 // 必然是正在执行该方法的实例，而静态 instance 在场景卸载/重载的中间态
                 // 可能为 null 或已指向另一个实例
-                ReplayHit(__instance.playerOne, hc);
+                //
+                // 推进兜底：录制里这一击推进了砖块（下一条快照记在当前砖之后），而按角度
+                // 重判未必认（高速段 Strict/PerfectsOnly 的窗口远窄于录制时，见
+                // HitAdvanceGuard）。不收角度就会永久卡死——砖块不动 = 泵的条件
+                // "当前砖 == 快照砖"再也不会成立。数据已经证明这一击成立，按录制结论收。
+                bool nextAdvances = PlayIndex + 1 < hitSnapshots.Count
+                    && hitSnapshots[PlayIndex + 1].CurrentFloorID > hc.CurrentFloorID;
+                ReplayHit(__instance.playerOne, hc,
+                    ReplayPlayer.AdvanceClampAngle(__instance.playerOne, hc, nextAdvances));
                 // 渲染期子帧回拨：放在 ReplayHit 之后——命中内部状态全部来自录制数据、
                 // 与 pin 无关；回拨只影响本帧后续的行星刷新/相机/渲染，让画面呈现恰好
                 // 命中而非越过后（越过量 0~1/输出帧率，密集段每帧多命中会叠加）。
@@ -236,6 +244,12 @@ internal class Patch_PlayerControlUpdate
                     break;
                 }
             }
+
+            // 卡死诊断：数据砖跑在游戏砖前面、角度早已越过触发角 ⇒ 这一击没被消费、
+            // 后面每一条也都不会被消费（回放静止、曲子照放、零报错）。只报告不改状态——
+            // 能修的那一类已经由上面的 AdvanceClampAngle 兜住，这条留给"别的原因"。
+            if (PlayIndex < hitSnapshots.Count)
+                ReplayPlayer.ReportAdvanceStall(__instance, hitSnapshots[PlayIndex], angle);
         }
 
         Play_keybd_event(flag: false);

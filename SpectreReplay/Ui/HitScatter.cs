@@ -18,6 +18,7 @@ namespace SpectreReplay.Ui
         private static Texture2D _tex;
         private static object _builtFrom;
         private static int _builtCount = -1;
+        private static int _builtFingerprint;
 
         // 配色（与 Gui 的语义色一致：绿=好、黄=中、红=差）
         private static readonly Color32 Bg = new Color32(20, 22, 28, 255);
@@ -29,6 +30,11 @@ namespace SpectreReplay.Ui
         /// <summary>
         /// 取（必要时重建）贴图。<paramref name="source"/> 用来判"换了另一份回放"：
         /// 传 <c>SpectreState.data</c> 即可，它换实例就说明换了回放。
+        ///
+        /// <para>判据是「同一份回放 + 同样的样本条数 + 同样的数据指纹」。**只有前两条
+        /// 不够**：同一个 <c>data</c>、同样的条数，换难度/换倍速后误差值与两档窗口
+        /// 都会变（误差 ∝ 1/pitch，窗口随 pitch 与 bpm×speed），图却一直用旧贴图
+        /// ——玩家看到的就是"设置页的数据不会变，游戏里却变了"。</para>
         /// </summary>
         internal static Texture2D Get(ReplayAnalyzer.Report rep, object source)
         {
@@ -36,13 +42,14 @@ namespace SpectreReplay.Ui
             {
                 return null;
             }
-            // 缓存判据：同一份回放 + 同样的样本数。样本数变了说明数据变了。
+            int fingerprint = HitScatterMath.Fingerprint(rep.SamplesMs, rep.PerfectWinMs, rep.PureWinMs);
             if (_tex != null && ReferenceEquals(_builtFrom, source)
-                && _builtCount == rep.SamplesMs.Count)
+                && _builtCount == rep.SamplesMs.Count
+                && _builtFingerprint == fingerprint)
             {
                 return _tex;
             }
-            Build(rep, source);
+            Build(rep, source, fingerprint);
             return _tex;
         }
 
@@ -56,9 +63,10 @@ namespace SpectreReplay.Ui
             }
             _builtFrom = null;
             _builtCount = -1;
+            _builtFingerprint = 0;
         }
 
-        private static void Build(ReplayAnalyzer.Report rep, object source)
+        private static void Build(ReplayAnalyzer.Report rep, object source, int fingerprint)
         {
             if (_tex == null)
             {
@@ -130,6 +138,7 @@ namespace SpectreReplay.Ui
             _tex.Apply(false, false);
             _builtFrom = source;
             _builtCount = n;
+            _builtFingerprint = fingerprint;
         }
     }
 }

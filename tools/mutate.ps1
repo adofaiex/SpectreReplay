@@ -1228,6 +1228,38 @@ switch ($Which) {
         Backup 'Features\Compat\HitMarginCompat.cs'
         ReplaceExact 'Features\Compat\HitMarginCompat.cs' ('        Add(0.0, "Multipress");') ('')
     }
+    'MUT-U142' {
+        # 分布图缓存退回「同一份 data + 同样条数」：换难度/倍速后误差与窗口都变了，
+        # 图却一直画旧的——设置页看起来"数据不会变"。ReplayTimingContextCheck ⑨ 钉的形状。
+        Backup 'Ui\HitScatter.cs'
+        ReplaceExact 'Ui\HitScatter.cs' ('                && _builtFingerprint == fingerprint)') ('                )')
+    }
+    'MUT-U136' {
+        # 回放推进兜底退化成"从不收角度"：重判拒绝的那一击照样不推进砖块，
+        # 泵的条件「当前砖 == 快照砖」再也不成立 → 回放永久卡死（2026-11-19
+        # Atohs Strict 实测）。HitAdvanceGuardCheck ② 钉的形状。
+        Backup 'Features\Replay\Runtime\HitAdvanceGuard.cs'
+        ReplaceExact 'Features\Replay\Runtime\HitAdvanceGuard.cs' ('        return Math.Abs(currAngleRad) * RadToDeg >= boundaryDeg;') ('        return false;')
+    }
+    'MUT-U137' {
+        # 兜底算出来的角度没交给 ReplayHit（算完丢掉）：接线断了，卡死照旧，
+        # 而纯算术断言仍然全绿——只有接线判据抓得到。CrossPlatformInputCheck ⑬b 钉的形状。
+        Backup 'Features\Replay\Patches\Patch_Playback.cs'
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' ('                    ReplayPlayer.AdvanceClampAngle(__instance.playerOne, hc, nextAdvances));') ('                    (double?)null);')
+    }
+    'MUT-U138' {
+        # 档位窗口塌成 Counted：PerfectsOnly / PurePerfectOnly 的收角度门限被放宽到
+        # "计入"档，擦边命中会被冠上不该有的判定。HitAdvanceGuardCheck ① 钉的形状。
+        Backup 'Features\Replay\Runtime\HitAdvanceGuard.cs'
+        ReplaceExact 'Features\Replay\Runtime\HitAdvanceGuard.cs' ('            1 => perfectDeg,') ('            1 => countedDeg,')
+    }
+    'MUT-U139' {
+        # 兜底没有排除自由漫游段（2026-11-19 复核）：gameworld=false 时 SwitchChosen
+        # 走落点选择分支，角度只用来 snap 选砖、不参与判定；收角度会把行星挪到别的
+        # 方向、落点选错。CrossPlatformInputCheck ⑬b 的自由漫游断言必须变红。
+        Backup 'Features\Replay\Runtime\ReplayPlayer.cs'
+        ReplaceExact 'Features\Replay\Runtime\ReplayPlayer.cs' ('        if (controller == null || !controller.gameworld) return null;') ('        if (controller == null) return null;')
+    }
     'MUT-U135' {
         # Legacy X-Acc 分母回归：OverPress 退出旧分母——r148 的 X-Acc 分母是
         # hitMargins.Count（全部判定条数），无权重档位必须只进分母。
@@ -3335,8 +3367,29 @@ switch ($Which) {
         Backup 'repo:tools\ffmpeg-capability.ps1'
         ReplaceExact 'repo:tools\ffmpeg-capability.ps1' "'h264_qsv', 'hevc_qsv'," "'h264_qsvX', 'hevc_qsvX',"
     }
+    'MUT-WS4' {
+        # P1-1 回归（2026-11-18）：回放保存退回「FileStream + FileMode.Create 直写」。
+        # 旧形态：写到一半崩溃/断电/磁盘满就留下截断的 .sprp，而 File.Exists 仍为真，
+        # 调用方据此告诉用户「保存成功」。WriteSafetyCheck 的两条 ⑤ 判据必须变红。
+        Backup 'Features\Replay\Runtime\ReplayManager.cs'
+        ReplaceExact 'Features\Replay\Runtime\ReplayManager.cs' '            AtomicFile.WriteAllBytes(filePath, data);' '            using (FileStream fs2 = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None)) { fs2.Write(data, 0, data.Length); }'
+    }
+    'MUT-PL1' {
+        # P1-2 回归（2026-11-18）：Initialize 不再复位失败账本。
+        # 退回旧形态后，设置页常驻的 ui.patchfailed (N) 会跨会话残留，
+        # 新出现的失败也不再弹汇总通知。PatchLedgerCheck 必须变红。
+        Backup 'Patch\Shared\SpectrePatchHub.cs'
+        ReplaceExact 'Patch\Shared\SpectrePatchHub.cs' '            ApplyFailures.Clear();' '            // ApplyFailures.Clear();'
+    }
+    'MUT-VER1' {
+        # P1-4 回归（2026-11-18）：info.json 的 GameVersion 漂回旧基线。
+        # UMM 按这个字段做版本匹配/提示，写错时构建与闸门全绿、只有玩家看到「版本不符」。
+        # VersionBaselineCheck 必须变红。
+        Backup 'repo:SpectreReplay\info.json'
+        ReplaceExact 'repo:SpectreReplay\info.json' '  "GameVersion": "3.4.0",' '  "GameVersion": "3.3.1",'
+    }
     default {
-        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116）"
+        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142）"
     }
 }
 

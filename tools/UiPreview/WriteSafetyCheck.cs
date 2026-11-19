@@ -20,6 +20,7 @@ internal static class WriteSafetyCheck
         string main = Read("Main.cs");
         string settings = Read("State/Settings.cs");
         string compression = Read("Features/Replay/Codec/ReplayCompression.cs");
+        string replayMgr = Read("Features/Replay/Runtime/ReplayManager.cs");
 
         Console.WriteLine("  ── 写入安全与生命周期 ──");
 
@@ -51,6 +52,14 @@ internal static class WriteSafetyCheck
         Check(compression.Contains("MaxDecompressed / (1024 * 1024)", StringComparison.Ordinal)
             && !compression.Contains("512MB cap", StringComparison.Ordinal),
             "④ 解压上限诊断使用真实 64MB 值");
+        // ⑤ 回放是玩家**唯一一份**对局数据。配置与云端回填都走 AtomicFile，唯独回放
+        //    保存曾用 FileStream(FileMode.Create) 直写——写到一半崩溃/断电/磁盘满就
+        //    留下截断的 .sprp，而末尾 File.Exists 仍为真，调用方据此告诉用户「保存成功」
+        //    （2026-11-18 审计 P1-1）。判据钉住「走原子写」与「不再截断目标」两件事。
+        Check(replayMgr.Contains("AtomicFile.WriteAllBytes(filePath, data);", StringComparison.Ordinal),
+            "⑤ 回放保存走原子写入（与配置/云端同口径）");
+        Check(!replayMgr.Contains("FileMode.Create", StringComparison.Ordinal),
+            "⑤ 回放保存不再用 FileMode.Create 截断目标文件");
 
         Console.WriteLine($"  写入安全与生命周期：{total} 条，失败 {failed}");
         return (total, failed);

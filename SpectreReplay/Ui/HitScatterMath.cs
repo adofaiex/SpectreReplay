@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace SpectreReplay.Ui
 {
@@ -99,6 +100,51 @@ namespace SpectreReplay.Ui
                 }
             }
             return best;
+        }
+
+        /// <summary>指纹抽样步长上限：每列最多看 64 个点，一帧一次不会成为热点。</summary>
+        private const int FingerprintStride = 64;
+
+        /// <summary>
+        /// 命中图缓存指纹：**样本值与两档窗口一起**进哈希。
+        ///
+        /// <para><b>为什么不能只比样本条数。</b>同一个 <c>ReplayData</c>、同样的条数，
+        /// 换难度 / 换倍速 / 换关卡之后窗口与毫秒都会变（窗口随 pitch 与 bpm×speed，
+        /// 误差值随 1/pitch），而判据只看条数就会一直拿旧贴图：设置页的图"不会变化"，
+        /// 游戏里的判定却在变——2026-11-19 用户报的形态。条数只是最粗的一道。</para>
+        ///
+        /// <para>抽样而不是全量：这几张表挂在每帧重绘的 IMGUI 页上，几千条逐个哈希
+        /// 是白烧 CPU；而窗口/误差在同一份回放里是分段常量（按砖的 speed），
+        /// 64 点等距抽样足以捕捉任何一次整体换算变化。碰撞只表现为"该重建时用了
+        /// 旧图"，与原来的行为持平，不会更糟。</para>
+        /// </summary>
+        internal static int Fingerprint(IList<float> samples, IList<float> perfectWins,
+            IList<float> pureWins)
+        {
+            unchecked
+            {
+                uint h = 2166136261u;   // FNV-1a 偏移基
+                h = MixSeries(h, samples);
+                h = MixSeries(h, perfectWins);
+                h = MixSeries(h, pureWins);
+                return (int)h;
+            }
+        }
+
+        private static uint MixSeries(uint h, IList<float> values)
+        {
+            const uint prime = 16777619u;
+            if (values == null)
+                return h * prime;
+            int n = values.Count;
+            h = (h ^ (uint)n) * prime;
+            if (n == 0)
+                return h;
+            int stride = Math.Max(1, n / FingerprintStride);
+            for (int i = 0; i < n; i += stride)
+                h = (h ^ unchecked((uint)values[i].GetHashCode())) * prime;
+            // 末尾那个点必须看：窗口是分段常量，最后一段的宽度只在这里露头。
+            return (h ^ unchecked((uint)values[n - 1].GetHashCode())) * prime;
         }
     }
 }

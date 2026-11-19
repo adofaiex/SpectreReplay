@@ -300,6 +300,7 @@ internal static class GameCompat
     // 在「每次命中」的循环里，而它又被每帧的 DrawTimingSummary 调用；一份 2000 击的
     // 回放在 60fps 下就是 12 万次/秒，Invoke 的装箱会把界面直接拖垮。</para>
 
+    private static Func<Difficulty, double, double, double, double> _angleBoundaryNewCounted;
     private static Func<Difficulty, double, double, double, double> _angleBoundaryNewPerfect;
     private static Func<Difficulty, double, double, double, double> _angleBoundaryNewPure;
 
@@ -307,13 +308,21 @@ internal static class GameCompat
     private static bool _angleBoundaryProbed;
 
     /// <summary>
-    /// 取该上下文下原版 Perfect / Pure 的**角度**边界（度）。
+    /// 取该上下文下原版 Counted / Perfect / Pure 的**角度**边界（度）。
     /// 返回 false 表示两种形状都没解析出来；调用方应把窗口按 0 填入，
     /// 散点图会据此退回 25/60ms 的兜底估算（HitScatterMath.Windows）。
+    ///
+    /// <para><b>Counted 是给回放推进兜底用的</b>（<see cref="HitAdvanceGuard"/>）：
+    /// "这一击会不会被游戏计入"由它决定（<c>scrPlanet.SwitchChosen</c> 的
+    /// <c>hitMargin.IsCounted(GCS.hitMarginLimit)</c>，Counted 档是 None 口径下的
+    /// 下限）。自己按 60°/45°/30° 复刻一遍是不行的：有效 BPM 高到把时间项顶出
+    /// 常量下限时（SetSpeed 上 780/975 BPM 很常见），真实窗口是时间项算出来的，
+    /// 差一度就是"该收的没收 → 回放卡死"或"不该收的收了 → 判定被篡改"。</para>
     /// </summary>
     internal static bool AngleBoundary(Difficulty difficulty, double bpmTimesSpeed,
-        double conductorPitch, double marginMult, out double perfect, out double pure)
+        double conductorPitch, double marginMult, out double counted, out double perfect, out double pure)
     {
+        counted = 0.0;
         perfect = 0.0;
         pure = 0.0;
 
@@ -326,6 +335,7 @@ internal static class GameCompat
                     m => m.GetParameters()[0].ParameterType == typeof(Difficulty));
                 if (byDifficulty != null)
                 {
+                    _angleBoundaryNewCounted = CompileStructFieldGetter(byDifficulty, "Counted");
                     _angleBoundaryNewPerfect = CompileStructFieldGetter(byDifficulty, "Perfect");
                     _angleBoundaryNewPure = CompileStructFieldGetter(byDifficulty, "Pure");
                 }
@@ -354,11 +364,15 @@ internal static class GameCompat
         {
             if (_angleBoundaryNewPerfect != null && _angleBoundaryNewPure != null)
             {
+                counted = _angleBoundaryNewCounted != null
+                    ? _angleBoundaryNewCounted(difficulty, bpmTimesSpeed, conductorPitch, marginMult)
+                    : 0.0;
                 perfect = _angleBoundaryNewPerfect(difficulty, bpmTimesSpeed, conductorPitch, marginMult);
                 pure = _angleBoundaryNewPure(difficulty, bpmTimesSpeed, conductorPitch, marginMult);
             }
             else if (_angleBoundaryOld != null)
             {
+                counted = _angleBoundaryOld(HitMarginGeneral.Counted, bpmTimesSpeed, conductorPitch, marginMult);
                 perfect = _angleBoundaryOld(HitMarginGeneral.Perfect, bpmTimesSpeed, conductorPitch, marginMult);
                 pure = _angleBoundaryOld(HitMarginGeneral.Pure, bpmTimesSpeed, conductorPitch, marginMult);
             }
@@ -366,10 +380,13 @@ internal static class GameCompat
         catch (Exception e)
         {
             WarnOnce("AngleBoundary", e);
+            counted = 0.0;
             perfect = 0.0;
             pure = 0.0;
         }
 
+        // Counted 缺失不算失败：散点图只要 Perfect/Pure；只有回放推进兜底会把
+        // counted <= 0 当成"窗口未知"而放弃收角度（宁可照旧卡死，也不猜窗口）。
         return perfect > 0.0 && pure > 0.0;
     }
 
