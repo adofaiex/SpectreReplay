@@ -63,6 +63,22 @@ namespace SpectreReplay.Features.VideoRender
             return false;
         }
 
+        // 只给后台编码预启动用，OnGUI 永远只走 EnsureLoaded。目录未就绪不能被当成
+        // 「没有 AV1」给整场作业定案，失败也必须在开始捕获前明确报告。
+        internal static bool WaitUntilLoaded(string exe)
+        {
+            EnsureLoaded(exe);
+            var clock = Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < LoadTimeoutMs + 1000)
+            {
+                if (IsLoaded(exe)) return true;
+                lock (Lock)
+                    if (!Loading.Contains(exe)) return false;
+                Thread.Sleep(10);
+            }
+            return IsLoaded(exe);
+        }
+
         private static void Load(string exe)
         {
             HashSet<string> names = new HashSet<string>(StringComparer.Ordinal);

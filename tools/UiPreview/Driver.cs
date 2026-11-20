@@ -149,9 +149,12 @@ namespace UiPreview
             // 分布图缓存必须随样本与窗口更新。
             int timingContextFail = ReplayTimingContextCheck.Run(
                 ProjectDir);
+            int reviewRegressionFail = ReviewRegressionCheck.Run();
             int orphanFail = PortedCompletenessCheck.NoOrphanChecks(
                 ProjectDir);
             int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + cpuRetryFail + hdrProbeFail + tenBitFail + hdr10Fail + overlayFilterFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + ledgerFail + verBaseFail + advanceGuardFail + timingContextFail + orphanFail;
+            total += reviewRegressionFail;
+            total += EffectSaveGuardCheck.Run();
             Console.WriteLine();
             Console.WriteLine(total == 0
                 ? "  全部通过"

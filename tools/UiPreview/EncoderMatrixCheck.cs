@@ -29,7 +29,7 @@ internal static class EncoderMatrixCheck
         Check(enc.Contains("internal enum VideoCodec { H264 = 0, H265 = 1, Av1 = 2 }", StringComparison.Ordinal),
             "① VideoEncoder 有 H.264/H.265/AV1 枚举");
         Check(enc.Contains("if (videoCodec == VideoCodec.Av1)", StringComparison.Ordinal)
-            && enc.Contains("Codec sw = SoftwareCodec(VideoCodec.Av1, exe);", StringComparison.Ordinal)
+            && enc.Contains("return new[] { Codec.NvencAv1, Codec.QsvAv1, Codec.AmfAv1 };", StringComparison.Ordinal)
             && enc.Contains("case Codec.NvencAv1:", StringComparison.Ordinal)
             && enc.Contains("case Codec.QsvAv1:", StringComparison.Ordinal)
             && enc.Contains("case Codec.AmfAv1:", StringComparison.Ordinal),
@@ -116,7 +116,7 @@ internal static class EncoderMatrixCheck
             "④ ConfigManager 读取编码字段（旧配置缺键走默认）");
         Check(cfg.Contains("Settings.RenderVideoCodec = Mathf.Clamp(ints.Value<int?>(\"render_video_codec\") ?? Settings.RenderVideoCodec, 0, 2);", StringComparison.Ordinal),
             "④ render_video_codec clamp 0..2（AV1 不被压回 H.265）");
-        Check(cfg.Contains("rawHardware == null && rawEncoder == 3", StringComparison.Ordinal)
+        Check(cfg.Contains("if (rawHardware == null && rawEncoder == 3)", StringComparison.Ordinal)
             && cfg.Contains("Settings.RenderHardware = 4;", StringComparison.Ordinal)
             && cfg.Contains("Settings.RenderEncoderMode = 2;", StringComparison.Ordinal),
             "④ 旧 render_encoder=3 在 clamp 前迁移为 CPU 后端");
@@ -125,10 +125,10 @@ internal static class EncoderMatrixCheck
             && cfg.Contains("Settings.RenderHardware = hardwareValue;", StringComparison.Ordinal),
             "④ 非法 render_hardware 回 Auto，不 clamp 到 CPU");
 
-        Check(job.Contains("(VideoEncoder.VideoCodec)Settings.RenderVideoCodec", StringComparison.Ordinal)
-            && job.Contains("(VideoEncoder.RateControlMode)Settings.RenderRateControl", StringComparison.Ordinal)
-            && job.Contains("(VideoEncoder.HardwareBackend)Settings.RenderHardware", StringComparison.Ordinal)
-            && job.Contains("Settings.RenderBitrateMbps, Settings.RenderPreset", StringComparison.Ordinal),
+        Check(job.Contains("(VideoEncoder.VideoCodec)options.Codec", StringComparison.Ordinal)
+            && job.Contains("(VideoEncoder.RateControlMode)options.RateControl", StringComparison.Ordinal)
+            && job.Contains("job.options.Hardware", StringComparison.Ordinal)
+            && job.Contains("options.Bitrate, options.Preset", StringComparison.Ordinal),
             "⑤ 渲染作业把编码参数传给 VideoEncoder");
 
         Check(pages.Contains("OnGui.RowDropdown(\"render.video_codec\"", StringComparison.Ordinal)
@@ -149,12 +149,12 @@ internal static class EncoderMatrixCheck
             && pages.Contains("render.codec.aom_slow", StringComparison.Ordinal)
             && pages.Contains("render.codec.hw_fallback", StringComparison.Ordinal),
             "⑥ 回退原因提示在（MOV/AV1、SVT CBR、libaom、硬件不可用）");
-        Check(enc.Contains("switch (ResolveCodec(container, videoCodec, hardware, tenBit, hdr10))", StringComparison.Ordinal)
+        Check(enc.Contains("resolved = ResolveCodec(container, videoCodec, hardware, tenBit, hdr10);", StringComparison.Ordinal)
             && !enc.Contains("ResolveCodec(quality, container, videoCodec", StringComparison.Ordinal),
             "⑦ DescribeEncoder 与 PickCodec 共用同一判定，quality 已退出后端判定");
         Check(enc.Contains("private static Codec[] Candidates(VideoCodec videoCodec, HardwareBackend hardware, string exe)", StringComparison.Ordinal)
             && enc.Contains("EncoderStateFor(exe, EncoderName(candidate))", StringComparison.Ordinal)
-            && enc.Contains("if (!EncoderCatalog.IsLoaded(exe))", StringComparison.Ordinal)
+            && enc.Contains("private static int EncoderStateFor(string exe, string encoderName)\n    {\n        if (!EncoderCatalog.IsLoaded(exe))", StringComparison.Ordinal)
             && enc.Contains("EncoderCatalog.EnsureLoaded(exe)", StringComparison.Ordinal),
             "⑦ Auto 链 NVENC→QSV→AMF→软件，目录未就绪先加载");
         Check(enc.Contains("case Codec.QsvH265:", StringComparison.Ordinal)
@@ -162,7 +162,7 @@ internal static class EncoderMatrixCheck
             && enc.Contains("case Codec.AmfH265:", StringComparison.Ordinal)
             && enc.Contains("case Codec.AmfH264:", StringComparison.Ordinal)
             && enc.Contains("return \"-global_quality \" + crf;", StringComparison.Ordinal)
-            && enc.Contains("return \"-global_quality \" + cqp;", StringComparison.Ordinal),
+            && enc.Contains("return \"-flags +qscale -q:v \" + cqp;", StringComparison.Ordinal),
             "⑦ QSV/AMF 编码分支与 QSV 质量参数在");
 
         Check(cap.Contains("'libx264'", StringComparison.Ordinal)

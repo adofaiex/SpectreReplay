@@ -651,6 +651,8 @@ namespace SpectreReplay.Ui
         /// </summary>
         private static readonly Dictionary<string, TextField> _fields =
             new Dictionary<string, TextField>();
+        private static readonly Dictionary<string, Action<string>> _fieldCommitters =
+            new Dictionary<string, Action<string>>();
 
         private static TextField GetField(string key)
         {
@@ -1148,6 +1150,7 @@ namespace SpectreReplay.Ui
         internal static void RowTextField(string labelKey, string value, Action<string> onCommit)
         {
             TextField field = GetField(labelKey);
+            _fieldCommitters[labelKey] = onCommit;
             SyncField(field, value ?? "");
             if (Gui.ModernMode)
             {
@@ -1301,6 +1304,13 @@ namespace SpectreReplay.Ui
         /// <summary>提交输入框内容。关窗口、点 Save、点别处、回车时都会调。</summary>
         internal static void CommitText()
         {
+            // RowTextField 的草稿也属于关窗提交；热键关窗没有「点别处」事件。
+            foreach (var entry in _fieldCommitters)
+            {
+                if (!_fields.TryGetValue(entry.Key, out TextField field) || !field.Editing) continue;
+                field.Editing = false;
+                entry.Value?.Invoke(field.Text ?? "");
+            }
             string draft = _outDir.Text ?? "";
             if (draft != Settings.RenderOutputDir)
             {

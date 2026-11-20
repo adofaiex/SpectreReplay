@@ -42,7 +42,8 @@ internal static class VideoRender
         internal static RenderRange FromTimeline()
         {
             var state = TimelineController.State;
-            if (state.Source == null || state.Duration <= 0.0)
+            if (!RenderOutputPolicy.UseTimelineRange(state.Source != null, state.Duration,
+                    state.Selection.Start, state.Selection.End))
                 return Full;
             var selection = state.Selection;
             return new RenderRange(true, selection.Start, selection.End);
@@ -80,6 +81,7 @@ internal static class VideoRender
     internal static bool CpuRetryUsed;
     internal static RenderRange CpuRetryRange;
     internal static string CpuRetryReason;
+    internal static RenderEncodingSettings CpuRetrySettings;
 
     // 当前帧源的捕获面。帧源构造时装上、构造失败（CleanupOnConstructionFailure）
     // 与 Dispose 时清掉，StartRender 的 ResetLeakedPins 兜底复位。渲染期补丁按它
@@ -162,11 +164,20 @@ internal static class VideoRender
 
     internal static void StartRender(RenderRange range)
     {
+        TryStartRender(range);
+    }
+
+    internal static bool TryStartRender(RenderRange range)
+    {
+        // 忙碌请求不能改变正在运行作业的重试预算，也不能谎报本次启动成功。
+        if (Job != null) return false;
         // 玩家手动开始 = 新一轮；允许下一次后端失败再自动回退 CPU 一次。
         CpuRetryUsed = false;
         CpuRetryPending = false;
         CpuRetryReason = null;
+        CpuRetrySettings = null;
         StartRenderInternal(range);
+        return Job != null;
     }
 
     private static void StartRenderInternal(RenderRange range)
@@ -208,7 +219,7 @@ internal static class VideoRender
         ResetSnapshot();
         CurrentPhase = Phase.Restarting;
         PendingRange = range;
-        Job = VideoRenderJob.Launch(encoderPath, range);
+        Job = VideoRenderJob.Launch(encoderPath, range, CpuRetrySettings);
         SpectreAPI.RaiseRenderStarted();
     }
 
@@ -216,13 +227,14 @@ internal static class VideoRender
     /// 后端中途失败时请求一次 CPU 重跑。由 job 在 ReportEnd(Failed) 之后调用；
     /// 真正的重启在 TearDown 完成、Job 清空后进行。
     /// </summary>
-    internal static void RequestCpuRetry(RenderRange range, string reason)
+    internal static void RequestCpuRetry(RenderRange range, string reason, RenderEncodingSettings settings)
     {
         if (CpuRetryUsed || CpuRetryPending) return;
         CpuRetryUsed = true;
         CpuRetryPending = true;
         CpuRetryRange = range;
         CpuRetryReason = reason;
+        CpuRetrySettings = settings;
         TriggerMessage(SpectreReplay.Ui.Loc.T("render.cpu_retry") + "\n" + reason,
             extra: 3f, type: NotifType.Warning);
         Debug.LogWarning("[SpectreReplay] renderer backend failed; retrying once with CPU: " + reason);
@@ -241,6 +253,7 @@ internal static class VideoRender
         finally
         {
             ForceCpuNextRun = false;
+            CpuRetrySettings = null;
         }
         // 让重跑期间的阶段文字带上原因；job 后续会覆盖成正常阶段。
         if (Job != null)

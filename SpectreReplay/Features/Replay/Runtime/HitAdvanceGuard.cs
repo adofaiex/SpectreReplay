@@ -31,6 +31,11 @@ namespace SpectreReplay.Features.Replay;
 /// </summary>
 internal static class HitAdvanceGuard
 {
+    // 最后一击没有下一张快照，录制终点仍可证明它推进过砖块。
+    internal static bool ProvesAdvance(int currentFloor, int? nextFloor, int? endTile)
+        => nextFloor.HasValue ? nextFloor.Value > currentFloor
+            : endTile.HasValue && endTile.Value > currentFloor;
+
     /// <summary>
     /// 收进窗口后留的余量（度）。<c>scrMisc.SelectHitMarginByTimeBoundary</c> 的比较是
     /// 严格不等号（<c>target &gt; -boundary</c>），贴边会落在窗口外。

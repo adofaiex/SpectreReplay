@@ -20,27 +20,14 @@ namespace SpectreReplay.Features.EffectRemover;
 /// </summary>
 internal static class EffectRemover
 {
+    internal static readonly EffectDataSafety Safety = new EffectDataSafety();
+    private static bool Restoring;
+    private static bool ModDisabled;
+
     internal static void OnLevelDataDecode(LevelData levelData)
     {
-        // 恢复过程中 Decode 会再次走到这个 Postfix；必须跳过 Remove，
-        // 否则刚还原的原始数据会被同一套规则再剥一遍。
-        if (Restoring)
-        {
-            Restoring = false;
-            LevelDataStripped = false;
-            return;
-        }
-
-        // 每次 Decode 都是全新的内存副本：先把「这份谱面被我们改写过」清掉。
-        // 关掉去特效之后重新进关会走到这里，标记归零，保存才重新放行。
-        LevelDataStripped = false;
-
-        if (!Enabled || levelData == null)
-        {
-            OriginalLevelDataJson = null;
-            LastLevelData = null;
-            return;
-        }
+        if (Restoring) return;
+        if (!Enabled || levelData == null) return;
 
         // **先留原始快照，再动数据。** 快照失败时宁可不改写：没有原始副本的
         // 去特效就是不可回滚的破坏，玩家一关一关试过去时根本发现不了。
@@ -48,32 +35,53 @@ internal static class EffectRemover
         {
             string json = levelData.Encode();
             if (string.IsNullOrEmpty(json)) throw new InvalidOperationException("Encode returned empty");
-            OriginalLevelDataJson = json;
-            LastLevelData = levelData;
+            Safety.Track(levelData, json);
         }
         catch (Exception ex)
         {
-            OriginalLevelDataJson = null;
-            LastLevelData = null;
             UnityEngine.Debug.LogWarning("[SpectreReplay] 去特效原始快照失败，本次不改写谱面：" + ex.Message);
             return;
         }
 
         Remove(levelData);
+        // 还原前必须证明玩家没有继续编辑这份对象。只比较对象引用挡不住原地编辑；
+        // 比较去特效后的完整序列化快照，任何后续差异都宁可保留，不用旧 JSON 覆盖。
+        try { Safety.SetStrippedSnapshot(levelData, levelData.Encode()); }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogWarning("[SpectreReplay] 去特效后快照失败，将禁止整份回滚：" + ex.Message);
+        }
     }
 
-    internal static bool OnSaveLevelEditorActionPrefix()
+    internal static void OnLevelLoaded(LevelData data, string path, bool successful)
     {
-        bool allowed = EditorSaveEnabled;
-        if (!allowed && !Enabled)
-        {
-            // 功能已关、内存里却仍是去特效版：拦住它的不是玩家刚打开的开关，
-            // 而是上一次改写留下的残留。不写清楚的话「点了保存没反应」无从排查。
-            UnityEngine.Debug.Log("[SpectreReplay] 拒绝保存：本次载入的谱面已被去特效改写，"
-                + "而功能现在是关闭的。重新进入关卡即可恢复（那时按原始数据重新解码）。");
-        }
+        if (!successful) return;
+        if (!ModDisabled && Enabled) Safety.BindSource(data, path);
+        else Safety.MarkClean(data);
+        RefreshEditorSaveButtons();
+    }
+
+    internal static bool OnSaveLevelPrefix(scnEditor editor)
+    {
+        bool allowed = CanSave(editor);
+        if (!allowed)
+            UnityEngine.Debug.LogWarning("[SpectreReplay] 拒绝覆盖去特效保护的原谱；请另存到新路径，或重新载入原谱。");
         return allowed;
     }
+
+    internal static bool OnFileWritePrefix(string path)
+    {
+        bool allowed = Safety.CanWrite(CurrentLevelData, path,
+            !ModDisabled && Enabled && Settings.EffectRemoverEnableSave);
+        if (!allowed)
+            UnityEngine.Debug.LogWarning("[SpectreReplay] 拒绝直接写入去特效保护的原谱文件；请另存为新文件或重新载入原谱。");
+        return allowed;
+    }
+
+    private static bool CanSave(scnEditor editor)
+        => Safety.CanWrite(editor == null ? CurrentLevelData : editor.levelData,
+            ADOBase.customLevel == null ? null : ADOBase.levelPath,
+            !ModDisabled && Enabled && Settings.EffectRemoverEnableSave);
 
     internal static void OnEditorLoadGameScenePostfix(scnEditor instance) => RefreshEditorSaveButtons(instance);
 
@@ -88,51 +96,72 @@ internal static class EffectRemover
 
     private static bool Enabled => Settings.EffectRemoverOn;
 
+    // Undo/Redo 会换对象；保存与还原始终查询当前对象的记录，不能查询最近一次 Decode。
+    private static LevelData CurrentLevelData => scnEditor.instance != null
+        ? scnEditor.instance.levelData : ADOBase.customLevel != null ? ADOBase.customLevel.levelData : null;
+
+    internal static bool HasProtectedEditorData()
+    {
+        if (Safety.IsStripped(CurrentLevelData)) return true;
+        var editor = scnEditor.instance;
+        if (editor == null) return false;
+        // 即使当前对象已还原，玩家仍可以撤销到去特效的副本，临时补丁须继续保留。
+        foreach (var state in editor.undoStates)
+            if (Safety.IsStripped(state.data)) return true;
+        foreach (var state in editor.redoStates)
+            if (Safety.IsStripped(state.data)) return true;
+        return false;
+    }
+
+    // 必须先交接保护再卸载普通补丁。交接失败就拒绝禁用，保持原保存入口受保护。
+    internal static bool TryPrepareForDisable()
+    {
+        try
+        {
+            RestoreOriginalLevelData();
+            if (HasProtectedEditorData()) DisabledEffectSaveGuard.Install();
+            ModDisabled = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            UnityEngine.Debug.LogError("[SpectreReplay] 原谱保存保护未能交接，已拒绝关闭模组：" + ex.Message);
+            return false;
+        }
+    }
+
+    internal static void ResumeAfterEnable()
+    {
+        // 保存入口与历史复制都交接完成才拆除临时保护，否则新历史副本会丢掉标记。
+        if (!SpectreReplay.PatchShared.SpectrePatchHub.IsApplied(typeof(Patch_EffectDataSafety))
+            || !SpectreReplay.PatchShared.SpectrePatchHub.IsApplied(typeof(Patch_LevelDataCopySafety)))
+            throw new InvalidOperationException("editor level data safety or copy patches unavailable");
+        DisabledEffectSaveGuard.Release();
+        ModDisabled = false;
+        RefreshEditorSaveButtons();
+    }
+
     /// <summary>
-    /// 本次载入的谱面是否被我们就地改写过。**它比总开关活得久。**
-    ///
-    /// <para>玩家关掉去特效之后，内存里那份仍然是剥过的（Decode 已经就地改完了）。
-    /// 此时如果只看总开关，保存会被放行，再把这份剥过的数据写回原文件——原谱就没了。
-    /// 所以存盘判据必须同时看这个标记，直到下一次 Decode（重新进关）把它清掉。</para>
-    ///
-    /// <para>只在主线程读写（Decode 与保存都在主线程），不需要同步。</para>
-    /// </summary>
-    internal static bool LevelDataStripped;
-
-    /// <summary>去特效改写前的原始谱面 JSON。只在主线程读写。</summary>
-    private static string OriginalLevelDataJson;
-
-    /// <summary>快照对应的 LevelData 实例。关闭模组/功能时用它原地还原。</summary>
-    private static LevelData LastLevelData;
-
-    /// <summary>正在还原，Decode 的 Postfix 要跳过 Remove。</summary>
-    private static bool Restoring;
-
-    /// <summary>
-    /// 把最近一次被去特效改写的内存谱面还原成原始数据。
+    /// 把当前谱面还原成原始数据。
     /// 关闭模组或关闭功能时调用；没有快照时是 no-op。
-    /// 还原失败时保持 LevelDataStripped，让保存继续被拦住。
+    /// 只清除成功还原的当前对象的保护；其它历史副本保留各自记录。
     /// </summary>
     internal static void RestoreOriginalLevelData()
     {
-        if (LastLevelData == null || string.IsNullOrEmpty(OriginalLevelDataJson))
-        {
-            LevelDataStripped = false;
-            return;
-        }
-
-        LevelData data = LastLevelData;
-        string json = OriginalLevelDataJson;
-        bool restored = false;
+        LevelData data = CurrentLevelData;
+        if (!Safety.IsStripped(data)) return;
         Restoring = true;
         try
         {
-            // LevelData.Encode 用 System.Text.Json 序列化，Decode 接受
-            // GDMiniJSON 解析出的 Dictionary<string, object>（游戏自己的口径）。
-            if (!(GDMiniJSON.Json.Deserialize(json) is Dictionary<string, object> dict))
-                throw new InvalidOperationException("original level data JSON parse failed");
-            data.Decode(dict, out _);
-            restored = true;
+            bool restored = Safety.Restore(data, data.Encode(), json =>
+            {
+                if (!(GDMiniJSON.Json.Deserialize(json) is Dictionary<string, object> dict))
+                    throw new InvalidOperationException("original level data JSON parse failed");
+                data.Decode(dict, out LoadResult status);
+                return status == LoadResult.Successful;
+            });
+            if (!restored)
+                UnityEngine.Debug.LogWarning("[SpectreReplay] 当前谱面在去特效后已被编辑或还原失败，保留当前修改及原文件保护；可另存到新路径。");
         }
         catch (Exception ex)
         {
@@ -141,24 +170,17 @@ internal static class EffectRemover
         finally
         {
             Restoring = false;
+            RefreshEditorSaveButtons();
         }
-
-        if (restored)
-        {
-            OriginalLevelDataJson = null;
-            LastLevelData = null;
-            LevelDataStripped = false;
-        }
-        RefreshEditorSaveButtons();
     }
 
     /// <summary>编辑器里还能不能保存。
     /// 去特效开着时：只有显式允许覆盖（EnableSave）才放行——玩家在编辑器里试听后
     /// 存盘，会把去干净的数据写回原文件。
-    /// 去特效关着时：**还要看内存里那份是不是已经被改写过**（见 <see cref="LevelDataStripped"/>），
+    /// 去特效关着时仍按当前对象和原路径保护，另存新路径不受影响，
     /// 否则「先开去特效看一眼、关掉、再 Ctrl+S」照样写坏原谱。</summary>
     internal static bool EditorSaveEnabled
-        => Enabled ? Settings.EffectRemoverEnableSave : !LevelDataStripped;
+        => CanSave(scnEditor.instance);
 
     internal static void RefreshEditorSaveButtons()
     {
@@ -171,7 +193,7 @@ internal static class EffectRemover
     }
 
     /// <summary>离开编辑器或关掉功能时刷新保存按钮。**不能无条件恢复成可用**：
-    /// 关掉去特效时内存里可能仍是剥过的那份（见 <see cref="LevelDataStripped"/>），
+    /// 关掉去特效时内存里可能仍是剥过的那份，
     /// 那时按钮必须保持禁用，直到玩家重新进关——否则按钮亮着、Prefix 在拦，
     /// 点了没反应且不报错（正是 UiLogicShapeCheck ⑳ 那组判据要防的「两边脱节」）。</summary>
     internal static void RestoreEditorSaveButtons()
@@ -193,10 +215,7 @@ internal static class EffectRemover
     internal static void Remove(LevelData levelData)
     {
         if (!Enabled || levelData == null) return;
-        // **从这里往下都会动数据**（摘事件、清装饰、改写 backgroundSettings/cameraSettings、
-        // 重置轨道不透明度…），所以先把「已被改写」钉住。不能等 events 收集完再判：
-        // RemoveBackgrounds 这类分支即使没往 events 里加东西，也已经改过 levelData 了。
-        LevelDataStripped = true;
+        // OnLevelDataDecode 在调用前已登记保护，Remove 抛异常也不能丢掉保护记录。
 
         List<LevelEventType> events = new List<LevelEventType>();
 

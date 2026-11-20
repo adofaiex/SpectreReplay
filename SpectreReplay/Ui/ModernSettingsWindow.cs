@@ -57,13 +57,21 @@ namespace SpectreReplay.Ui
         {
             if (_instance != null) return;
             var go = new GameObject("SpectreReplay.ModernSettings");
-            DontDestroyOnLoad(go);
-            _instance = go.AddComponent<ModernSettingsWindow>();
+            try
+            {
+                DontDestroyOnLoad(go);
+                _instance = go.AddComponent<ModernSettingsWindow>();
+                if (_instance == null) throw new InvalidOperationException("ModernSettingsWindow component was not created");
+            }
+            catch
+            {
+                Destroy(go);
+                throw;
+            }
         }
 
         internal static void Toggle()
         {
-            Ensure();
             if (_instance == null) return;
             _instance.SetOpen(!_open || _closing);
         }
@@ -71,8 +79,8 @@ namespace SpectreReplay.Ui
         /// <summary>UMM 面板打开时，把可见界面交给独立窗口。</summary>
         internal static void OpenFromUmm()
         {
-            Ensure();
-            _instance?.SetOpen(true);
+            if (_instance == null) return;
+            _instance.SetOpen(true);
         }
 
         internal static void Close()
@@ -83,11 +91,21 @@ namespace SpectreReplay.Ui
         internal static void Destroy()
         {
             if (_instance == null) return;
-            Destroy(_instance.gameObject);
+            // Destroy 要等到帧末；先停掉旧宿主，避免同一帧重开时它仍收到回调。
+            var go = _instance.gameObject;
+            go.SetActive(false);
+            Destroy(go);
+            ResetWindowState();
+        }
+
+        private static void ResetWindowState()
+        {
             _instance = null;
             _open = false;
             _closing = false;
             Gui.ViewportOverride = null;
+            UiInputBlock.Clear();
+            UiInputBlock.Destroy();
         }
 
         private void Awake()
@@ -195,15 +213,9 @@ namespace SpectreReplay.Ui
 
         private void OnDestroy()
         {
-            if (_instance == this)
-            {
-                _instance = null;
-                _open = false;
-                _closing = false;
-            }
-            Gui.ViewportOverride = null;
+            // 延迟销毁的旧宿主只能释放自己的纹理，不能清掉新窗口的共享状态。
+            if (_instance == this) ResetWindowState();
             ReleaseGlass();
-            UiInputBlock.Destroy();
         }
 
         private void SetOpen(bool open)

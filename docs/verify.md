@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 线上 dll 与构建产物的 sha256 一致、上游 Spectre 工作区干净。
 （后两项只在本地跑，`-Ci` 跳过；上游路径优先读 `SPECTRE_UPSTREAM`。）
 
-> **当前打印 339 条断言 0 失败**（2026-11-19 实测；14 语言 × 518 键）。
+> **当前打印 370 条断言 0 失败**（2026-11-20 离线套件实跑；14 语言 × 523 键）。
 > 这个数字会随轮次变，引用前先跑一遍 `verify.ps1` 看真实条数。
 > **注意它是「✓ 行数」而不是判据数**——`UiLogicShapeCheck` 现有 195 条判据只印 1 行，
 > 所以加判据这个数字不变。
@@ -83,8 +83,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 | ApiSurfaceCheck | 回放按键查询 API 对外契约（2026-11-12 加）：`SpectreAPI` 六个成员在位且委托同源（拉取接口必须与补丁桥同一套键码换算）、`ReplayKeyChanged` 事件与 raiser 同在、`ManagedInput.Note` 在**状态写入之后**发事件、`GetHeldReplayKeys` 无回放分支永不返回 null、两参 Raise 走主线程封送 + 逐订阅者异常隔离、`ApiVersion` 随成员升级。变异 `MUT-API1`（Note 不再发事件）/`MUT-API2`（无回放分支返回 null）/`MUT-API3`（事件成员删除）守 |
 | ReplayInputBridgeCheck | ReplayInput 推桥接线（2026-11-12 加，跨 KV 通用约定）：Start/Stop/PumpInput 边沿/Rebuild 重播种/Main 复位五处在位、**按类型名 `ReplayInput` 扫描全部程序集（不许绑死某一家程序集——同类 mod 多、接口通用）**、四方法全解析、VK→KeyCode 走 SkyHook 逆链（与 `KeyViewerBridge.ToNativeVk` 互逆）且保留 VK_APPS=93 ↔ KeyCode.Menu 特判。这类 KV 受控模式只认显式调用，桥断在游戏里毫无异常。变异 `MUT-RI1`（不喂边沿）/`MUT-RI2`（不发 OnEndInputs）守 |
 | ReplayTimingContextCheck | 设置页分布图缓存含样本和窗口指纹，卸载清图。`MUT-U142` 守 |
+| EffectSaveGuardCheck | 链接真实临时保护代码，六组故障注入覆盖六个必需钩子返回空、非空但未实际挂载、单 Harmony 幂等与按 owner 释放、动态第二 Harmony 的真实跨程序集反射卸载、卸载无效时拒绝成功及残留回调失能、安装/回滚双失败和恢复。仅使用内存补丁记录，不创建真实 detour。配 `MUT-SG01` 至 `MUT-SG07`，本轮实跑逐条核对源码还原哈希。 |
+| ReviewRegressionCheck | 审查回归 38 组：真实文件写入验证恢复备份独立、备份失败保留旧文件；去特效后编辑冲突保护、禁用 Mod 后最终 `SaveLevel()` 与 `RDFile.WriteAllText` 路径保护、另存新路径放行、重载解除及撤销/重做对象快照校验；HDR10 组合、尾帧排空守恒、默认全长选区、末击 EndTile 证据；真实编码参数验证 AV1 冷目录、QSV/SVT/AMF 码控与实际软硬件区分；内存目录与预探测缓存验证仅硬件 AV1、pending、软件回退及预启动等待预算；配置快照、首次作业保存重试起点、普通关卡重开、忙碌启动返回值、文本草稿提交及公开旧签名。云恢复复制备份、缺尾帧分支退出、最终保存入口、对象快照复制、当前对象切换，以及 Mod 卸载后新建撤销副本的保护传播都限定在本方法/分支。真实硬链接和扩展路径验证别名拦截，覆盖原路径移除/替换、独立文件放行和目标探测失败；普通保存及复制钩子均挂载后才释放临时保护。同编辑器成功加载当前关卡后直接刷新按钮，仅当前对象和撤销/重做栈均无保护时释放临时 owner；失败加载和非当前关卡不触发清理。RV46 独立验证遗漏重做栈保护，不再重复 RV44 的复制钩子变异。配 `MUT-RV01` 至 `MUT-RV56`，包含关键动作的删除和反向变异。不运行硬件编码或 HDR 探针。 |
 
-**总数以 `verify.ps1` 实跑为准**（2026-11-19 实测 339 条 `✓` 行、0 失败）。
+**总数以 `verify.ps1` 实跑为准**（2026-11-20 离线套件实跑 370 条 `✓` 行、0 失败；CI 闸门仅因预期的脏工作区返回 1）。
 这个数字会随轮次变；引用前先跑一遍。**它是「✓ 行数」而不是判据数**，
 `UiLogicShapeCheck` 的 195 条判据只印 1 行，所以加判据这个数字不变。
 

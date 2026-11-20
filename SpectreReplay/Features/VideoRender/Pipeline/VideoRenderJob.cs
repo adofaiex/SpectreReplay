@@ -20,11 +20,15 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private VideoRender.RenderRange renderRange;
     // 本次作业绑定的硬件后端；CPU 重跑时在 Launch 读取一次，后续 resize 重建沿用。
     private VideoEncoder.HardwareBackend hardware;
+    private RenderEncodingSettings options;
+    private ReplayData sourceReplay;
+    private bool finalizingReplay;
+    internal string ActualEncoder => encoder?.ActualEncoder;
 
     private bool cancelRequested;
     private VideoFrameSource frames;
     private VideoAudioTrack mixdown;
-    private VideoEncoder encoder;
+    private volatile VideoEncoder encoder;
     private string tempDir;
     private string rawVideoPath;
     private string wavPath;
@@ -73,7 +77,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private bool savedAudioPause;
     private int savedCheckpointNum;
 
-    internal static VideoRenderJob Launch(string encoderPath, VideoRender.RenderRange range)
+    internal static VideoRenderJob Launch(string encoderPath, VideoRender.RenderRange range,
+        RenderEncodingSettings settings = null)
     {
         var host = new GameObject("Spectre.VideoRenderJob");
         DontDestroyOnLoad(host);
@@ -82,9 +87,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 在 OnGUI 布局中途换场景会打乱 IMGUI 布局组，推迟到下一帧 Start()
         job.encoderPath = encoderPath;
         job.renderRange = range;
+        job.options = settings ?? new RenderEncodingSettings();
+        job.sourceReplay = SpectreState.data;
         job.hardware = VideoRender.ForceCpuNextRun
             ? VideoEncoder.HardwareBackend.Cpu
-            : (VideoEncoder.HardwareBackend)Settings.RenderHardware;
+            : job.options.Hardware;
         return job;
     }
 
@@ -205,7 +212,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
     // 成功=卸载（一次性消费）；取消/失败=还原到这里的模式，装弹原样保留
     // （2026-10-24 用户裁定：取消渲染不要卸载回放文件）。
     private bool wasPlayModeBeforeRender;
-    // 只有「捕获与混音正常跑完」的成功路径才置位。ReleaseGameControl 据此分支：
+    // 只有「编码排空与合成均正常完成」的成功路径才置位。ReleaseGameControl 据此分支：
     // 置位=这份回放已被完整消费，卸载；默认假=取消/失败/紧急兜底，保留装弹。
     private bool consumeReplay;
 
@@ -261,7 +268,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private System.Diagnostics.Stopwatch _jobClock;
     private long _lastFrameTicks;
     // 编码器后台预启动（见 Phases 的等待期预启动段）：线程句柄给 TearDown/
-    // 采集初始化做限时 Join；异常留给主线程统一上报。
+    // 采集初始化逐帧等待，收场做限时 Join；异常留给主线程统一上报。
     private System.Threading.Thread _encoderPreStart;
     private volatile Exception _encoderPreStartError;
 
@@ -304,7 +311,16 @@ internal sealed class VideoRenderJob : MonoBehaviour
             else
             {
                 Debug.LogException(failure);
-                NotifyFailed(failure.Message);
+                if (failure is VideoEncoder.PreStartException)
+                {
+                    var reason = VideoEncoder.ClassifyPreStartFailure(failure);
+                    NotifyFailed(SpectreReplay.Ui.Loc.T(
+                        VideoEncoder.PreStartFailureLocalizationKey(reason)));
+                }
+                else
+                {
+                    NotifyFailed(failure.Message);
+                }
             }
         }
         TearDown();
@@ -312,7 +328,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
     private IEnumerator Phases()
     {
-        int fps = Math.Max(1, Settings.RenderFps);
+        int fps = Math.Max(1, options.Fps);
         VideoRender.RenderRange range = renderRange.Enabled ? renderRange : VideoRender.RenderRange.Full;
         // 起点 = **编辑器里当前选中的地板**，必须在下面的重启/切模式之前抓取。
         //
@@ -320,10 +336,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 单纯点选地板**不会**更新它。首次打开关卡时它是 0，于是首次渲染会
         // 从第 0 块开始，必须「先在选中的地板上播一次、再退出」才正确。
         // 玩家真正表达意图的字段是 editor.selectedFloors。
-        requestedStartFloor = ResolveRequestedStartFloor();
+        requestedStartFloor = options.StartFloor ?? ResolveRequestedStartFloor();
         if (range.Enabled)
             requestedStartFloor = ResolveRangeStartFloor(range);
-        float tailSeconds = Mathf.Clamp(Settings.RenderTailSeconds, 0f, 15f);
+        options.StartFloor = requestedStartFloor;
+        float tailSeconds = Mathf.Clamp(options.TailSeconds, 0f, 15f);
         // 音画偏移快照：-1 = 跟随游戏校准，≥0 = 显式毫秒覆盖。
         //
         // **为什么跟随校准。** 实机游玩时视觉时间轴比音频滞后校准量
@@ -332,10 +349,10 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 那道硬件补偿，校准会原样烧进成片 —— 音频比画面提前校准那么多。合成时
         // 平移整条混音轨即可复现实机观感（见 VideoEncoder.MuxWith）。
         // 校准是计算属性、随时读都新鲜，但必须在主线程快照：收尾线程不碰游戏状态。
-        muxAudioOffsetSec = Settings.RenderAudioOffsetMs < 0
+        muxAudioOffsetSec = options.AudioOffsetMs < 0
             ? (double)scrConductor.calibration_i
-            : Settings.RenderAudioOffsetMs / 1000.0;
-        var container = (VideoEncoder.OutContainer)Mathf.Clamp(Settings.RenderOutputFormat, 0, 3);
+            : options.AudioOffsetMs / 1000.0;
+        var container = (VideoEncoder.OutContainer)Mathf.Clamp(options.Container, 0, 3);
         string outputPath = BuildOutputPath(container);
         VideoRender.Current.Output = outputPath;
 
@@ -349,14 +366,13 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 待期把进程起好，用户开始时零阻塞。ffmpeg 起来后本来就在等 stdin，
         // 提前起不改变任何行为。
         System.Diagnostics.Stopwatch encSw = System.Diagnostics.Stopwatch.StartNew();
-            bool cleanCamera = (VideoSurface)Settings.RenderCaptureMode == VideoSurface.CleanCamera;
-            bool hdr10 = Settings.RenderHdr10
-                && (VideoSurface)Settings.RenderCaptureMode == VideoSurface.CleanCamera;
-            if (Settings.RenderHdr10 && !hdr10)
-                Debug.LogWarning("[SpectreReplay] HDR10 需要 CleanCamera，本次按 SDR 渲染。");
-            bool tenBit = Settings.Render10Bit || hdr10;
-        int preW = cleanCamera ? Settings.RenderWidth : Screen.width;
-        int preH = cleanCamera ? Settings.RenderHeight : Screen.height;
+        bool cleanCamera = (VideoSurface)options.Surface == VideoSurface.CleanCamera;
+        bool hdr10 = options.Hdr10;
+        if (options.Hdr10Requested && !hdr10)
+            Debug.LogWarning("[SpectreReplay] HDR10 需要 CleanCamera、H.265 和 MP4/MKV/MOV，本次按 SDR 渲染。");
+        bool tenBit = options.TenBit;
+        int preW = cleanCamera ? options.Width : Screen.width;
+        int preH = cleanCamera ? options.Height : Screen.height;
         bool preFlip = cleanCamera;
         _encoderPreStartError = null;
         _encoderPreStart = new System.Threading.Thread(() =>
@@ -365,12 +381,12 @@ internal sealed class VideoRenderJob : MonoBehaviour
             {
                 var enc = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
                     preW, preH, fps,
-                    (VideoEncoder.Quality)Settings.RenderEncoderMode, Settings.RenderQualityMode, preFlip,
+                    (VideoEncoder.Quality)options.Quality, options.QualityTier, preFlip,
                     container,
-                    (VideoEncoder.VideoCodec)Settings.RenderVideoCodec,
-                    (VideoEncoder.RateControlMode)Settings.RenderRateControl,
-                    Settings.RenderCrf, Settings.RenderCqp,
-                    Settings.RenderBitrateMbps, Settings.RenderPreset,
+                    (VideoEncoder.VideoCodec)options.Codec,
+                    (VideoEncoder.RateControlMode)options.RateControl,
+                    options.Crf, options.Cqp,
+                    options.Bitrate, options.Preset,
                     hardware, tenBit, hdr10);
                 enc.Begin();
                 if (tornDown)
@@ -441,6 +457,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
         {
             int floorLimit = ADOBase.lm != null && ADOBase.lm.listFloors != null ? ADOBase.lm.listFloors.Count - 1 : 0;
             GCS.checkpointNum = Mathf.Clamp(requestedStartFloor, 0, Math.Max(0, floorLimit));
+            // 普通关卡与编辑器同样主动重开；CPU 重试不能等待玩家手动触发 Rewind。
+            scrController.instance.Restart();
         }
 
         SetPhase(VideoRender.Phase.WaitingPlayback, "rendervideo.stage.waiting", "");
@@ -470,11 +488,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         // 就位：画面源 + 混音轨 + 编码器
         System.Diagnostics.Stopwatch setupSw = System.Diagnostics.Stopwatch.StartNew();
-            frames = new VideoFrameSource((VideoSurface)Settings.RenderCaptureMode, Settings.RenderWidth, Settings.RenderHeight, tenBit, hdr10);
+        frames = new VideoFrameSource((VideoSurface)options.Surface, options.Width, options.Height, tenBit, hdr10);
         LogTiming("frame-src", setupSw.ElapsedMilliseconds + "ms");
         // 指针是否进成片，由设置决定；具体在哪一层画见 CursorOverlay 与 VideoFrameSource.Flight。
             // 10-bit（8 字节/像素）第一版禁用光标叠加：CursorOverlay 仍按 4 字节绘制。
-            frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;
+        frames.DrawCursor = options.Cursor && !tenBit && !hdr10;
         // 指针轨迹随回放数据一起进来：有轨迹 = 位置走确定性时间轴（与画面同源，
         // 渲染快慢/管线波动都影响不到）；没有（旧回放）= 帧源回落到活体捕获。
         frames.CursorTrack = data?.CursorTrack;
@@ -493,17 +511,23 @@ internal sealed class VideoRenderJob : MonoBehaviour
         if (encoder == null && _encoderPreStart != null && _encoderPreStart.IsAlive)
         {
             LogTiming("encoder-prestart-join");
-            _encoderPreStart.Join(6500);
+            var prestartWait = System.Diagnostics.Stopwatch.StartNew();
+            while (encoder == null && _encoderPreStart.IsAlive
+                && prestartWait.Elapsed.TotalSeconds < VideoEncoder.PreStartWaitSeconds && !cancelRequested)
+                yield return null;
         }
+        if (cancelRequested) { NotifyCanceled(); yield break; }
         if (_encoderPreStartError != null)
         {
             Debug.LogException(_encoderPreStartError);
-            NotifyFailed(LocalizationManager.GetLocalizedText("rendervideo.ffmpeg_missing"));
+            var reason = VideoEncoder.ClassifyPreStartFailure(_encoderPreStartError);
+            NotifyFailed(SpectreReplay.Ui.Loc.T(VideoEncoder.PreStartFailureLocalizationKey(reason)));
             yield break;
         }
         if (encoder == null)
         {
-            NotifyFailed(LocalizationManager.GetLocalizedText("rendervideo.ffmpeg_missing"));
+            string key = VideoEncoder.PreStartFailureLocalizationKey(VideoEncoder.PreStartFailureReason.PreStartWaitTimeout);
+            NotifyFailed(SpectreReplay.Ui.Loc.T(key));
             yield break;
         }
         blackout = new byte[frames.Width * frames.Height * frames.BytesPerPixel];
@@ -516,14 +540,24 @@ internal sealed class VideoRenderJob : MonoBehaviour
             setupSw.Restart();
             encoder = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
                 frames.Width, frames.Height, fps,
-                (VideoEncoder.Quality)Settings.RenderEncoderMode, Settings.RenderQualityMode, frames.NeedsRowFlip,
+                (VideoEncoder.Quality)options.Quality, options.QualityTier, frames.NeedsRowFlip,
                 container,
-                (VideoEncoder.VideoCodec)Settings.RenderVideoCodec,
-                (VideoEncoder.RateControlMode)Settings.RenderRateControl,
-                Settings.RenderCrf, Settings.RenderCqp,
-                Settings.RenderBitrateMbps, Settings.RenderPreset,
+                (VideoEncoder.VideoCodec)options.Codec,
+                (VideoEncoder.RateControlMode)options.RateControl,
+                options.Crf, options.Cqp,
+                options.Bitrate, options.Preset,
                 hardware, tenBit, hdr10);
-            encoder.Begin();
+            try
+            {
+                encoder.Begin();
+            }
+            // 已分类失败和取消原样交给 Drive；只为未分类失败补上本地化类型。
+            catch (Exception ex) when (ex is not VideoEncoder.PreStartException && ex is not OperationCanceledException)
+            {
+                throw new VideoEncoder.PreStartException(
+                    VideoEncoder.PreStartFailureReason.Generic,
+                    "encoder prestart failed after capture resize", ex);
+            }
             LogTiming("encoder-begin", setupSw.ElapsedMilliseconds + "ms (rebuilt)");
         }
         // 缓冲池对齐满载深度（队列容量 + 在途回读），消除编码满载期的 LOH 重复分配
@@ -945,6 +979,13 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         if (cancelRequested) { NotifyCanceled(); yield break; }
 
+        if (!RenderOutputPolicy.DrainComplete(frames.InFlight, delivered, frameIndex))
+        {
+            NotifyFailed("GPU readback drain incomplete (delivered=" + delivered
+                + ", captured=" + frameIndex + ", inFlight=" + frames.InFlight + ")");
+            yield break;
+        }
+
         // hardStop 是防死循环的保险丝（FramesTotal + 60s），不是正常出口。
         // 走到这里说明回放始终没有发出停止信号，endFrame 一直没定下来，循环被硬砍。
         // 若不拦截，下面会照常 mux 出一段**提前截断**的视频，并上报 Completed ——
@@ -985,11 +1026,9 @@ internal sealed class VideoRenderJob : MonoBehaviour
             yield break;
         }
 
-        // 走到这里 = 捕获与混音已正常跑完：这份回放被完整消费，收尾时卸载。
-        // （合成随后在后台线程做；万一 mux 失败，回放已随成功路径卸载，需重新
-        // 装弹重试——不为此把卸载推迟到合成之后，那会把「已载入」状态拖过整个
-        // 合成窗口，期间进关会被回放重新接管。）
-        consumeReplay = true;
+        // 先停输入接管、保留回放与键音。排空仍可能失败，CPU 重试必须能复用原输入。
+        // 合成窗口暂停录制/回放模式，避免进关重新接管或录制器清空保留的数据。
+        finalizingReplay = true;
         ReleaseGameControl();
 
         StartFinalizeOnWorker();
@@ -1019,6 +1058,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         if (cancelRequested) { NotifyCanceled(); yield break; }
 
+        consumeReplay = true;
+        ConsumeLoadedReplay();
         TriggerMessage(LocalizationManager.GetLocalizedText("rendervideo.done") + "\n" + outputPath, extra: 2f);
         // 顶替统计进完成日志：上一帧顶替（hasError 兜底）不进提示条（它不该被
         // 感知到），但排查「画面有微顿」时这是第一现场。黑帧只剩开局连败形态。
@@ -1590,11 +1631,12 @@ internal sealed class VideoRenderJob : MonoBehaviour
         if (!finalizeErrorFromMux
             && encoder != null
             && encoder.IsBackendFailure()
-            && (VideoEncoder.HardwareBackend)Settings.RenderHardware != VideoEncoder.HardwareBackend.Cpu)
+            && encoder.UsingHardware
+            && ReferenceEquals(SpectreState.data, sourceReplay))
         {
             VideoRender.RequestCpuRetry(
                 renderRange.Enabled ? renderRange : VideoRender.RenderRange.Full,
-                message);
+                message, options);
         }
         ReportEnd(SpectreAPI.RenderEndStatus.Failed, null, message);
     }
@@ -1664,6 +1706,14 @@ internal sealed class VideoRenderJob : MonoBehaviour
     // ReleaseGameControl 是否已执行（幂等）
     private bool controlReleased;
 
+    private void ConsumeLoadedReplay()
+    {
+        // 合成期间玩家可能已换装另一份回放，成功收尾不能把新选择一起卸掉。
+        if (!ReferenceEquals(SpectreState.data, sourceReplay)) return;
+        SpectreState.PlayActions.UnloadReplay();
+        SpectreReplay.Pages.Pages.NotifyReplayUnloaded();
+    }
+
     private void ReleaseGameControl()
     {
         if (controlReleased) return;
@@ -1701,16 +1751,19 @@ internal sealed class VideoRenderJob : MonoBehaviour
         //     装弹回放的正常行为。
         if (consumeReplay)
         {
-            try { SpectreState.PlayActions.UnloadReplay(); }
-            catch (Exception ex) { Debug.LogException(ex); }
+            ConsumeLoadedReplay();
             // 成功卸载后同步回放页的「已载入」标记：UnloadReplay 只清数据，
             // 列表徽章读的是 Pages 的两个来源字段，不同步就会把已卸载的
             // 回放一直标成已载入、按钮停在「卸载」（2026-11-07 实测）。
-            SpectreReplay.Pages.Pages.NotifyReplayUnloaded();
             Debug.Log("[SpectreReplay] render teardown: replay consumed and unloaded "
                 + "(PlayMode=" + SpectreState.PlayMode + " RecordMode=" + SpectreState.RecordMode
                 + " is_playing=" + SpectreState.is_playing
                 + " data=" + (SpectreState.data == null ? "null" : "kept") + ")");
+        }
+        else if (finalizingReplay)
+        {
+            SpectreState.PlayMode = false;
+            SpectreState.RecordMode = false;
         }
         else
         {
@@ -1874,6 +1927,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 但 OnDestroy 兜底路径是从半途掐断的——此时游戏可能正带着冻结的钉扎时钟跑，
         // 早一帧释放就少一帧"星球不动"。
         ReleaseGameControl();
+        if (finalizingReplay && !consumeReplay && ReferenceEquals(SpectreState.data, sourceReplay))
+        {
+            if (wasPlayModeBeforeRender) SpectreState.PlayActions.SwitchToPlayMode();
+            else SpectreState.PlayActions.SwitchToRecordMode();
+        }
         // **先等工作线程收场。** 收尾现在跑在后台线程上（见 StartFinalizeOnWorker）：
         // 它会读 tempDir 里的中间文件、写最终成片。TearDown 若在它还在跑时删临时目录
         // 或 Dispose 编码器，结果是成片写到一半被打断、或者干脆删掉了正在被读的文件。
@@ -1983,7 +2041,15 @@ internal sealed class VideoRenderJob : MonoBehaviour
         {
             VideoRender.RenderRange retryRange = VideoRender.CpuRetryRange;
             string retryReason = VideoRender.CpuRetryReason;
-            VideoRender.StartCpuRetry(retryRange, retryReason);
+            // RenderFinished 订阅者可能换装了回放。不能用旧作业的区间/设置渲染新数据。
+            if (ReferenceEquals(SpectreState.data, sourceReplay))
+                VideoRender.StartCpuRetry(retryRange, retryReason);
+            else
+            {
+                VideoRender.CpuRetryPending = false;
+                VideoRender.CpuRetrySettings = null;
+                Debug.LogWarning("[SpectreReplay] 已装载另一份回放，取消旧作业的 CPU 重试。");
+            }
         }
         Destroy(gameObject);
     }

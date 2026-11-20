@@ -109,6 +109,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 检出触发标签对应的提交，与 build 使用的源码一致。
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
       - uses: actions/download-artifact@v8
         with:
           name: SpectreReplay
@@ -118,53 +124,31 @@ jobs:
         shell: pwsh
         run: Get-ChildItem -Recurse -File build | ForEach-Object { $_.FullName }
 
-      # 防 tag 与元数据漂移：info.json 才是 UMM 认的版本号。
-      # 两者不一致时发布出去的是一个"版本号说谎"的包，安装端更新检查会失灵，
-      # 而这在构建日志里看不出来。
-      #
-      # **预发布 tag 只核对基础版本。** v0.1.0-rc1 对应 info.json 的 0.1.0：
-      # UMM 用 System.Version 解析 info.json 的 Version，"0.1.0-rc1" 会直接
-      # 解析失败、模组根本加载不起来——所以预发布信息只能留在 tag 上，
-      # 不能写进 info.json。要求它与 tag 逐字相等等于禁止预发布。
-      - name: Verify tag matches info.json
-        shell: pwsh
-        run: |
-          $info = Get-ChildItem -Recurse -File build -Filter info.json | Select-Object -First 1
-          if (-not $info) { Write-Error "构建产物里没有 info.json"; exit 1 }
-          $version = (Get-Content $info.FullName -Raw | ConvertFrom-Json).Version
-          $tag = '${{ github.ref_name }}'.TrimStart('v')
-          # 去掉 -rc1 / -beta2 之类的预发布后缀再比
-          $base = ($tag -split '-')[0]
-          if ($version -ne $base) {
-            Write-Error "info.json Version ($version) 与 tag (${{ github.ref_name }}) 的基础版本 ($base) 不一致"
-            exit 1
-          }
-          if ($version -ne $tag) {
-            Write-Host "[release] ✓ info.json Version = $version；tag ${{ github.ref_name }} 是预发布（基础版本一致）"
-          } else {
-            Write-Host "[release] ✓ info.json Version = $version"
-          }
-
-      # 版本一致性：info.json / repo.json / AssemblyInfo / CHANGELOG 必须同一个基础版本。
-      # 只校验 info.json 时，release 页会出现「dll 显示 0.3.2、repo 说 0.3.1」这种
-      # UMM 更新检查直接失效的错配。
+      # 比对实际打包的 info.json 和标签源码里的版本。UMM 只认数字版本，
+      # 所以 v0.1.0-rc1 等预发布标签也用基础版本 0.1.0 来比对。
       - name: Check version consistency
         shell: pwsh
         run: |
-          $tag  = '${{ github.ref_name }}'
+          $tag  = $env:GITHUB_REF_NAME
           $base = (($tag -replace '^v', '') -split '-')[0]
-          $info = Get-Content -Raw SpectreReplay/SpectreReplay/bin/Release/info.json | ConvertFrom-Json
-          $repo = Get-Content -Raw repo.json | ConvertFrom-Json
-          $asm  = (Select-String -Path SpectreReplay/SpectreReplay/AssemblyInfo.cs -Pattern 'AssemblyInformationalVersion\("([^"]+)"\)').Matches[0].Groups[1].Value
-          $chg  = (Select-String -Path CHANGELOG.md -Pattern '^## \[([^\]]+)\]').Matches[0].Groups[1].Value
+          $infoFile = Get-ChildItem -Recurse -File build -Filter info.json | Select-Object -First 1
+          if (-not $infoFile) { throw '构建产物里没有 info.json' }
+          $info = Get-Content -LiteralPath $infoFile.FullName -Raw | ConvertFrom-Json
+          $repo = Get-Content -LiteralPath repo.json -Raw | ConvertFrom-Json
+          $asmMatch = Select-String -LiteralPath SpectreReplay/AssemblyInfo.cs -Pattern 'AssemblyInformationalVersion\("([^"]+)"\)' | Select-Object -First 1
+          # 跳过顶部的 [未发布]，只校验第一条已编号版本。
+          $chgMatch = Select-String -LiteralPath CHANGELOG.md -Pattern '^## \[([0-9]+\.[0-9]+\.[0-9]+)\]' | Select-Object -First 1
+          if (-not $asmMatch) { throw 'AssemblyInfo.cs 缺少 AssemblyInformationalVersion' }
+          if (-not $chgMatch) { throw 'CHANGELOG.md 缺少数字版本标题' }
+          $asm = $asmMatch.Matches[0].Groups[1].Value
+          $chg = $chgMatch.Matches[0].Groups[1].Value
           $bad = @()
-          if ($info.version -ne $base) { $bad += "info.json=$($info.version)" }
+          if ($info.Version -ne $base) { $bad += "info.json=$($info.Version)" }
           if ($repo.Releases[0].Version -ne $base) { $bad += "repo.json=$($repo.Releases[0].Version)" }
           if ($asm -ne $base) { $bad += "AssemblyInfo=$asm" }
           if ($chg -ne $base) { $bad += "CHANGELOG=$chg" }
           if ($bad.Count -gt 0) {
-            Write-Error "版本不一致（tag 基础版本 $base）：$($bad -join '; ')"
-            exit 1
+            throw "版本不一致（tag $tag，基础版本 $base）：$($bad -join '; ')"
           }
           Write-Host "[release] ✓ 版本一致：$base"
 

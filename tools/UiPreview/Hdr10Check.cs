@@ -55,8 +55,8 @@ internal static class Hdr10Check
         Check(!enc.Contains("hdr10 && hardware", StringComparison.Ordinal)
             && !enc.Contains("hdr10 && candidate", StringComparison.Ordinal),
             "③ HDR10 判定不与硬件候选/后端耦合（元数据注入只有 x265 已验证）");
-        Check(job.Contains("bool hdr10 = Settings.RenderHdr10", StringComparison.Ordinal)
-            && job.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;", StringComparison.Ordinal),
+        Check(job.Contains("bool hdr10 = options.Hdr10;", StringComparison.Ordinal)
+            && job.Contains("frames.DrawCursor = options.Cursor && !tenBit && !hdr10;", StringComparison.Ordinal),
             "③ 渲染作业传 hdr10 并禁用光标");
         Check(job.Contains("HDR10 需要 CleanCamera", StringComparison.Ordinal),
             "③ WholeScreen 跳过 HDR10 时有日志");

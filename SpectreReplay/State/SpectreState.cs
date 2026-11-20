@@ -731,7 +731,10 @@ public static class SpectreState
 
     // angleOverride：回放推进兜底给出的"收进窗口"角度（ReplayPlayer.AdvanceClampAngle）；
     // 平时为 null = 用录制角度原样重判。
-    public static bool ReplayHit(scrPlayer player, HitSnapshot hitdata, double? angleOverride = null)
+    public static bool ReplayHit(scrPlayer player, HitSnapshot hitdata)
+        => ReplayHit(player, hitdata, null);
+
+    public static bool ReplayHit(scrPlayer player, HitSnapshot hitdata, double? angleOverride)
         => ReplayPlayer.ReplayHit(player, hitdata, angleOverride);
 
     internal static void Play_keybd_event(bool flag)

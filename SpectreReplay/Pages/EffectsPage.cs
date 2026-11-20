@@ -51,8 +51,7 @@ namespace SpectreReplay.Pages
                     Commit();
                     if (!v)
                     {
-                        // 先还原原始谱面，再刷新按钮：还原成功后 LevelDataStripped
-                        // 归零，保存按钮才会真正恢复可用。
+                        // 只还原当前未编辑对象；撤销历史中的去特效副本保留独立保护。
                         EffectRemover.RestoreOriginalLevelData();
                         EffectRemover.RestoreEditorSaveButtons();
                     }

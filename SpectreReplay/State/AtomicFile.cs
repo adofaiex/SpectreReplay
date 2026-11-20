@@ -5,14 +5,15 @@ namespace SpectreReplay
 {
     /// <summary>
     /// 崩溃安全写入：先写同目录临时文件，再用 <see cref="File.Replace(string,string,string)"/>
-    /// 原子替换；旧目标先落到 <c>.bak</c>。
+    /// 原子替换；旧目标先落到 <c>.rolling.bak</c>。
     ///
     /// **为什么不能直接 File.WriteAllText。** 目标文件在写入过程中被截断；进程崩溃、
     /// 断电或磁盘满时留下的是半个 JSON/半个回放，玩家看到的是「配置全丢了」或
     /// 「回放文件损坏」。临时文件 + 替换把「写坏目标」的窗口缩到替换那一步。
     ///
-    /// **为什么保留 .bak。** `File.Replace` 成功时旧目标落到 `.bak`；
-    /// 若替换不可用而走「删旧 + 移动」的回退，回退前会先把旧目标复制成 `.bak`，
+    /// **为什么保留滚动备份。** `.bak` 留给用户主动恢复前的保全副本，常规
+    /// 写盘只能更新 `.rolling.bak`，否则关闭设置窗口就会抹掉恢复前的原配置。
+    /// 若替换不可用而走「删旧 + 移动」的回退，回退前会先把旧目标复制成滚动备份，
     /// 这样移动中途失败时还能把旧内容找回来。
     /// </summary>
     internal static class AtomicFile
@@ -36,7 +37,7 @@ namespace SpectreReplay
 
             Directory.CreateDirectory(dir);
             string tmp = path + ".tmp";
-            string bak = path + ".bak";
+            string bak = path + ".rolling.bak";
 
             write(tmp);
 
@@ -54,9 +55,10 @@ namespace SpectreReplay
             catch
             {
                 // File.Replace 在跨卷/只读目标/旧 Mono 上可能不可用。
-                // 回退到「删旧 + 移动」；先把旧目标复制成 .bak，
+                // 回退到「删旧 + 移动」；先把旧目标复制成滚动备份，
                 // 这样移动中途失败时还能恢复。
-                try { File.Copy(path, bak, true); } catch { }
+                // 保全失败必须中止：此时原目标仍在，不能为了完成本次写入删掉它。
+                File.Copy(path, bak, true);
                 try
                 {
                     File.Delete(path);

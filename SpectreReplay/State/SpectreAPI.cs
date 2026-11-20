@@ -343,8 +343,8 @@ public static class SpectreAPI
     /// </summary>
     public static bool TryStartRender()
     {
-        Features.VideoRender.VideoRender.StartRender();
-        return Features.VideoRender.VideoRender.Active;
+        return Features.VideoRender.VideoRender.TryStartRender(
+            Features.VideoRender.VideoRender.RenderRange.FromTimeline());
     }
 
     /// <summary>请求取消当前渲染（异步生效，终态经 RenderFinished 报告）。仅主线程。</summary>

@@ -27,7 +27,6 @@ namespace SpectreReplay
                 Settings.check(modEntry.Path);
                 WavLoader.reset();
                 Ui.Timeline.TimelineOverlay.Ensure();
-                Ui.ModernSettingsWindow.Ensure();
 
                 // UMM 的设置入口改成打开独立窗口，不再显示旧面板。
                 modEntry.OnGUI = Ui.OnGui.OnUmmOpen;
@@ -75,7 +74,7 @@ namespace SpectreReplay
         /// 会调用它，之后 UMM 还可能再发一次 OnToggle(false)。
         /// 每一步都单独 try：某一步抛异常不能阻断后面的补丁卸载/线程停止。
         /// </summary>
-        private static void Teardown()
+        private static bool Teardown()
         {
             // 关模组等于设置页没了：把拖动期间攒下的改动先写掉
             try { Ui.OnGui.FlushConfig(); }
@@ -98,31 +97,30 @@ namespace SpectreReplay
             try { Features.VideoRender.VideoRender.CancelRender(); }
             catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时取消渲染失败：" + ex.Message); }
 
+            // 原地编辑会阻止快照回滚。必须先把残留谱面的保存保护交接给独立 owner，
+            // 交接失败时保留普通补丁并拒绝禁用，不能只靠禁用按钮挡 Ctrl+S。
+            if (!Features.EffectRemover.EffectRemover.TryPrepareForDisable()) return false;
+            Ui.ModernSettingsWindow.Destroy();
             SpectreState.SetGetKeyAsyncEnabled(false);
-            // 去特效在 Decode 后就地改写了内存谱面。关闭模组前先用原始快照还原，
-            // 否则玩家关掉模组再保存，写回磁盘的是剥过特效的版本。
-            try { Features.EffectRemover.EffectRemover.RestoreOriginalLevelData(); }
-            catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时还原去特效谱面失败：" + ex.Message); }
             SpectrePatchHub.UnpatchAll();
             PatchManager.UnpatchAll();
             Features.VideoRender.HdrProbe.Stop();
             MainThread.Uninstall();
             AudioRecorder.StopAllMicrophones();
             Ui.Timeline.TimelineOverlay.Destroy();
-            Ui.ModernSettingsWindow.Destroy();
             Features.Replay.TimelineController.Clear();
-            // 去特效关闭后，编辑器保存按钮不能停留在禁用态；若内存里仍是
-            // 剥离版，RestoreEditorSaveButtons 会按 LevelDataStripped 保持禁用。
+            // 去特效关闭后按当前 LevelData 与原文件路径刷新保存按钮；若当前对象
+            // 仍被保护，SaveLevel 与 RDFile 写盘入口都会拦截覆盖。
             try { Features.EffectRemover.EffectRemover.RestoreEditorSaveButtons(); }
             catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时恢复编辑器保存按钮失败：" + ex.Message); }
+            return true;
         }
 
         private static bool OnToggle(ModEntry modEntry, bool isToggled)
         {
             if (!isToggled)
             {
-                Teardown();
-                return true;
+                return Teardown();
             }
 
             try
@@ -199,6 +197,7 @@ namespace SpectreReplay
                 SpectreState.PlayActions.SwitchToRecordMode();
 
                 SpectrePatchHub.ShowApplyFailureSummary();
+                Features.EffectRemover.EffectRemover.ResumeAfterEnable();
                 // 挂失败的补丁还要在设置页**常驻**说一句：通知弹一次就没了，
                 // 而玩家往往是"发现某个开关点了没反应"才去翻设置页。
                 Ui.OnGui.PatchFailures = SpectrePatchHub.ApplyFailureCount;
@@ -207,6 +206,8 @@ namespace SpectreReplay
                 // 放在最后一步——它只碰磁盘文件，不依赖任何补丁，失败也只记日志。
                 // 内部自带开关判断与 try/catch，关模组后再开也只会再扫一次缺失。
                 Features.Cloud.CloudReplay.RestoreOnStartup();
+                // 只在装配成功时挂上热键监听；禁用会销毁窗口，下次启用必须重建。
+                Ui.ModernSettingsWindow.Ensure();
                 return true;
             }
             catch (Exception ex)

@@ -1090,7 +1090,9 @@ namespace SpectreReplay.Features.Cloud
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogWarning("[SpectreReplay] 备份本地配置失败（继续覆盖）：" + ex.Message);
+                    error = "backup_failed";
+                    Debug.LogWarning("[SpectreReplay] 备份本地配置失败，已中止云端恢复：" + ex.Message);
+                    return false;
                 }
             }
 

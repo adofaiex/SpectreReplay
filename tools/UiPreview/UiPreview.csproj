@@ -64,6 +64,15 @@
          在闸门里复刻一遍判定公式。走错一步的两种表现都是静默的：不收 → 回放卡死；
          收错 → 判定被篡改。 -->
     <Compile Include="..\..\SpectreReplay\Features\Replay\Runtime\HitAdvanceGuard.cs" Link="Real\HitAdvanceGuard.cs" />
+    <Compile Include="..\..\SpectreReplay\State\AtomicFile.cs" Link="Real\AtomicFile.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\EffectRemover\SnapshotRestoreGuard.cs" Link="Real\SnapshotRestoreGuard.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\EffectRemover\EffectDataSafety.cs" Link="Real\EffectDataSafety.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\EffectRemover\DisabledEffectSaveGuard.cs" Link="Real\DisabledEffectSaveGuard.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\EffectRemover\LevelFileIdentity.cs" Link="Real\LevelFileIdentity.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\VideoRender\Pipeline\RenderOutputPolicy.cs" Link="Real\RenderOutputPolicy.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\VideoRender\Pipeline\RenderEncodingSettings.cs" Link="Real\RenderEncodingSettings.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\VideoRender\Pipeline\VideoEncoder.cs" Link="Real\VideoEncoder.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\VideoRender\Pipeline\EncoderCatalog.cs" Link="Real\EncoderCatalog.cs" />
     <Compile Include="..\..\SpectreReplay\Ui\HitScatterMath.cs" Link="Real\HitScatterMath.cs" />
     <!-- 鼠标指针合成：纯 System（只碰 byte[]），可以在离线闸门里真的画一遍再验像素。
          与 HitScatterMath 同理——逻辑放在不依赖 UnityEngine 的类里，才有机会被“真的算过”。 -->

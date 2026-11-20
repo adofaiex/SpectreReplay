@@ -631,8 +631,8 @@
   },
   {
    "key": "render.hdr10.note",
-   "zh": "HDR10 仅支持 H.265 + CleanCamera；当前选择会被忽略或回退。",
-   "en": "HDR10 requires H.265 + CleanCamera; the current selection will be ignored or fall back."
+   "zh": "HDR10 需要 H.265 + 纯净相机 + MP4/MKV/MOV；当前组合将按 SDR 输出。",
+   "en": "HDR10 requires H.265 + CleanCamera + MP4/MKV/MOV; this combination will output SDR."
   },
   {
    "key": "render.overlay_exclude",
@@ -725,6 +725,31 @@
   "en": "ffmpeg.exe not found; place it in the mod folder or game root, or add it to PATH"
  },
   {
+  "key": "rendervideo.encoder_catalog_unavailable",
+  "zh": "无法读取 FFmpeg 编码器列表，AV1 暂不可用",
+  "en": "Could not load the FFmpeg encoder catalog; AV1 is unavailable"
+ },
+ {
+  "key": "rendervideo.av1_preflight_timeout",
+  "zh": "AV1 硬件编码器预检超时",
+  "en": "AV1 hardware encoder preflight timed out"
+ },
+ {
+  "key": "rendervideo.av1_unavailable",
+  "zh": "未找到可用的 AV1 编码器",
+  "en": "No usable AV1 encoder was found"
+ },
+ {
+  "key": "rendervideo.encoder_prestart_timeout",
+  "zh": "编码器未能在限定时间内启动",
+  "en": "The encoder did not start in time"
+ },
+ {
+  "key": "rendervideo.encoder_prestart_failed",
+  "zh": "编码器启动失败；详情请查看日志",
+  "en": "The encoder failed to start; see the log for details"
+ },
+ {
    "key": "render.codec",
    "zh": "编码器",
    "en": "Encoder"

@@ -37,6 +37,36 @@ internal sealed class VideoEncoder : IDisposable
     // 其余容器沿用 H.264（NVENC 探测可用时）+ AAC。
     internal enum OutContainer { Mp4 = 0, Mkv = 1, WebM = 2, Mov = 3 }
 
+    internal enum PreStartFailureReason
+    {
+        EncoderCatalogUnavailable,
+        HardwarePreflightTimeout,
+        NoAv1Encoder,
+        PreStartWaitTimeout,
+        Generic
+    }
+
+    internal sealed class PreStartException : InvalidOperationException
+    {
+        internal PreStartFailureReason Reason { get; }
+
+        internal PreStartException(PreStartFailureReason reason, string message, Exception inner = null)
+            : base(message, inner)
+            => Reason = reason;
+    }
+
+    internal static PreStartFailureReason ClassifyPreStartFailure(Exception error)
+        => error is PreStartException typed ? typed.Reason : PreStartFailureReason.Generic;
+
+    internal static string PreStartFailureLocalizationKey(PreStartFailureReason reason) => reason switch
+    {
+        PreStartFailureReason.EncoderCatalogUnavailable => "rendervideo.encoder_catalog_unavailable",
+        PreStartFailureReason.HardwarePreflightTimeout => "rendervideo.av1_preflight_timeout",
+        PreStartFailureReason.NoAv1Encoder => "rendervideo.av1_unavailable",
+        PreStartFailureReason.PreStartWaitTimeout => "rendervideo.encoder_prestart_timeout",
+        _ => "rendervideo.encoder_prestart_failed",
+    };
+
     internal static string ExtensionOf(OutContainer c) => c switch
     {
         OutContainer.Mkv => ".mkv",
@@ -54,6 +84,8 @@ internal sealed class VideoEncoder : IDisposable
     }
 
     private const int ProbeRetryMs = 30_000;
+    // 冷目录等待最多 16s，唯一硬件候选再等最多 16s，余量留给进程创建。
+    internal const double PreStartWaitSeconds = 40.0;
     private static readonly object ProbeLock = new object();
     // 异步探测状态：UI 调 DescribeEncoder 时如果还没探测过，先起后台线程，
     // 本帧返回 null（退回软件编码）不让 OnGUI 卡住。探测完后下一帧走缓存。
@@ -90,6 +122,12 @@ internal sealed class VideoEncoder : IDisposable
     private readonly int cqp;
     private readonly int bitrateMbps;
     private readonly int preset;
+    private Codec? selectedCodec;
+    internal bool UsingHardware => selectedCodec.HasValue && IsHardwareCodec(selectedCodec.Value);
+    internal string ActualEncoder => selectedCodec.HasValue ? EncoderName(selectedCodec.Value) : null;
+
+    private static bool IsHardwareCodec(Codec codec)
+        => codec >= Codec.NvencH264 && codec <= Codec.AmfAv1;
 
     private Process pipe;
     private BlockingCollection<PendingFrame> queue;
@@ -125,8 +163,8 @@ internal sealed class VideoEncoder : IDisposable
         this.qualityTier = Math.Max(0, Math.Min(3, qualityTier));
         this.flipRows = flipRows;
         this.container = container;
-        this.bytesPerPixel = (tenBit || hdr10) ? 8 : 4;
-        this.hdr10 = hdr10;
+        this.hdr10 = RenderOutputPolicy.Hdr10Enabled(hdr10, 0, (int)videoCodec, (int)container);
+        this.bytesPerPixel = (tenBit || this.hdr10) ? 8 : 4;
         this.videoCodec = videoCodec;
         this.hardware = hardware;
         this.rateControl = rateControl;
@@ -273,6 +311,12 @@ internal sealed class VideoEncoder : IDisposable
 
     internal void Begin()
     {
+        if (videoCodec == VideoCodec.Av1 && container != OutContainer.WebM
+            && container != OutContainer.Mov && !hdr10 && !EncoderCatalog.WaitUntilLoaded(exePath))
+            throw new PreStartException(PreStartFailureReason.EncoderCatalogUnavailable,
+                "ffmpeg encoder catalog unavailable; cannot select AV1");
+        // 固定本次实际编码器；重试依据这个结果，不能再读会变动的 Settings。
+        selectedCodec = WaitForCodec();
         string args = "-y -f rawvideo -pixel_format " + PixelFormat()
             + " -video_size " + width + "x" + height
             + " -framerate " + fps
@@ -294,6 +338,23 @@ internal sealed class VideoEncoder : IDisposable
             Name = "SpectreReplay.VideoEncoderPipe"
         };
         pump.Start();
+    }
+
+    // 仅在后台预启动等待；硬件 AV1 是唯一候选时，pending 不是「没有软件 AV1」。
+    private Codec WaitForCodec()
+    {
+        var clock = Stopwatch.StartNew();
+        while (true)
+        {
+            try { return ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8, hdr10, exePath); }
+            catch (EncoderPendingException)
+            {
+                if (clock.ElapsedMilliseconds >= 16_000)
+                    throw new PreStartException(PreStartFailureReason.HardwarePreflightTimeout,
+                        "ffmpeg AV1 hardware encoder preflight timed out");
+                Thread.Sleep(10);
+            }
+        }
     }
 
     // 队列满时自旋等待；取消检查交给回调。
@@ -584,19 +645,27 @@ internal sealed class VideoEncoder : IDisposable
     private static int hardwareFallbackLogged;
     private static int movAv1FallbackLogged;
 
+    private sealed class EncoderPendingException : InvalidOperationException
+    {
+        internal EncoderPendingException() : base("ffmpeg AV1 hardware encoder preflight pending") { }
+    }
+
     private static Codec SoftwareCodec(VideoCodec videoCodec, string exe)
     {
         if (videoCodec == VideoCodec.H265) return Codec.X265;
         if (videoCodec == VideoCodec.Av1)
         {
             // AV1 软件优先 SVT（快），退回 libaom（慢但普遍）。
-            // 两个都没有时回 X265，界面会显示 libx265，而不是静默宣称 AV1。
+            // 目录未知不能被解释成「没有 AV1」。Begin 在后台等待，UI 显示待探测。
             if (EncoderCatalog.IsLoaded(exe))
             {
                 if (EncoderCatalog.Supports(exe, "libsvtav1")) return Codec.SvtAv1;
                 if (EncoderCatalog.Supports(exe, "libaom-av1")) return Codec.AomAv1;
             }
-            return Codec.X265;
+            if (!EncoderCatalog.IsLoaded(exe))
+                throw new InvalidOperationException("ffmpeg encoder catalog pending");
+            throw new PreStartException(PreStartFailureReason.NoAv1Encoder,
+                "ffmpeg has no software AV1 encoder (libsvtav1/libaom-av1)");
         }
         return Codec.X264;
     }
@@ -605,19 +674,19 @@ internal sealed class VideoEncoder : IDisposable
     {
         if (videoCodec == VideoCodec.Av1)
         {
-            Codec sw = SoftwareCodec(VideoCodec.Av1, exe);
+            // 软件回退在硬件候选用尽之后才解析；只有硬件 AV1 的 ffmpeg 也可以出片。
             switch (hardware)
             {
                 case HardwareBackend.Cpu:
-                    return new[] { sw };
+                    return Array.Empty<Codec>();
                 case HardwareBackend.Nvenc:
-                    return new[] { Codec.NvencAv1, sw };
+                    return new[] { Codec.NvencAv1 };
                 case HardwareBackend.Qsv:
-                    return new[] { Codec.QsvAv1, sw };
+                    return new[] { Codec.QsvAv1 };
                 case HardwareBackend.Amf:
-                    return new[] { Codec.AmfAv1, sw };
+                    return new[] { Codec.AmfAv1 };
                 default:
-                    return new[] { Codec.NvencAv1, Codec.QsvAv1, Codec.AmfAv1, sw };
+                    return new[] { Codec.NvencAv1, Codec.QsvAv1, Codec.AmfAv1 };
             }
         }
 
@@ -702,6 +771,10 @@ internal sealed class VideoEncoder : IDisposable
 
     private static Codec ResolveCodec(OutContainer container, VideoCodec videoCodec,
         HardwareBackend hardware, bool tenBit, bool hdr10)
+        => ResolveCodec(container, videoCodec, hardware, tenBit, hdr10, LocateEncoder());
+
+    private static Codec ResolveCodec(OutContainer container, VideoCodec videoCodec,
+        HardwareBackend hardware, bool tenBit, bool hdr10, string exe)
     {
         // webm 容器只认 VP8/VP9 + Vorbis/Opus；H.264/H.265 都不能进 WebM。
         if (container == OutContainer.WebM) return Codec.Vp9;
@@ -721,11 +794,10 @@ internal sealed class VideoEncoder : IDisposable
             return Codec.X265;
         }
 
-        string exe = LocateEncoder();
-        Codec software = SoftwareCodec(videoCodec, exe);
+        bool pending = false;
         foreach (Codec candidate in Candidates(videoCodec, hardware, exe))
         {
-            // 软件编码永远可用；硬件候选失败时最终落在这里。
+            // H.264/H.265 的候选链以软件结尾；AV1 的软件目录在链外按需解析。
             if (candidate == Codec.X264 || candidate == Codec.X265
                 || candidate == Codec.SvtAv1 || candidate == Codec.AomAv1)
                 return candidate;
@@ -749,21 +821,38 @@ internal sealed class VideoEncoder : IDisposable
             {
                 Debug.LogWarning("[SpectreReplay] 硬件后端 " + hardware + " 不可用，回退软件编码。");
             }
-            // 目录/探测还没准备好：本轮先用软件，探测完成后下一帧自动走硬件。
-            if (state < 0)
-                return software;
+            // 不让第一个 pending 候选遮住后面已验证的硬件；有软件时仍可立即回退。
+            if (state < 0) pending = true;
         }
-        return software;
+        try { return SoftwareCodec(videoCodec, exe); }
+        catch (InvalidOperationException) when (pending)
+        {
+            throw new EncoderPendingException();
+        }
     }
 
     private Codec PickCodec(OutContainer container)
-        => ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8, hdr10);
+        => selectedCodec ?? ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8, hdr10);
 
     internal static string DescribeEncoder(OutContainer container,
         VideoCodec videoCodec = VideoCodec.H264, HardwareBackend hardware = HardwareBackend.Auto,
         bool tenBit = false, bool hdr10 = false)
     {
-        switch (ResolveCodec(container, videoCodec, hardware, tenBit, hdr10))
+        if (videoCodec == VideoCodec.Av1 && container != OutContainer.WebM
+            && container != OutContainer.Mov && !hdr10)
+        {
+            string exe = LocateEncoder();
+            if (!EncoderCatalog.IsLoaded(exe))
+            {
+                EncoderCatalog.EnsureLoaded(exe);
+                return "…";
+            }
+        }
+        Codec resolved;
+        try { resolved = ResolveCodec(container, videoCodec, hardware, tenBit, hdr10); }
+        catch (EncoderPendingException) { return "…"; }
+        catch (InvalidOperationException) { return "AV1 (—)"; }
+        switch (resolved)
         {
             case Codec.Vp9: return "libvpx-vp9 (CPU)";
             case Codec.NvencH265: return "hevc_nvenc (GPU)";
@@ -966,7 +1055,9 @@ internal sealed class VideoEncoder : IDisposable
             case RateControlMode.Crf:
                 return "-global_quality " + crf;
             case RateControlMode.Cqp:
-                return "-global_quality " + cqp;
+                // QSV CQP 在内部把 global_quality 除以 FF_QP2LAMBDA；-q:v 由
+                // ffmpeg CLI 做正确缩放，不能直接把 0..51 塞进 global_quality。
+                return "-flags +qscale -q:v " + cqp;
             case RateControlMode.Cbr:
                 return "-b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
             default:
@@ -974,18 +1065,24 @@ internal sealed class VideoEncoder : IDisposable
         }
     }
 
-    /// <summary>AMF 目前只保证 ABR/CBR；CRF/CQP 回 ABR，避免传它不认的私有选项。</summary>
+    /// <summary>AMF 的 CQP 显式使用各帧 QP；没有 CRF，按同值 CQP 映射并在 UI 提示。</summary>
     private string BuildAmfRateControl()
     {
         int target = TargetBitrateMbps();
         int ceiling = target * 3 / 2;
         int bucket = target * 2;
+        if (rateControl == RateControlMode.Cqp || rateControl == RateControlMode.Crf)
+        {
+            int qp = rateControl == RateControlMode.Cqp ? cqp : crf;
+            return "-rc cqp -qp_i " + qp + " -qp_p " + qp
+                + (videoCodec == VideoCodec.H264 ? " -qp_b " + qp : "");
+        }
         if (rateControl == RateControlMode.Cbr)
             return "-b:v " + target + "M -maxrate " + target + "M -bufsize " + bucket + "M";
         return "-b:v " + target + "M -maxrate " + ceiling + "M -bufsize " + bucket + "M";
     }
 
-    /// <summary>SVT-AV1：CRF/CQP 用 -crf；ABR/CBR 只能用 -b:v（不接受 -maxrate）。</summary>
+    /// <summary>SVT-AV1：CRF 用 -crf，CQP 用 -qp 关闭自适应量化。</summary>
     private string BuildSvtRateControl()
     {
         int target = TargetBitrateMbps();
@@ -995,7 +1092,7 @@ internal sealed class VideoEncoder : IDisposable
             case RateControlMode.Crf:
                 return "-crf " + crf;
             case RateControlMode.Cqp:
-                return "-crf " + cqp;
+                return cqp == 0 ? "-svtav1-params rc=0:aq-mode=0:qp=0" : "-qp " + cqp;
             case RateControlMode.Cbr:
                 // libsvtav1 不接受 -maxrate（实测 exit -22 Could not open encoder）。
                 // SVT 没有可用的 CBR 模式：-svtav1-params rc=2 同样被拒。

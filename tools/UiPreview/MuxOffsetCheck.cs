@@ -83,7 +83,7 @@ namespace UiPreview
             //    这是 MUT-MUX2 钉的那条 —— 跟随分支读成 0 时，全新会话的渲染
             //    拿到 0 偏移，用户校准原样烧进成片，退回修复前。
             Expect(Has(job,
-                    @"muxAudioOffsetSec = Settings\.RenderAudioOffsetMs < 0\s*\?\s*\(double\)scrConductor\.calibration_i\s*:\s*Settings\.RenderAudioOffsetMs / 1000\.0;"),
+                    @"muxAudioOffsetSec = options\.AudioOffsetMs < 0\s*\?\s*\(double\)scrConductor\.calibration_i\s*:\s*options\.AudioOffsetMs / 1000\.0;"),
                 "⑤ 偏移快照没有「-1 跟随校准」语义 —— 跟随分支断了，校准被静默丢成 0");
             Expect(job.Contains("private double muxAudioOffsetSec;"),
                 "⑤b 偏移快照字段没了 —— 快照被搬回工作线程或就地读取");

@@ -186,7 +186,8 @@ namespace SpectreReplay.Pages
                     OnGui.Note("render.10bit.screen_note");
                 OnGui.Row("render.hdr10", RenderHdr10,
                     v => { RenderHdr10 = v; Commit(); });
-                if (RenderHdr10 && (RenderVideoCodec != 1 || RenderCaptureMode != 0))
+                if (RenderHdr10 && !RenderOutputPolicy.Hdr10Enabled(
+                        true, RenderCaptureMode, RenderVideoCodec, RenderOutputFormat))
                     OnGui.Note("render.hdr10.note");
 
                 // 组件类型排除：不手填 GameObject 名；空表 = 自动接管。
@@ -291,12 +292,16 @@ namespace SpectreReplay.Pages
             try
             {
                 var container = (VideoEncoder.OutContainer)Mathf.Clamp(RenderOutputFormat, 0, 3);
-                string name = VideoEncoder.DescribeEncoder(
+                bool hdr10 = RenderOutputPolicy.Hdr10Enabled(
+                    RenderHdr10, RenderCaptureMode, RenderVideoCodec, RenderOutputFormat);
+                string name = Features.VideoRender.VideoRender.Job?.ActualEncoder ?? VideoEncoder.DescribeEncoder(
                     container,
                     (VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 2),
                     (VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4),
-                    Render10Bit, RenderHdr10);
+                    Render10Bit || hdr10, hdr10);
                 Gui.KeyValue("render.codec.current", name, Gui.DimCol);
+                if (name.Contains("amf", StringComparison.Ordinal) && RenderRateControl == 1)
+                    Gui.KeyValue("render.rate_control", "CRF → CQP", Gui.DimCol);
                 // 回退原因必须可见：玩家选了 AV1/MOV、或选了 QSV 但落到软件，
                 // 只显示 libx264/libx265 会让人以为设置没生效。
                 if (container == VideoEncoder.OutContainer.Mov && RenderVideoCodec == 2)

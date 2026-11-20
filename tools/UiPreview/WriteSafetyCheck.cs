@@ -27,8 +27,8 @@ internal static class WriteSafetyCheck
         Check(atomic.Contains("File.Replace(tmp, path, bak);", StringComparison.Ordinal),
             "① 原子写入使用 File.Replace");
         Check(atomic.Contains("string tmp = path + \".tmp\";", StringComparison.Ordinal)
-            && atomic.Contains("string bak = path + \".bak\";", StringComparison.Ordinal),
-            "① 有临时文件与 .bak 备份");
+            && atomic.Contains("string bak = path + \".rolling.bak\";", StringComparison.Ordinal),
+            "① 有临时文件与独立滚动备份");
         Check(atomic.Contains("File.Delete(path);", StringComparison.Ordinal)
             && atomic.Contains("File.Move(tmp, path);", StringComparison.Ordinal),
             "① 有删除+移动的回退路径");
@@ -39,14 +39,14 @@ internal static class WriteSafetyCheck
         Check(cloud.Contains("AtomicFile.WriteAllBytes(localPath", StringComparison.Ordinal)
             && !System.Text.RegularExpressions.Regex.IsMatch(cloud, @"(?<!Atomic)File\.WriteAllBytes\(localPath"),
             "② 云恢复本地落盘走原子写入");
-        Check(main.Contains("private static void Teardown()", StringComparison.Ordinal),
+        Check(main.Contains("private static bool Teardown()", StringComparison.Ordinal),
             "③ 有统一收尾方法");
         Check(main.Contains("SpectrePatchHub.UnpatchAll();", StringComparison.Ordinal)
             && main.Contains("PatchManager.UnpatchAll();", StringComparison.Ordinal)
             && main.Contains("MainThread.Uninstall();", StringComparison.Ordinal),
             "③ 收尾卸载补丁与线程");
-        Check(main.Contains("Features.EffectRemover.EffectRemover.RestoreOriginalLevelData();", StringComparison.Ordinal),
-            "③ 收尾还原去特效谱面");
+        Check(main.Contains("if (!Features.EffectRemover.EffectRemover.TryPrepareForDisable()) return false;", StringComparison.Ordinal),
+            "③ 收尾还原去特效谱面或保留保存保护");
         Check(settings.Contains("Enum.IsDefined(typeof(KeyCode)", StringComparison.Ordinal),
             "④ 热键配置做 Enum.IsDefined 校验");
         Check(compression.Contains("MaxDecompressed / (1024 * 1024)", StringComparison.Ordinal)

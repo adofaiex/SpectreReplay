@@ -50,10 +50,10 @@ internal static class TenBitCheck
         Check(enc.Contains("bool h264Hw = candidate == Codec.NvencH264 || candidate == Codec.QsvH264 || candidate == Codec.AmfH264;", StringComparison.Ordinal)
             && enc.Contains("if (tenBit && h264Hw)", StringComparison.Ordinal),
             "② H.264 硬件三档（nvenc/qsv/amf）无 10-bit 输入，10-bit 时整排跳过");
-        Check(job.Contains("bool tenBit = Settings.Render10Bit || hdr10;", StringComparison.Ordinal)
-            && job.Contains("Settings.RenderHeight, tenBit, hdr10)", StringComparison.Ordinal),
+        Check(job.Contains("bool tenBit = options.TenBit;", StringComparison.Ordinal)
+            && job.Contains("options.Height, tenBit, hdr10)", StringComparison.Ordinal),
             "③ 渲染作业把 tenBit 传给帧源");
-        Check(job.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;", StringComparison.Ordinal),
+        Check(job.Contains("frames.DrawCursor = options.Cursor && !tenBit && !hdr10;", StringComparison.Ordinal),
             "③ 10-bit/HDR10 模式禁用光标叠加");
 
         Console.WriteLine($"  10-bit SDR：{total} 条，失败 {failed}");

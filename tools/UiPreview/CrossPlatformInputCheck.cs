@@ -373,12 +373,15 @@ namespace UiPreview
                 "⑬b 泵没有调 AdvanceClampAngle —— 重判拒绝的一击会让回放永久卡在那一砖");
             Expect(Has(playback, @"ReplayHit\(__instance\.playerOne, hc,\s+ReplayPlayer\.AdvanceClampAngle"),
                 "⑬b 兜底角度没有交给 ReplayHit —— 算完丢掉，卡死照旧");
-            Expect(Has(playback, @"hitSnapshots\[PlayIndex \+ 1\]\.CurrentFloorID > hc\.CurrentFloorID"),
-                "⑬b 兜底没按「下一条快照在当前砖之后」认定录制推进过 —— 会去改本来就不推进的击（多按/漏拍）的角度，判定被篡改");
+            Expect(Has(playback, @"HitAdvanceGuard\.ProvesAdvance\(hc\.CurrentFloorID,[\s\S]*?hitSnapshots\[PlayIndex \+ 1\]\.CurrentFloorID[\s\S]*?data\.EndTile\)"),
+                "⑬b 兜底必须由下一张快照或末击的EndTile证明推进");
             // 自由漫游段里 SwitchChosen 走的是落点选择分支（scrPlanet.cs:659-682），
             // 角度只用来 snap 选砖、不参与判定。兜底必须跳过，否则行星会被挪到别的
             // 方向、落点选错——这是比"卡死"更糟的静默篡改（2026-11-19 复核补）。
-            Expect(Has(player, @"!\s*controller\.gameworld"),
+            int clampStart = player.IndexOf("internal static double? AdvanceClampAngle(", StringComparison.Ordinal);
+            int clampEnd = player.IndexOf("internal static void ReportAdvanceStall(", StringComparison.Ordinal);
+            Expect(clampStart >= 0 && clampEnd > clampStart
+                && Has(player.Substring(clampStart, clampEnd - clampStart), @"!\s*controller\.gameworld"),
                 "⑬b 兜底没排除自由漫游段 —— gameworld=false 时角度只用于选落点，收角度会把行星挪到别的砖");
             // ⑫a 的就绪判据现在在 CurrentSongPosition 里（PumpInput 已不再自行算时钟）。
 

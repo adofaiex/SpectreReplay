@@ -173,6 +173,22 @@ function Cleanup() {
     }
 }
 
+# 对方法内第一处锚点做替换，避免多个码控分支有同样返回语句时改错分支。
+function ReplaceAfter([string]$rel, [string]$anchor, [string]$old, [string]$new) {
+    $ls = Lines $rel
+    $hits = @()
+    for ($i = 0; $i -lt $ls.Count; $i++) { if ($ls[$i].Contains($anchor)) { $hits += $i } }
+    if ($hits.Count -ne 1) { throw "$rel 中方法锚点 '$anchor' 命中 $($hits.Count) 次" }
+    for ($i = $hits[0] + 1; $i -lt [Math]::Min($ls.Count, $hits[0] + 80); $i++) {
+        if ($ls[$i].Contains($old)) {
+            $ls[$i] = $ls[$i].Replace($old, $new)
+            SetLines $rel $ls
+            return
+        }
+    }
+    throw "$rel 的 '$anchor' 后找不到 '$old'"
+}
+
 trap {
     Cleanup
     Write-Host ("变异失败并已还原：" + $_.Exception.Message) -ForegroundColor Red
@@ -1234,6 +1250,17 @@ switch ($Which) {
         Backup 'Ui\HitScatter.cs'
         ReplaceExact 'Ui\HitScatter.cs' ('                && _builtFingerprint == fingerprint)') ('                )')
     }
+    'MUT-U143' {
+        # ⑬c19：退回只在 Load 创建监听；禁用销毁后再启用，热键无人轮询。
+        Backup 'Main.cs'
+        ReplaceExact 'Main.cs' '                Ui.ModernSettingsWindow.Ensure();' ''
+        ReplaceExact 'Main.cs' '                WavLoader.reset();' ('                WavLoader.reset();' + "`n" + '                Ui.ModernSettingsWindow.Ensure();')
+    }
+    'MUT-U144' {
+        # ⑬c20：退回延迟 OnDestroy 无条件清理共享输入挡板，快速重开会误伤新窗口。
+        Backup 'Ui\ModernSettingsWindow.cs'
+        ReplaceExact 'Ui\ModernSettingsWindow.cs' '            if (_instance == this) ResetWindowState();' ('            if (_instance == this) ResetWindowState();' + "`n" + '            UiInputBlock.Destroy();')
+    }
     'MUT-U136' {
         # 回放推进兜底退化成"从不收角度"：重判拒绝的那一击照样不推进砖块，
         # 泵的条件「当前砖 == 快照砖」再也不成立 → 回放永久卡死（2026-11-19
@@ -2190,7 +2217,7 @@ switch ($Which) {
         #      **只改这一条**：LoadGameScene 那条仍是常开，只数「文件里有没有 Feature」
         #      的假判据会绿。
         Backup 'Features\EffectRemover\Patch_EffectRemover.cs'
-        ReplaceExact 'Features\EffectRemover\Patch_EffectRemover.cs' '[SpectrePatch(typeof(SaveLevelEditorAction), "Execute", PatchType.Prefix)]' '[SpectrePatch(typeof(SaveLevelEditorAction), "Execute", PatchType.Prefix, Feature = FeatureKeys.EffectRemover)]'
+        ReplaceExact 'Features\EffectRemover\Patch_EffectRemover.cs' '[SpectrePatch(typeof(scnEditor), "SaveLevel", PatchType.Prefix, TryingCatch = false)]' '[SpectrePatch(typeof(scnEditor), "SaveLevel", PatchType.Prefix, TryingCatch = false, Feature = FeatureKeys.EffectRemover)]'
     }
     'MUT-CR1' {
         # ③ 确定性回归：把 salt 与 IV 两个随机源都固定 = 退回旧格式那个缺陷。
@@ -2398,7 +2425,7 @@ switch ($Which) {
         # ㉛ 开关没有通到画帧的地方：渲染作业不再把设置交给画面源，改成恒 true。
         # 这时界面上关掉指针，成片里照样有——开关是假的。
         Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'frames.DrawCursor = Settings.RenderCursorOn;' 'frames.DrawCursor = true;'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'frames.DrawCursor = options.Cursor && !tenBit && !hdr10;' 'frames.DrawCursor = true;'
     }
 
     'MUT-D28' {
@@ -3117,7 +3144,7 @@ switch ($Which) {
     'MUT-AV1-3' {
         # 2A-3 回归：AV1 候选链分支失效，AV1 落到 H.264/H.265 候选。
         Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'Codec sw = SoftwareCodec(VideoCodec.Av1, exe);' 'Codec sw = SoftwareCodec(VideoCodec.H264, exe);'
+        ReplaceAfter 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'private static Codec[] Candidates(' 'if (videoCodec == VideoCodec.Av1)' 'if (videoCodec == VideoCodec.H264)'
     }
     'MUT-AV1-4' {
         # 2A-3 回归：MOV + AV1 不再回退 H.265。
@@ -3154,7 +3181,7 @@ switch ($Which) {
         # 2A-1 迁移幂等回归：去掉「没有 render_hardware 键」判断。
         # 玩家已选 NVENC，旧 render_encoder=3 仍会被改回 CPU。
         Backup 'State\ConfigManager.cs'
-        ReplaceExact 'State\ConfigManager.cs' 'rawHardware == null && rawEncoder == 3' 'rawEncoder == 3'
+        ReplaceExact 'State\ConfigManager.cs' 'if (rawHardware == null && rawEncoder == 3)' 'if (rawEncoder == 3)'
     }
     'MUT-HW2' {
         # 2A-1 迁移语义回归：旧 render_encoder=3 不映射成 CPU 后端，
@@ -3178,7 +3205,7 @@ switch ($Which) {
         # 2A-2 回归：EncoderStateFor 不再检查目录是否加载。
         # 目录未就绪时会直接进入 Supports，首次渲染可能误判硬件不可用。
         Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'if (!EncoderCatalog.IsLoaded(exe))' 'if (false)'
+        ReplaceAfter 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'private static int EncoderStateFor(' 'if (!EncoderCatalog.IsLoaded(exe))' 'if (false)'
     }
     'MUT-HW6' {
         # 2A-2 回归：Supports 不再按清单匹配，任何编码器都被认为可用。
@@ -3190,12 +3217,12 @@ switch ($Which) {
         # 去特效应答安全回归：有快照但还原时不重新 Decode。关闭功能后
         # 内存里仍是剥过的谱面，保存按钮恢复可用 -> 原谱被覆盖。
         Backup 'Features\EffectRemover\EffectRemover.cs'
-        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' 'data.Decode(dict, out _);' ''
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' '                data.Decode(dict, out LoadResult status);' '                throw new InvalidOperationException("mutated restore");'
     }
     'MUT-EF2' {
         # 关闭模组时不还原去特效谱面。玩家退出模组再保存，写回的是剥过特效的版本。
         Backup 'Main.cs'
-        ReplaceExact 'Main.cs' 'Features.EffectRemover.EffectRemover.RestoreOriginalLevelData();' ''
+        ReplaceExact 'Main.cs' '            if (!Features.EffectRemover.EffectRemover.TryPrepareForDisable()) return false;' ''
     }
     'MUT-WS1' {
         # 写入安全回归：配置保存退回直接 WriteAllText。崩溃/断电会留下
@@ -3289,7 +3316,7 @@ switch ($Which) {
     'MUT-10B2' {
         # 2B-1 回归：帧字节固定 4，8 字节缓冲会被截断/写坏。
         Backup 'Features\VideoRender\Pipeline\VideoFrameSource.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoFrameSource.cs' 'bytesPerPixel = tenBit ? 8 : 4;' 'bytesPerPixel = 4;'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoFrameSource.cs' 'bytesPerPixel = (tenBit || hdr10) ? 8 : 4;' 'bytesPerPixel = 4;'
     }
     'MUT-10B3' {
         # 2B-1 回归：采集纹理退回 ARGB32，10-bit 链路失效。
@@ -3330,7 +3357,7 @@ switch ($Which) {
     'MUT-HDR10-4' {
         # 2B-2 回归：WholeScreen 跳过 HDR10 时不再打日志，静默按 SDR。
         Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'HDR10 需要 CleanCamera，本次按 SDR 渲染。' ''
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'HDR10 需要 CleanCamera、H.265 和 MP4/MKV/MOV，本次按 SDR 渲染。' ''
     }
     'MUT-OVL1' {
         # 2D 回归：IsExcluded 永远 false，排除表失效。
@@ -3387,6 +3414,318 @@ switch ($Which) {
         # VersionBaselineCheck 必须变红。
         Backup 'repo:SpectreReplay\info.json'
         ReplaceExact 'repo:SpectreReplay\info.json' '  "GameVersion": "3.4.0",' '  "GameVersion": "3.3.1",'
+    }
+    'MUT-RV01' {
+        # 恢复前保全副本被下一次常规保存覆盖。
+        Backup 'State\AtomicFile.cs'
+        ReplaceExact 'State\AtomicFile.cs' 'string bak = path + ".rolling.bak";' 'string bak = path + ".bak";'
+    }
+    'MUT-RV02' {
+        Backup 'State\AtomicFile.cs'
+        ReplaceExact 'State\AtomicFile.cs' '                File.Copy(path, bak, true);' '                try { File.Copy(path, bak, true); } catch { }'
+    }
+    'MUT-RV03' {
+        Backup 'Features\EffectRemover\SnapshotRestoreGuard.cs'
+        ReplaceExact 'Features\EffectRemover\SnapshotRestoreGuard.cs' '&& string.Equals(strippedSnapshot, current, StringComparison.Ordinal);' '&& current != null;'
+    }
+    'MUT-RV04' {
+        Backup 'Features\Cloud\CloudReplay.cs'
+        ReplaceAfter 'Features\Cloud\CloudReplay.cs' 'error = "backup_failed";' 'return false;' 'return true;'
+    }
+    'MUT-RV05' {
+        Backup 'Features\VideoRender\Pipeline\RenderOutputPolicy.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\RenderOutputPolicy.cs' '&& container != 2;' ';'
+    }
+    'MUT-RV06' {
+        Backup 'Features\VideoRender\Pipeline\RenderOutputPolicy.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\RenderOutputPolicy.cs' '=> inFlight == 0 && delivered == captured;' '=> inFlight == 0;'
+    }
+    'MUT-RV07' {
+        Backup 'Features\VideoRender\Pipeline\RenderOutputPolicy.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\RenderOutputPolicy.cs' '&& (start > 0.01 || end < duration - 0.01)' ''
+    }
+    'MUT-RV08' {
+        Backup 'Features\Replay\Runtime\HitAdvanceGuard.cs'
+        ReplaceExact 'Features\Replay\Runtime\HitAdvanceGuard.cs' ': endTile.HasValue && endTile.Value > currentFloor;' ': false;'
+    }
+    'MUT-RV09' {
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'throw new InvalidOperationException("ffmpeg encoder catalog pending");' 'return Codec.X265;'
+    }
+    'MUT-RV10' {
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'return "-flags +qscale -q:v " + cqp;' 'return "-global_quality " + cqp;'
+    }
+    'MUT-RV11' {
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceAfter 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'private string BuildSvtRateControl()' 'return cqp == 0 ? "-svtav1-params rc=0:aq-mode=0:qp=0" : "-qp " + cqp;' 'return "-crf " + cqp;'
+    }
+    'MUT-RV12' {
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'int qp = rateControl == RateControlMode.Cqp ? cqp : crf;' 'int qp = 23;'
+    }
+    'MUT-RV13' {
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' 'selectedCodec.HasValue && IsHardwareCodec(selectedCodec.Value)' 'hardware != HardwareBackend.Cpu'
+    }
+    'MUT-RV14' {
+        # 快照退回读取可变的全局宽度。
+        Backup 'Features\VideoRender\Pipeline\RenderEncodingSettings.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\RenderEncodingSettings.cs' 'Surface, Width, Height' 'Surface, Height'
+        ReplaceExact 'Features\VideoRender\Pipeline\RenderEncodingSettings.cs' 'internal int? StartFloor;' 'internal int? StartFloor; internal int Width => Settings.RenderWidth;'
+        ReplaceExact 'Features\VideoRender\Pipeline\RenderEncodingSettings.cs' '        Width = Settings.RenderWidth;' ''
+    }
+    'MUT-RV15' {
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '        finalizingReplay = true;' '        finalizingReplay = true; consumeReplay = true;'
+    }
+    'MUT-RV16' {
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '            scrController.instance.Restart();' ''
+    }
+    'MUT-RV17' {
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'requestedStartFloor = options.StartFloor ?? ResolveRequestedStartFloor();' 'requestedStartFloor = ResolveRequestedStartFloor();'
+    }
+    'MUT-RV18' {
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'if (!RenderOutputPolicy.DrainComplete(frames.InFlight, delivered, frameIndex))' 'if (false)'
+    }
+    'MUT-RV19' {
+        Backup 'Features\VideoRender\Pipeline\VideoRender.cs'
+        ReplaceAfter 'Features\VideoRender\Pipeline\VideoRender.cs' 'internal static bool TryStartRender(RenderRange range)' 'if (Job != null) return false;' 'if (Job != null) { CpuRetryUsed = false; return false; }'
+    }
+    'MUT-RV20' {
+        Backup 'Ui\OnGui.cs'
+        ReplaceExact 'Ui\OnGui.cs' '            _fieldCommitters[labelKey] = onCommit;' ''
+    }
+    'MUT-RV21' {
+        Backup 'State\SpectreState.cs'
+        ReplaceExact 'State\SpectreState.cs' 'public static bool ReplayHit(scrPlayer player, HitSnapshot hitdata)' 'public static bool ReplayHitLegacy(scrPlayer player, HitSnapshot hitdata)'
+    }
+    'MUT-RV22' {
+        Backup 'Features\Replay\Patches\Patch_Playback.cs'
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' '                    data.EndTile);' '                    null);'
+    }
+    'MUT-RV23' {
+        Backup 'Pages\Pages.cs'
+        ReplaceExact 'Pages\Pages.cs' 'Render10Bit || hdr10, hdr10);' 'Render10Bit, RenderHdr10);'
+    }
+    'MUT-RV24' {
+        Backup 'State\ConfigManager.cs'
+        ReplaceExact 'State\ConfigManager.cs' '                        Settings.RenderPreset = 3;' '                        Settings.RenderPreset = 0;'
+    }
+    'MUT-RV25' {
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '&& encoder.UsingHardware' '&& Settings.RenderHardware != 4'
+    }
+    'MUT-RV26' {
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '                message, options);' '                message, null);'
+    }
+    'MUT-RV27' {
+        # R04：只留备份失败检查却不真正创建云恢复保全副本。
+        Backup 'Features\Cloud\CloudReplay.cs'
+        ReplaceAfter 'Features\Cloud\CloudReplay.cs' 'internal static bool RestoreConfigManual(' '                    File.Copy(localPath, localPath + ".bak", true);' ''
+    }
+    'MUT-RV28' {
+        # R17：首次作业不记住选砖起点，重试读到失败后的现场。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '        options.StartFloor = requestedStartFloor;' ''
+    }
+    'MUT-RV29' {
+        # R18：缺尾帧虽报错但不退出，继续合成缺尾成片。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceAfter 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'if (!RenderOutputPolicy.DrainComplete(frames.InFlight, delivered, frameIndex))' '            yield break;' ''
+    }
+    'MUT-RV30' {
+        # R25：未还原的谱面随 Mod 卸载失去 Ctrl+S 保护。
+        Backup 'Features\EffectRemover\EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' '            if (HasProtectedEditorData()) DisabledEffectSaveGuard.Install();' ''
+    }
+    'MUT-RV31' {
+        # R26：独立保护只有日志，保存动作实际仍被执行。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceAfter 'Features\EffectRemover\DisabledEffectSaveGuard.cs' 'private static bool SavePrefix(' '        return EffectRemover.OnSaveLevelPrefix(__instance);' '        return true;'
+    }
+    'MUT-RV32' {
+        # R26：Decode 失败也算作重新载入，误解除保护。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '        if (!__result) return;' ''
+    }
+    'MUT-RV33' {
+        # R26：重载后不拆临时 owner，保存保护永久残留。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '                ReleaseFrom(harmonyType, hooks);' ''
+    }
+    'MUT-RV34' {
+        # R28：在选硬件前强求软件 AV1，硬件专用 FFmpeg 被拒绝。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '        bool pending = false;' '        bool pending = false; SoftwareCodec(videoCodec, exe);'
+    }
+    'MUT-RV35' {
+        # R29：硬件 pending 被误报成缺软件 AV1，无法等待后台预探测。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '            throw new EncoderPendingException();' '            throw new InvalidOperationException("software AV1 unavailable");'
+    }
+    'MUT-RV36' {
+        # R29：预启动不等待硬件唯一候选，pending 直接导致本次作业失败。
+        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' '        selectedCodec = WaitForCodec();' '        selectedCodec = ResolveCodec(container, videoCodec, hardware, bytesPerPixel == 8, hdr10, exePath);'
+    }
+    'MUT-RV37' {
+        # R30：原始异常消息重新暴露在玩家提示中。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '            NotifyFailed(SpectreReplay.Ui.Loc.T(VideoEncoder.PreStartFailureLocalizationKey(reason)));' '            NotifyFailed(_encoderPreStartError.Message);'
+    }
+    'MUT-RV57' {
+        # R30：尺寸变化后的编码器重建异常重新暴露原始英文消息。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' '                if (failure is VideoEncoder.PreStartException)' '                if (false)'
+    }
+    'MUT-RV58' {
+        # R30：仅在尺寸变化重建时，把已分类的异常重新包装成 Generic。
+        $job = 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        Backup $job
+        ReplaceExact $job 'when (ex is not VideoEncoder.PreStartException && ex is not OperationCanceledException)' 'when (ex is not OperationCanceledException)'
+    }
+    'MUT-RV59' {
+        # R30：仅在尺寸变化重建时，未分类异常重新裸抛给 Drive。
+        $job = 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        Backup $job
+        ReplaceExact $job '                throw new VideoEncoder.PreStartException(' '                throw;'
+        ReplaceExact $job '                    VideoEncoder.PreStartFailureReason.Generic,' ''
+        ReplaceExact $job '                    "encoder prestart failed after capture resize", ex);' ''
+    }
+    'MUT-RV38' {
+        # R27：重启 Mod 仅确认 Decode 而不是保存保护已挂好，就释放临时保护。
+        Backup 'Features\EffectRemover\EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' 'IsApplied(typeof(Patch_EffectDataSafety))' 'IsApplied(typeof(Patch_LevelDataDecode))'
+    }
+    'MUT-RV39' {
+        # R31：没有记录谱面的源文件，最终入口无法区分原路径和另存路径。
+        Backup 'Features\EffectRemover\Patch_EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\Patch_EffectRemover.cs' '        => EffectRemover.OnLevelLoaded(__instance.levelData, levelPath, __result);' '        => EffectRemover.Safety.MarkClean(__instance.levelData);'
+    }
+    'MUT-RV40' {
+        # R29：冷目录与硬件唯一候选累计可等 32s，作业却在 20s 提前判失败。
+        Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'prestartWait.Elapsed.TotalSeconds < VideoEncoder.PreStartWaitSeconds' 'prestartWait.Elapsed.TotalSeconds < 20.0'
+    }
+    'MUT-RV41' {
+        # R31：只拦 Ctrl+S action，最终 SaveLevel 入口没有保护，另存为可覆盖原谱。
+        Backup 'Features\EffectRemover\Patch_EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\Patch_EffectRemover.cs' '[SpectrePatch(typeof(scnEditor), "SaveLevel", PatchType.Prefix, TryingCatch = false)]' '[SpectrePatch(typeof(scnEditor), "SaveLevel_DISABLED", PatchType.Prefix, TryingCatch = false)]'
+    }
+    'MUT-RV42' {
+        # R33：字面原路径本身也要保护，即使文件已不存在。
+        Backup 'Features\EffectRemover\EffectDataSafety.cs'
+        ReplaceExact 'Features\EffectRemover\EffectDataSafety.cs' '            if (string.Equals(fullTarget, snapshot.SourcePath, comparison)) return false;' ''
+    }
+    'MUT-RV43' {
+        # R32：禁用前仍只看快照旧对象，撤销/重做切换对象会解除当前保护。
+        Backup 'Features\EffectRemover\EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' '        LevelData data = CurrentLevelData;' '        LevelData data = null;'
+    }
+    'MUT-RV44' {
+        # R32：对象快照复制断开，Undo/Redo 副本失去去特效标记。
+        Backup 'Features\EffectRemover\Patch_EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\Patch_EffectRemover.cs' '        => EffectRemover.Safety.Copy(__instance, __result);' '        => EffectRemover.Safety.MarkClean(__result);'
+    }
+    'MUT-RV45' {
+        # R31：最终 RDFile 写盘入口未接保护，导出/上传仍可覆盖原谱。
+        Backup 'Features\EffectRemover\Patch_EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\Patch_EffectRemover.cs' '[SpectrePatch(typeof(RDFile), "WriteAllText", PatchType.Prefix, ParameterTypes = new[] { typeof(string), typeof(string), typeof(Encoding) })]' '[SpectrePatch(typeof(RDFile), "WriteAllText_DISABLED", PatchType.Prefix, ParameterTypes = new[] { typeof(string), typeof(string), typeof(Encoding) })]'
+    }
+    'MUT-RV46' {
+        # R32：只扫描撤销栈，干净当前对象和撤销栈掩盖重做栈中的受保护副本。
+        Backup 'Features\EffectRemover\EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' '        foreach (var state in editor.redoStates)' '        foreach (var state in editor.undoStates)'
+    }
+    'MUT-RV47' {
+        # R35：只保护载入时的文件，不保护现在占据原路径的文件的别名。
+        Backup 'Features\EffectRemover\EffectDataSafety.cs'
+        ReplaceExact 'Features\EffectRemover\EffectDataSafety.cs' ' && !targetIdentity.Equals(currentSourceIdentity)' ''
+    }
+    'MUT-RV48' {
+        # R33：还原当前对象时误清掉历史副本保护。
+        Backup 'Features\EffectRemover\EffectDataSafety.cs'
+        ReplaceAfter 'Features\EffectRemover\EffectDataSafety.cs' 'internal bool Restore(' '        MarkClean(data);' '        MarkClean(null);'
+    }
+    'MUT-RV49' {
+        # R26：Mod 卸载后新建的 LevelData.Copy 历史副本丢失保存保护。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '        EffectRemover.Safety.Copy(__instance, __result);' '        EffectRemover.Safety.MarkClean(__result);'
+    }
+    'MUT-RV50' {
+        # R34：已有目标不比对文件身份，别名再次被当作新文件。
+        Backup 'Features\EffectRemover\EffectDataSafety.cs'
+        ReplaceExact 'Features\EffectRemover\EffectDataSafety.cs' '            return !targetIdentity.Equals(snapshot.SourceIdentity) && !targetIdentity.Equals(currentSourceIdentity);' '            return true;'
+    }
+    'MUT-RV51' {
+        # R27：普通历史复制补丁未挂载也释放临时保护。
+        Backup 'Features\EffectRemover\EffectRemover.cs'
+        ReplaceExact 'Features\EffectRemover\EffectRemover.cs' '            || !SpectreReplay.PatchShared.SpectrePatchHub.IsApplied(typeof(Patch_LevelDataCopySafety)))' '            )'
+    }
+    'MUT-RV52' {
+        # R35：载入时不记录原谱身份，无法区分移除原路径后的硬链接和独立文件。
+        Backup 'Features\EffectRemover\EffectDataSafety.cs'
+        ReplaceExact 'Features\EffectRemover\EffectDataSafety.cs' '                LevelFileIdentity.TryRead(path, out snapshot.SourceIdentity);' '                LevelFileIdentity.TryRead(path, out _);'
+    }
+    'MUT-RV54' {
+        # R37：退回只标记干净、不刷新按钮或检查释放临时 owner 的实际故障。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '        EditorStatePostfix(editor);' ''
+    }
+    'MUT-RV55' {
+        # R38：非当前关卡成功加载也触发当前编辑器收尾，可能误清共享数据的保护。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '        if (editor == null || !ReferenceEquals(__instance, ADOBase.customLevel)) return;' '        if (editor == null) return;'
+    }
+    'MUT-RV56' {
+        # R37：当前对象加载干净就卸载，遗漏撤销/重做里仍受保护的历史副本。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '        if (!EffectRemover.HasProtectedEditorData()) Release();' '        Release();'
+    }
+    'MUT-RV53' {
+        # R36：目标身份探测失败按不存在放行。
+        Backup 'Features\EffectRemover\EffectDataSafety.cs'
+        ReplaceExact 'Features\EffectRemover\EffectDataSafety.cs' '            if (!LevelFileIdentity.TryRead(fullTarget, out var targetIdentity)) return false;' '            if (!LevelFileIdentity.TryRead(fullTarget, out var targetIdentity)) return true;'
+    }
+    'MUT-SG01' {
+        # null 可能留下部分账目，不能仅凭实际条目存在就认定 Patch 成功。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' 'if (replacement == null)' 'if (replacement == null && hook.Target == null)'
+    }
+    'MUT-SG02' {
+        # 返回非空但没挂上实际钩子，仍必须拒绝交接。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' 'if (!IsApplied(hook))' 'if (replacement == null)'
+    }
+    'MUT-SG03' {
+        # 退回只读/拆本地 Harmony：第二本账的临时钩子会残留。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '                ReleaseFrom(harmonyType, hooks);' '                if (harmonyType == typeof(Harmony)) ReleaseFrom(harmonyType, hooks);'
+    }
+    'MUT-SG04' {
+        # UnpatchAll 无效时仍宣告释放成功。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' 'if (ContainsOwnedPatch(harmonyType, hook.Target))' 'if (hook.Target == null)'
+    }
+    'MUT-SG05' {
+        # 卸载失败后旧加载回调仍清理新建保护。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceAfter 'Features\EffectRemover\DisabledEffectSaveGuard.cs' 'private static void LoadedPostfix(' '        if (!callbacksEnabled) return;' ''
+    }
+    'MUT-SG06' {
+        # 释放失败也无条件忘记安装状态，后续会误认为没有残留。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '        if (failures.Count != 0)' ('        installed = false;' + "`n" + '        if (failures.Count != 0)')
+    }
+    'MUT-SG07' {
+        # 安装失败不撤销已成功挂上的前几个钩子。
+        Backup 'Features\EffectRemover\DisabledEffectSaveGuard.cs'
+        ReplaceExact 'Features\EffectRemover\DisabledEffectSaveGuard.cs' '            try { Release(); }' '            try { }'
     }
     default {
         throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142）"

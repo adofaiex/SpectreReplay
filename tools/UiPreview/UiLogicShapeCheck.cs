@@ -296,6 +296,30 @@ namespace UiPreview
                 "Ui\\\\ModernSettingsWindow.cs",
                 s => IndependentlyHostedImGuiWindow(s));
             fail += Check(projectRoot,
+                "⑬c19 OnToggle 成功返回前必须重建设置热键监听；Load 不创建，Teardown 要撤销",
+                "Main.cs",
+                s => MethodBody(s, "OnToggle") is string toggle
+                    && CountOccurrences(s, "Ui.ModernSettingsWindow.Ensure();") == 1
+                    && System.Text.RegularExpressions.Regex.IsMatch(toggle,
+                        @"Ui\.ModernSettingsWindow\.Ensure\(\);\s*return true;\s*\}\s*catch\b")
+                    && (MethodBody(s, "Teardown") ?? "").Contains("Ui.ModernSettingsWindow.Destroy();",
+                        StringComparison.Ordinal));
+            fail += Check(projectRoot,
+                "⑬c20 设置窗禁用须同步撤销旧监听；延迟 OnDestroy 不得清掉新窗口的共享状态",
+                "Ui\\ModernSettingsWindow.cs",
+                s => MethodBody(s, "Ensure") is string ensure
+                    && System.Text.RegularExpressions.Regex.IsMatch(ensure,
+                        @"\{\s*if \(_instance != null\) return;")
+                    && !ensure.Contains("SetOpen(", StringComparison.Ordinal)
+                    && !(MethodBody(s, "OpenFromUmm") ?? "").Contains("Ensure();", StringComparison.Ordinal)
+                    && !(MethodBody(s, "Toggle") ?? "").Contains("Ensure();", StringComparison.Ordinal)
+                    && (MethodBody(s, "ResetWindowState") ?? "").Contains("_instance = null;", StringComparison.Ordinal)
+                    && (MethodBody(s, "ResetWindowState") ?? "").Contains("UiInputBlock.Destroy();", StringComparison.Ordinal)
+                    && System.Text.RegularExpressions.Regex.IsMatch(MethodBody(s, "Destroy") ?? "",
+                        @"go\.SetActive\(false\);\s*Destroy\(go\);\s*ResetWindowState\(\);")
+                    && System.Text.RegularExpressions.Regex.IsMatch(MethodBody(s, "OnDestroy") ?? "",
+                        @"\{\s*if \(_instance == this\) ResetWindowState\(\);\s*ReleaseGlass\(\);\s*\}"));
+            fail += Check(projectRoot,
                 "⑬c4 独立 IMGUI 窗口必须有开合与页切换动画",
                 "Ui\\\\ModernSettingsWindow.cs",
                 s => s.Contains("_show = Mathf.MoveTowards", StringComparison.Ordinal)
@@ -569,7 +593,7 @@ namespace UiPreview
             //   保存拦截若随 Feature 一起卸载，Ctrl+S 就会把剥过的数据写回原文件，
             //   原谱直接没了。所以这两条补丁必须常开，由 EditorSaveEnabled 自己判。
             fail += Check(projectRoot,
-                "⑳c 去特效的保存拦截/按钮刷新不许挂总开关(改写残留态要求在功能关闭后仍被拦住)",
+                "⑳c 去特效的数据保护/保存入口不许挂总开关(改写残留态要求在功能关闭后仍被拦住)",
                 "Features\\EffectRemover\\Patch_EffectRemover.cs",
                 s => SaveGuardNotFeatureGated(s));
             // ㉑ 特殊按键过滤必须**真的会生效**（2026-10-18 接线）。
@@ -1100,7 +1124,7 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "㉛ 渲染作业必须把「录不录指针」交给画面源(否则开关只在界面上存在)",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
-                s => s.Contains("frames.DrawCursor = Settings.RenderCursorOn && !tenBit && !hdr10;", StringComparison.Ordinal));
+                s => s.Contains("frames.DrawCursor = options.Cursor && !tenBit && !hdr10;", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "㉜ 指针要在像素交付路径上画且位置随 Grab 采样(交付时现读会甩尾)",
                 "Features\\VideoRender\\Pipeline\\VideoFrameSource.cs",
@@ -1881,7 +1905,7 @@ namespace UiPreview
                 "Features\\VideoRender\\Pipeline\\VideoRender.cs",
                 s => s.Contains("internal readonly struct RenderRange", StringComparison.Ordinal)
                     && s.Contains("StartRender(RenderRange.FromTimeline())", StringComparison.Ordinal)
-                    && s.Contains("Job = VideoRenderJob.Launch(encoderPath, range);", StringComparison.Ordinal));
+                    && s.Contains("Job = VideoRenderJob.Launch(encoderPath, range, CpuRetrySettings);", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "渲染作业必须把区间传入作业实例",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
@@ -2325,7 +2349,7 @@ namespace UiPreview
             if (phases == null || resolve == null) return false;
 
             // ① 抓取点在重启之前
-            int capture = phases.IndexOf("requestedStartFloor = ResolveRequestedStartFloor()", StringComparison.Ordinal);
+            int capture = phases.IndexOf("requestedStartFloor = options.StartFloor ?? ResolveRequestedStartFloor()", StringComparison.Ordinal);
             int restart = phases.IndexOf("SwitchToPlayMode", StringComparison.Ordinal);
             if (capture < 0 || restart < 0 || capture > restart) return false;
 
@@ -3460,7 +3484,8 @@ namespace UiPreview
             {
                 string line = raw.Trim();
                 if (!line.Contains("[SpectrePatch(", StringComparison.Ordinal)) continue;
-                if (line.Contains("SaveLevelEditorAction", StringComparison.Ordinal))
+                if (line.Contains("SaveLevel", StringComparison.Ordinal)
+                    && line.Contains("scnEditor", StringComparison.Ordinal))
                 {
                     sawSave = true;
                     if (line.Contains("Feature", StringComparison.Ordinal)) return false;

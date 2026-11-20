@@ -208,8 +208,9 @@ internal class Patch_PlayerControlUpdate
                 // 重判未必认（高速段 Strict/PerfectsOnly 的窗口远窄于录制时，见
                 // HitAdvanceGuard）。不收角度就会永久卡死——砖块不动 = 泵的条件
                 // "当前砖 == 快照砖"再也不会成立。数据已经证明这一击成立，按录制结论收。
-                bool nextAdvances = PlayIndex + 1 < hitSnapshots.Count
-                    && hitSnapshots[PlayIndex + 1].CurrentFloorID > hc.CurrentFloorID;
+                bool nextAdvances = HitAdvanceGuard.ProvesAdvance(hc.CurrentFloorID,
+                    PlayIndex + 1 < hitSnapshots.Count ? hitSnapshots[PlayIndex + 1].CurrentFloorID : (int?)null,
+                    data.EndTile);
                 ReplayHit(__instance.playerOne, hc,
                     ReplayPlayer.AdvanceClampAngle(__instance.playerOne, hc, nextAdvances));
                 // 渲染期子帧回拨：放在 ReplayHit 之后——命中内部状态全部来自录制数据、

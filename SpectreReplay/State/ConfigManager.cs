@@ -588,6 +588,10 @@ public static class ConfigManager
                     Settings.RenderCqp = Mathf.Clamp(ints.Value<int?>("render_cqp") ?? Settings.RenderCqp, 0, 51);
                     Settings.RenderBitrateMbps = Mathf.Clamp(ints.Value<int?>("render_bitrate_mbps") ?? Settings.RenderBitrateMbps, 0, 160);
                     Settings.RenderPreset = Mathf.Clamp(ints.Value<int?>("render_preset") ?? Settings.RenderPreset, 0, 10);
+                    // 旧 CpuOnly 的 auto preset 是 veryfast；迁成 Quality 后会变成 fast。
+                    // 固定旧默认而不是静默改变速度/体积；显式 preset 按玩家选择保留。
+                    if (rawHardware == null && rawEncoder == 3 && Settings.RenderPreset == 0)
+                        Settings.RenderPreset = 3;
                     Settings.RenderOutputFormat = Mathf.Clamp(ints.Value<int?>("render_output_format") ?? Settings.RenderOutputFormat, 0, 3);
                     // 旧配置没有这个键：缺省时**跟随渲染格式**，保持升级前的行为
                     // （升级前转换用的就是 RenderOutputFormat）。
