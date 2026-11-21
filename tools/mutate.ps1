@@ -3782,8 +3782,23 @@ switch ($Which) {
         Backup 'Features/Cloud/CloudReplay.cs'
         ReplaceAfter 'Features/Cloud/CloudReplay.cs' 'internal static bool RestoreConfigIfMissing()' 'string localPath = LocalConfigPath();' '_configRestoreSettled = true; string localPath = LocalConfigPath();'
     }
+    'MUT-QC12' {
+        # R44：卸载仍只停止回放，捕获循环会把它误当成自然耗尽并报告成功。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '                Features.VideoRender.VideoRender.CancelRender();' '                ;'
+    }
+    'MUT-QC13' {
+        # R45：按开关提前返回，稍后开启同步的会话没有启动前文件快照。
+        Backup 'Features/Cloud/CloudReplay.cs'
+        ReplaceAfter 'Features/Cloud/CloudReplay.cs' 'internal static void RestoreOnStartup()' 'BeginConfigRestoreWindow();' 'if (!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return; BeginConfigRestoreWindow();'
+    }
+    'MUT-QC14' {
+        # R45：启用同步后的保存不安排恢复，上传闸门无法安全落定。
+        Backup 'Features/Cloud/CloudReplay.cs'
+        ReplaceAfter 'Features/Cloud/CloudReplay.cs' 'internal static bool OnConfigSaved(string localPath)' 'ScheduleStartupRestore();' '// mutated'
+    }
     default {
-        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142 / MUT-QC1 / MUT-QC2 / MUT-QC3 / MUT-QC4 / MUT-QC5 / MUT-QC6 / MUT-QC7 / MUT-QC8 / MUT-QC9 / MUT-QC10 / MUT-QC11）"
+        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142 / MUT-QC1 / MUT-QC2 / MUT-QC3 / MUT-QC4 / MUT-QC5 / MUT-QC6 / MUT-QC7 / MUT-QC8 / MUT-QC9 / MUT-QC10 / MUT-QC11 / MUT-QC12 / MUT-QC13 / MUT-QC14）"
     }
 }
 

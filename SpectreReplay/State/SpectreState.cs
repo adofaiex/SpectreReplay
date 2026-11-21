@@ -256,6 +256,11 @@ public static class SpectreState
         /// </summary>
         internal static void UnloadReplay()
         {
+            // 用户在捕获期间卸载/换装不是自然播完：先取消作业，再翻播放标志，
+            // 避免捕获循环把 is_playing 变假误当成耗尽并报告不完整视频成功。
+            // 正常成片的消费发生在 CaptureInProgress 已清零之后，不受影响。
+            if (Features.VideoRender.VideoRender.CaptureInProgress)
+                Features.VideoRender.VideoRender.CancelRender();
             PlayActions.StopPlaying();
             PlayActions.StopRecording();
             Features.Replay.ReplayManager.UnLoadReplay(out data);

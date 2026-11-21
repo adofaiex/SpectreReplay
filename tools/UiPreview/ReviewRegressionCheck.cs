@@ -267,6 +267,24 @@ internal static class ReviewRegressionCheck
             && Before(verify, "$previewRunExit = $LASTEXITCODE", "if ($previewRunExit -ne 0)"),
             "R43 主项目构建、预览器构建与运行均按原生退出码判红");
 
+        string unloadReplay = Body(state, "UnloadReplay");
+        Check(Before(unloadReplay, "if (Features.VideoRender.VideoRender.CaptureInProgress)",
+                "Features.VideoRender.VideoRender.CancelRender();")
+            && Before(unloadReplay, "Features.VideoRender.VideoRender.CancelRender();", "PlayActions.StopPlaying();")
+            && Before(phases, "VideoRender.CaptureInProgress = false;", "ConsumeLoadedReplay();"),
+            "R44 捕获中卸载先取消再停回放，正常合成完成后消费不取消");
+
+        string startupRestore = Body(cloudState, "RestoreOnStartup");
+        string scheduleRestore = Body(cloudState, "ScheduleStartupRestore");
+        Check(Before(startupRestore, "BeginConfigRestoreWindow();", "ScheduleStartupRestore();")
+            && !startupRestore.Contains("!Settings.CloudSyncOn", StringComparison.Ordinal)
+            && !startupRestore.Contains("!Settings.CloudRestoreOnLoad", StringComparison.Ordinal)
+            && startupRestore.Contains("_configRestoreScheduled = false;", StringComparison.Ordinal)
+            && scheduleRestore.Contains("_configRestoreScheduled", StringComparison.Ordinal)
+            && scheduleRestore.Contains("!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad", StringComparison.Ordinal)
+            && Before(Body(cloudState, "OnConfigSaved"), "ScheduleStartupRestore();", "if (!SteamCloud.Ready) return false;"),
+            "R45 关闭同步启动仍先记录文件状态，同会话启用后保存可安排恢复");
+
         var resolve = typeof(VideoEncoder).GetMethod("ResolveCodec", sf, null, new[] {
             typeof(VideoEncoder.OutContainer), typeof(VideoEncoder.VideoCodec), typeof(VideoEncoder.HardwareBackend),
             typeof(bool), typeof(bool), typeof(string) }, null);

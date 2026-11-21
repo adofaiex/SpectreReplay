@@ -64,6 +64,7 @@ namespace SpectreReplay.Features.Cloud
         // 云端那份还没读过的备份用一份近乎默认的配置覆盖掉，之后再也恢复不回来。
         private static bool _configRestoreSettled;
         private static bool _configRestoreWindowActive;
+        private static bool _configRestoreScheduled;
         private static bool _configLocalMissingAtStartup;
 
         /// <summary>云端回放统计（UI 每帧要读，必须缓存）。</summary>
@@ -902,6 +903,9 @@ namespace SpectreReplay.Features.Cloud
                     return true;
                 }
 
+                // 启动时未开启同步/回填的会话，也可在玩家稍后启用并保存时安排恢复。
+                // 窗口快照已在启动时记录，不能把这次保存产生的文件误认作启动前已有。
+                ScheduleStartupRestore();
                 if (!SteamCloud.Ready) return false;   // 非 Steam 版/离线：静默跳过
 
                 byte[] bytes;
@@ -954,8 +958,8 @@ namespace SpectreReplay.Features.Cloud
         /// 一项」——那一下 SaveConfigs 会先让本地文件存在，恢复流程随后看到文件
         /// 已存在就永久跳过，云备份就没了。</para>
         ///
-        /// <para>90 秒兜底：万一恢复流程因异常没跑起来，也不能让云备份整个会话
-        /// 都不更新。</para>
+        /// <para>超时不是恢复完成；云端备份尚未确认时继续关闭自动上传，
+        /// 只由安全恢复分支或用户手动上传落定。</para>
         /// </summary>
         private static bool ConfigUploadAllowedNow()
         {
@@ -1477,22 +1481,29 @@ namespace SpectreReplay.Features.Cloud
             // 模组可在同一进程中被 UMM 关闭后重新启用；每次新的启用都必须重新
             // 记录「启动前是否缺文件」，不能沿用上一轮已经落定的恢复窗口。
             _configRestoreWindowActive = false;
+            _configRestoreScheduled = false;
             _configRestoreSettled = false;
             _configLocalMissingAtStartup = false;
-            if (!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return;
             try
             {
+                // 无论开关当前是否启用都先记录文件状态，支持会话内稍后启用同步。
                 BeginConfigRestoreWindow();
-                // 泵没装（极早期/异常）时动作为 null：退化成"现在就试一次"
-                if (MainThread.StartCoroutine(RestoreWhenReady()) == null)
-                {
-                    DoRestoreOnce();
-                }
+                ScheduleStartupRestore();
             }
             catch (Exception ex)
             {
                 Debug.LogWarning("[SpectreReplay] 启动时云回填安排失败（不影响启动）：" + ex.Message);
             }
+        }
+
+        private static void ScheduleStartupRestore()
+        {
+            if (!_configRestoreWindowActive || _configRestoreScheduled
+                || !Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return;
+            _configRestoreScheduled = true;
+            // 泵没装（极早期/异常）时动作为 null：退化成"现在就试一次"。
+            if (MainThread.StartCoroutine(RestoreWhenReady()) == null)
+                DoRestoreOnce();
         }
 
         private static void BeginConfigRestoreWindow()
