@@ -69,6 +69,16 @@ internal static class EffectRemover
         return allowed;
     }
 
+    // ExportLevel / PublishToSteam 先写 ADOFAI.levelPath，再复制或打包；仅拦 RDFile
+    // 写入会让调用方继续拿旧文件打包。必须在导出入口整体短路。
+    internal static bool OnExportLevelPrefix(scnEditor editor)
+    {
+        bool allowed = CanSave(editor);
+        if (!allowed)
+            UnityEngine.Debug.LogWarning("[SpectreReplay] 拒绝从去特效保护的原谱导出或发布；请另存为新文件，或重新载入原谱。");
+        return allowed;
+    }
+
     internal static bool OnFileWritePrefix(string path)
     {
         bool allowed = Safety.CanWrite(CurrentLevelData, path,

@@ -138,10 +138,15 @@ Step '脚本编码（UTF-8 BOM）' {
 Step '主项目构建' {
     Push-Location $root
     $out = & dotnet build 'SpectreReplay.slnx' -c Release --no-incremental -v m --nologo 2>&1
+    $buildExit = $LASTEXITCODE
     Pop-Location
     $errs = @($out | Select-String -Pattern 'error CS')
     $warns = @($out | Select-String -Pattern 'warning CS')
-    if ($errs.Count -gt 0) {
+    if ($buildExit -ne 0) {
+        Write-Host "  ✗ 主项目 dotnet build 退出码 $buildExit" -ForegroundColor Red
+        $out | Select-Object -Last 12 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }
+        $script:fail++
+    } elseif ($errs.Count -gt 0) {
         $errs | Select-Object -Unique -First 8 | ForEach-Object {
             Write-Host ('  ✗ ' + $_.Line.Trim()) -ForegroundColor Red
         }
@@ -173,8 +178,15 @@ if (-not $SkipPreview) {
         # 不存在的 exe，报的是"系统找不到指定的文件"——把"代码写错了"
         # 伪装成"环境有问题"，排查方向整个带偏（这次就撞上了）。
         $buildOut = & dotnet build -c Release -v q --nologo --no-incremental 2>&1
+        $previewBuildExit = $LASTEXITCODE
         $buildErrs = @($buildOut | Select-String -Pattern 'error CS')
-        if ($buildErrs.Count -gt 0) {
+        if ($previewBuildExit -ne 0) {
+            Write-Host "  ✗ 预览器 dotnet build 退出码 $previewBuildExit" -ForegroundColor Red
+            $buildOut | Select-Object -Last 12 | ForEach-Object { Write-Host ('      ' + $_) -ForegroundColor DarkGray }
+            $script:fail++
+            Pop-Location
+            return
+        } elseif ($buildErrs.Count -gt 0) {
             $buildErrs | Select-Object -Unique -First 8 | ForEach-Object {
                 Write-Host ('  ✗ 预览器编译不过：' + $_.Line.Trim()) -ForegroundColor Red
             }
@@ -183,6 +195,7 @@ if (-not $SkipPreview) {
             return
         }
         $out = & dotnet run -c Release -v q --no-build -- $outDir --click 2>&1
+        $previewRunExit = $LASTEXITCODE
         Pop-Location
         $lines = $out
         $bad = @($lines | Where-Object { $_ -match '^\s+✗' })
@@ -190,6 +203,10 @@ if (-not $SkipPreview) {
         foreach ($g in $good) { Write-Host ('  ' + $g.Trim()) -ForegroundColor DarkGray }
         foreach ($b in $bad) { Write-Host ('  ' + $b.Trim()) -ForegroundColor Red }
         Write-Host ('  断言 ' + ($good.Count + $bad.Count) + ' 条，失败 ' + $bad.Count)
+        if ($previewRunExit -ne 0) {
+            Write-Host "  ✗ 预览器 dotnet run 退出码 $previewRunExit" -ForegroundColor Red
+            $script:fail++
+        }
         if ($bad.Count -gt 0) { $script:fail++ }
         # **0 条断言必须判红。** 这里踩过一次真的：控制台解码用了 OEM 码页，
         # `✓`/`✗` 全变乱码，good/bad 两边都数到 0，闸门印着「失败 0」——

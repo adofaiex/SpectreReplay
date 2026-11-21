@@ -15,6 +15,9 @@ internal static class ReplayPlayer
     // 镜像退回互斥只警告一次：这行日志是「开了 MirrorInputToOS 却没效果」时
     // 玩家能拿到的唯一线索（铁律：没挂上必须能看见）。
     private static bool _loggedMirrorFallback;
+    // 只要本轮确实向 OS 发过镜像输入，Stop 就必须继续补发释放；
+    // 不能在停止前重新读取 MirrorInputToOS，否则用户中途关掉选项会留下 OS 按键。
+    private static bool _mirrorUsedThisPlayback;
     // 首键注入偏差日志的武装位：Start 与 FastForward 各自重新武装
     private static bool _pendingFirstKeyLog = true;
     // 推进兜底的一次性日志武装位：只在每次回放的第一处兜底打一行（铁律：不许静默
@@ -29,6 +32,7 @@ internal static class ReplayPlayer
         if (!is_playing && !ApiBlockPlaying)
         {
             Stop();
+            _mirrorUsedThisPlayback = false;
             CurrKeyState = new byte[256];
             ManagedInput.Clear();
             PlayIndex = 0;
@@ -93,7 +97,7 @@ internal static class ReplayPlayer
         // 最容易踩中的路径：暂停期泵停转，退出走 Stop，松键再被死门吞掉）。
         // 抬起我们自己按下去的键不需要聚焦也不需要 is_playing：给没按过的
         // 键发 KEYUP 是无操作，按过而漏发才是真滞留。
-        bool releaseMirrorKeys = PlayMode && Settings.MirrorInputToOS;
+        bool releaseMirrorKeys = _mirrorUsedThisPlayback;
         List<ushort> stillHeld = ManagedInput.SnapshotHeld();
         is_playing = false;
         for (int i = 0; i < stillHeld.Count; i++)
@@ -112,6 +116,7 @@ internal static class ReplayPlayer
             }
             KeyboardSimulation.SendInputs(releases);
         }
+        _mirrorUsedThisPlayback = false;
         // Quartz 实时桥收尾：补发抬起、卸兜底源、把输入通道还给 Quartz 自己。
         QuartzLiveBridge.Shutdown();
         // ReplayInput 契约收尾：OnEndInputs 清容器并还原玩家的普通键位显示。
@@ -338,7 +343,7 @@ internal static class ReplayPlayer
         // that remain held after the rebuild.
         for (int vk = 1; vk < CurrKeyState.Length; vk++)
         {
-            if (ManagedInput.IsHeldVk((ushort)vk)) CurrKeyState[vk] = 128;
+            if (_mirrorUsedThisPlayback && ManagedInput.IsHeldVk((ushort)vk)) CurrKeyState[vk] = 128;
         }
     }
 
@@ -583,6 +588,7 @@ internal static class ReplayPlayer
             }
             if (sendInput && num != 0 && num != 27 && !IsBlockedKey(num))
             {
+                _mirrorUsedThisPlayback = true;
                 inputs.Add(KeyboardSimulation.MakeInput((byte)num, ev.IsPressed, IsExtendedKey(num)));
                 CurrKeyState[num] = (byte)(ev.IsPressed ? 128u : 0u);
             }

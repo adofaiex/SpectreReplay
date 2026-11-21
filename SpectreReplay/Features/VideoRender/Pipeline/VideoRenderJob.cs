@@ -34,6 +34,12 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private string wavPath;
     private byte[] blackout;
     private int delivered;
+    // 编码队列满时保留已完成但尚未入队的一帧，下一次 Flush 再试；
+    // 这样主线程只让出协程，不等待 ffmpeg。
+    private bool pendingEncode;
+    private byte[] pendingEncodeData;
+    private Action<byte[]> pendingEncodeRecycle;
+    private System.Diagnostics.Stopwatch encodeStallClock;
     // VideoPlayer 接管（视频背景确定性化）：渲染期间 Unity VideoPlayer 仍走实时播放，
     // 渲染比实时慢时背景跑 ahead——暂停后每帧按 RenderClock 定位
     private readonly List<UnityEngine.Video.VideoPlayer> pinnedVideos = new();
@@ -633,11 +639,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         while (frameIndex < hardStop && !cancelRequested && !sceneExited)
         {
-            // 回读在途满时先排空再继续（反压）
-            while (frames.InFlight >= frames.MaxInFlight && !cancelRequested)
+            // 回读或编码入队受阻时先排空再继续，不能继续推进捕获时间轴。
+            while ((pendingEncode || frames.InFlight >= frames.MaxInFlight) && !cancelRequested && !sceneExited)
             {
                 Flush();
-                if (frames.InFlight < frames.MaxInFlight)
+                if (!pendingEncode && frames.InFlight < frames.MaxInFlight)
                     break;
                 yield return null;
             }
@@ -970,10 +976,10 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         // 排空残余在途回读
         int drainGuard = fps * 5;
-        while (frames.InFlight > 0 && drainGuard-- > 0 && !cancelRequested)
+        while ((frames.InFlight > 0 || pendingEncode) && drainGuard-- > 0 && !cancelRequested)
         {
             Flush();
-            if (frames.InFlight > 0)
+            if (frames.InFlight > 0 || pendingEncode)
                 yield return null;
         }
 
@@ -1319,6 +1325,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
     // TryTake），这里只剩真正的最后防线：上个成功帧缺位（开局连败）时才黑帧。
     private void Flush()
     {
+        if (!TryFlushPendingEncode()) return;
+
         while (frames.TryTake(out int index, out byte[] pixels, out bool failed))
         {
             if (failed || pixels == null)
@@ -1331,26 +1339,52 @@ internal sealed class VideoRenderJob : MonoBehaviour
                     Debug.LogWarning("[SpectreReplay] 已替换 10 个黑帧（开局连败形态）："
                         + "回读反复失败，建议改用「纯净相机」画面来源、降低渲染帧率，或更新显卡驱动");
                 }
-                encoder.Submit(blackout, blackout.Length, 1, null, () => cancelRequested);
+                pendingEncodeData = blackout;
+                pendingEncodeRecycle = null;
             }
             else
             {
                 // RecycleOrHold：保留帧（回读失败的顶替源）在泵写完后不回池，
                 // 其余照常回池——见 VideoFrameSource.RecycleOrHold 的时序说明。
-                encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold, () => cancelRequested);
+                pendingEncodeData = pixels;
+                pendingEncodeRecycle = frames.RecycleOrHold;
             }
-            VideoRender.Current.FramesDone = ++delivered;
-            // 剩余时间 = 未交付帧数 ÷ 捕获以来平均交付速率；
-            // 前半秒速率未成形（首帧含回读建立开销）时不给估计，避免开局跳变
-            if (captureClock != null && delivered > 0)
-            {
-                double elapsedSeconds = captureClock.Elapsed.TotalSeconds;
-                double rate = delivered / elapsedSeconds;
-                VideoRender.Current.EtaSeconds = elapsedSeconds >= 0.5 && rate > 0.01
-                    ? Math.Max(0.0, (VideoRender.Current.FramesTotal - delivered) / rate)
-                    : -1;
-            }
+            pendingEncode = true;
+            if (!TryFlushPendingEncode()) return;
         }
+    }
+
+    private bool TryFlushPendingEncode()
+    {
+        if (!pendingEncode) return true;
+        if (!encoder.TrySubmit(pendingEncodeData, pendingEncodeData.Length, 1,
+                pendingEncodeRecycle, () => cancelRequested))
+        {
+            // 保留原有 120 秒卡死看门狗，但重试之间交还主线程，取消仍可响应。
+            if (encodeStallClock == null) encodeStallClock = System.Diagnostics.Stopwatch.StartNew();
+            if (encodeStallClock.ElapsedMilliseconds >= 120_000)
+                throw new TimeoutException("encoder stalled: frame queue full for 120s (ffmpeg stopped consuming stdin?)");
+            return false;
+        }
+        pendingEncode = false;
+        pendingEncodeData = null;
+        pendingEncodeRecycle = null;
+        encodeStallClock = null;
+        VideoRender.Current.FramesDone = ++delivered;
+        UpdateEncodeEta();
+        return true;
+    }
+
+    private void UpdateEncodeEta()
+    {
+        // 剩余时间 = 未交付帧数 ÷ 捕获以来平均交付速率；
+        // 前半秒速率未成形（首帧含回读建立开销）时不给估计，避免开局跳变
+        if (captureClock == null || delivered <= 0) return;
+        double elapsedSeconds = captureClock.Elapsed.TotalSeconds;
+        double rate = delivered / elapsedSeconds;
+        VideoRender.Current.EtaSeconds = elapsedSeconds >= 0.5 && rate > 0.01
+            ? Math.Max(0.0, (VideoRender.Current.FramesTotal - delivered) / rate)
+            : -1;
     }
 
     /// <summary>
@@ -1923,6 +1957,16 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // Delete 临时目录、二次 Destroy(gameObject)
         if (tornDown) return;
         tornDown = true;
+        // 非阻塞入队失败时，最后一帧仍由本作业持有；取消/卸载不能把它遗留在
+        // 大数组池外。正常成功路径 pendingEncode 已在 drain 中清空，这里是兜底。
+        if (pendingEncode)
+        {
+            try { pendingEncodeRecycle?.Invoke(pendingEncodeData); }
+            catch (Exception ex) { Debug.LogException(ex); }
+            pendingEncode = false;
+            pendingEncodeData = null;
+            pendingEncodeRecycle = null;
+        }
         // **先把游戏交还回去再看收尾。** 正常路径下协程走到这里时已经释放过（幂等），
         // 但 OnDestroy 兜底路径是从半途掐断的——此时游戏可能正带着冻结的钉扎时钟跑，
         // 早一帧释放就少一帧"星球不动"。

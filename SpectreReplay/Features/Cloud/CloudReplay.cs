@@ -63,6 +63,8 @@ namespace SpectreReplay.Features.Cloud
         // 否则「本地配置缺失 + Steam 比设置页晚就绪 + 玩家先改了一项」会把
         // 云端那份还没读过的备份用一份近乎默认的配置覆盖掉，之后再也恢复不回来。
         private static bool _configRestoreSettled;
+        private static bool _configRestoreWindowActive;
+        private static bool _configLocalMissingAtStartup;
 
         /// <summary>云端回放统计（UI 每帧要读，必须缓存）。</summary>
         internal struct Stats
@@ -960,7 +962,8 @@ namespace SpectreReplay.Features.Cloud
             if (_configRestoreSettled) return true;
             // 不恢复的配置下没有「还没读过的备份」可言，直接放行。
             if (!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return true;
-            if (Time.realtimeSinceStartup > 90f) return true;
+            // 不能用超时强行放行：本地缺失期间写出的设置可能已经与云端备份冲突，
+            // 超时上传仍会把那份尚未读过的备份覆盖掉。由手动上传或安全恢复分支落定。
             Debug.Log("[SpectreReplay] 云端配置恢复尚未完成，暂不上传（避免覆盖还没读过的备份）");
             return false;
         }
@@ -1304,22 +1307,37 @@ namespace SpectreReplay.Features.Cloud
             {
                 if (!SteamCloud.Ready) return false;
 
-                // 一踏进决策逻辑就落定：这次会话要不要从云端恢复配置，结论只有一份。
-                // 上传钩子等的就是它（见 ConfigUploadAllowedNow），所以必须在任何
-                // 「会不会恢复」的分支之前置位，包括本地已存在这种「不恢复」。
-                _configRestoreSettled = true;
-
                 string localPath = LocalConfigPath();
                 if (string.IsNullOrEmpty(localPath))
                 {
                     Debug.Log("[SpectreReplay] 云端配置取回跳过：拿不到本地配置路径");
                     return false;
                 }
-                if (File.Exists(localPath)) return false;   // 本地已有：绝不覆盖
+                if (File.Exists(localPath))
+                {
+                    if (!_configLocalMissingAtStartup)
+                    {
+                        _configRestoreSettled = true;
+                        return false;   // 启动前已有：绝不覆盖
+                    }
+
+                    // 启动时没有本地文件、恢复窗口内却出现了文件：这是玩家先保存了
+                    // 本地改动。若云端同名文件存在，不能把它当成「本地已有」直接放行，
+                    // 否则下一次自动保存就会覆盖尚未读过的云端备份。
+                    if (SteamCloud.Exists(RemoteConfigName))
+                    {
+                        Debug.LogWarning("[SpectreReplay] 启动恢复期间本地配置先被写入，检测到云端备份；保留本地改动，等待手动上传确认本地为准");
+                        return false;
+                    }
+
+                    _configRestoreSettled = true;
+                    return false;   // 云端没有同名备份，本地改动可安全成为新备份
+                }
 
                 if (!SteamCloud.Exists(RemoteConfigName))
                 {
                     Debug.Log("[SpectreReplay] 本地配置缺失，云端也没有 Configs.json（本次用默认设置）");
+                    _configRestoreSettled = true;
                     return false;
                 }
 
@@ -1343,6 +1361,7 @@ namespace SpectreReplay.Features.Cloud
                 // 本地这份现在与云端逐字节一致：记下来，免得紧接着的一次写盘
                 // 把同一份内容再往云端重复写一遍。
                 _configUploaded = data;
+                _configRestoreSettled = true;
 
                 // **只写盘不生效的话，这次找回会在一分钟后被自己抹掉。**
                 // 内存里此刻还是「配置缺失 → 默认值」那一份，而退出时
@@ -1455,9 +1474,15 @@ namespace SpectreReplay.Features.Cloud
         /// </summary>
         internal static void RestoreOnStartup()
         {
+            // 模组可在同一进程中被 UMM 关闭后重新启用；每次新的启用都必须重新
+            // 记录「启动前是否缺文件」，不能沿用上一轮已经落定的恢复窗口。
+            _configRestoreWindowActive = false;
+            _configRestoreSettled = false;
+            _configLocalMissingAtStartup = false;
             if (!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return;
             try
             {
+                BeginConfigRestoreWindow();
                 // 泵没装（极早期/异常）时动作为 null：退化成"现在就试一次"
                 if (MainThread.StartCoroutine(RestoreWhenReady()) == null)
                 {
@@ -1467,6 +1492,24 @@ namespace SpectreReplay.Features.Cloud
             catch (Exception ex)
             {
                 Debug.LogWarning("[SpectreReplay] 启动时云回填安排失败（不影响启动）：" + ex.Message);
+            }
+        }
+
+        private static void BeginConfigRestoreWindow()
+        {
+            if (_configRestoreWindowActive) return;
+            _configRestoreWindowActive = true;
+            try
+            {
+                string localPath = LocalConfigPath();
+                _configLocalMissingAtStartup = string.IsNullOrEmpty(localPath) || !File.Exists(localPath);
+                _configRestoreSettled = !_configLocalMissingAtStartup;
+            }
+            catch
+            {
+                // 无法确认启动前是否有文件时按「缺失」处理，宁可暂不上传也不覆盖云端。
+                _configLocalMissingAtStartup = true;
+                _configRestoreSettled = false;
             }
         }
 
@@ -1481,8 +1524,9 @@ namespace SpectreReplay.Features.Cloud
             {
                 Debug.Log("[SpectreReplay] Steam 云 60 秒内未就绪（原因：" + SteamCloud.Reason
                     + "），本次跳过云回填");
-                // 不会再有恢复动作了：放开上传闸，别让配置在整个会话里都不同步。
-                _configRestoreSettled = true;
+                // 超时不代表云端备份已经被读过；继续关闭自动上传，避免把本地默认值
+                // 或启动期间的新改动覆盖到云端。用户可通过手动上传明确选择本地为准。
+                Debug.LogWarning("[SpectreReplay] 云端配置恢复超时，自动上传继续关闭，需手动上传确认本地配置");
                 yield break;
             }
             DoRestoreOnce();

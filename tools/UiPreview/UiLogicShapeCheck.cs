@@ -824,11 +824,12 @@ namespace UiPreview
                 {
                     string body = MethodBody(s, "Stop") ?? "";
                     int gate = body.IndexOf(
-                        "bool releaseMirrorKeys = PlayMode && Settings.MirrorInputToOS;",
+                        "bool releaseMirrorKeys = _mirrorUsedThisPlayback;",
                         StringComparison.Ordinal);
                     int flip = body.IndexOf("is_playing = false;", StringComparison.Ordinal);
                     return gate >= 0 && flip >= 0 && gate < flip
                         && body.Contains("if (releaseMirrorKeys)", StringComparison.Ordinal)
+                        && body.Contains("_mirrorUsedThisPlayback = false;", StringComparison.Ordinal)
                         && !body.Contains("if (PlayMode && ManagedInput.Mirror)", StringComparison.Ordinal);
                 });
             // Quartz 实时桥（2026-11-07）：石英雨滴的唯一活水是它打在
@@ -1502,7 +1503,8 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "成功帧回收必须走 RecycleOrHold（保留帧不提前回池）",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
-                s => s.Contains("encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold, () => cancelRequested);", StringComparison.Ordinal)
+                s => s.Contains("pendingEncodeRecycle = frames.RecycleOrHold;", StringComparison.Ordinal)
+                    && s.Contains("encoder.TrySubmit(pendingEncodeData", StringComparison.Ordinal)
                     && !s.Contains("frames.Recycle,", StringComparison.Ordinal));
             // 渲染期歌曲排程推迟（2026-11-08 用户实测：画面源冷启动 1.3s 实时
             // 烧掉剩余倒计时，成片从歌曲 0 拍开始，倒计时整段丢失）。三条硬序：

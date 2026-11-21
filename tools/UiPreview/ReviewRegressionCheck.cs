@@ -215,6 +215,58 @@ internal static class ReviewRegressionCheck
             && fx.Contains("!ModDisabled && Enabled && Settings.EffectRemoverEnableSave", StringComparison.Ordinal),
             "R27 重开模组时普通保存或复制钩子缺失都拒绝释放临时保护");
 
+        string effectPatch = Read("Features/EffectRemover/Patch_EffectRemover.cs");
+        Check(effectPatch.Contains("LoadResult status", StringComparison.Ordinal)
+            && effectPatch.Contains("if (status != LoadResult.Successful) return;", StringComparison.Ordinal)
+            && Before(effectPatch, "status != LoadResult.Successful", "EffectRemover.OnLevelDataDecode(__instance);")
+            && effectPatch.Contains("[SpectrePatch(typeof(scnEditor), \"ExportLevel\", PatchType.Prefix)]\n    internal static bool ExportPrefix(scnEditor __instance) => EffectRemover.OnExportLevelPrefix(__instance);", StringComparison.Ordinal)
+            && effectPatch.Contains("[SpectrePatch(typeof(scnEditor), \"PublishToSteam\", PatchType.Prefix)]\n    internal static bool PublishPrefix(scnEditor __instance) => EffectRemover.OnExportLevelPrefix(__instance);", StringComparison.Ordinal)
+            && Body(fx, "OnExportLevelPrefix").Contains("bool allowed = CanSave(editor);", StringComparison.Ordinal)
+            && Body(fx, "OnExportLevelPrefix").Contains("return allowed;", StringComparison.Ordinal),
+            "R39 Decode失败不去特效，导出与Steam发布入口整体短路");
+
+        string cloudState = Read("Features/Cloud/CloudReplay.cs");
+        string uploadGate = Body(cloudState, "ConfigUploadAllowedNow");
+        string restoreConfig = Body(cloudState, "RestoreConfigIfMissing");
+        string localAppeared = BlockAfter(restoreConfig, "if (File.Exists(localPath))");
+        string configConflict = BlockAfter(localAppeared, "if (SteamCloud.Exists(RemoteConfigName))");
+        string restoreTimeout = BlockAfter(Body(cloudState, "RestoreWhenReady"), "if (!SteamCloud.Ready)");
+        Check(Body(cloudState, "RestoreOnStartup").Contains("BeginConfigRestoreWindow();", StringComparison.Ordinal)
+            && Body(cloudState, "BeginConfigRestoreWindow").Contains("_configLocalMissingAtStartup = string.IsNullOrEmpty(localPath) || !File.Exists(localPath);", StringComparison.Ordinal)
+            && Before(restoreConfig, "if (!_configLocalMissingAtStartup)", "_configRestoreSettled = true;")
+            && configConflict.Contains("return false;", StringComparison.Ordinal)
+            && !configConflict.Contains("_configRestoreSettled = true;", StringComparison.Ordinal)
+            && !restoreTimeout.Contains("_configRestoreSettled = true;", StringComparison.Ordinal)
+            && !uploadGate.Contains("Time.realtimeSinceStartup > 90f", StringComparison.Ordinal)
+            && cloudState.Contains("需手动上传确认本地配置", StringComparison.Ordinal),
+            "R40 启动期间本地配置与云端冲突时不因超时自动覆盖备份");
+
+        string player = Read("Features/Replay/Runtime/ReplayPlayer.cs");
+        Check(player.Contains("private static bool _mirrorUsedThisPlayback;", StringComparison.Ordinal)
+            && player.Contains("bool releaseMirrorKeys = _mirrorUsedThisPlayback;", StringComparison.Ordinal)
+            && player.Contains("_mirrorUsedThisPlayback = true;", StringComparison.Ordinal)
+            && player.Contains("_mirrorUsedThisPlayback = false;", StringComparison.Ordinal),
+            "R41 镜像中途关闭设置仍按本轮实际注入状态补发按键释放");
+
+        string encoderSource = Read("Features/VideoRender/Pipeline/VideoEncoder.cs");
+        string jobSource = Read("Features/VideoRender/Pipeline/VideoRenderJob.cs");
+        Check(encoderSource.Contains("internal bool TrySubmit(", StringComparison.Ordinal)
+            && encoderSource.Contains("return queue.TryAdd(frame);", StringComparison.Ordinal)
+            && !Body(encoderSource, "TrySubmit").Contains("while (true)", StringComparison.Ordinal)
+            && jobSource.Contains("private bool pendingEncode;", StringComparison.Ordinal)
+            && jobSource.Contains("encoder.TrySubmit(pendingEncodeData", StringComparison.Ordinal)
+            && jobSource.Contains("while ((frames.InFlight > 0 || pendingEncode)", StringComparison.Ordinal)
+            && jobSource.Contains("if (frames.InFlight > 0 || pendingEncode)\n                yield return null;", StringComparison.Ordinal)
+            && jobSource.Contains("while ((pendingEncode || frames.InFlight >= frames.MaxInFlight)", StringComparison.Ordinal)
+            && Body(jobSource, "TryFlushPendingEncode").Contains("encodeStallClock.ElapsedMilliseconds >= 120_000", StringComparison.Ordinal),
+            "R42 编码队列满时主线程只保留待提交帧并让出协程，不同步等待ffmpeg");
+
+        string verify = File.ReadAllText(Path.Combine(Driver.ProjectDir, "..", "tools", "verify.ps1"));
+        Check(Before(verify, "$buildExit = $LASTEXITCODE", "if ($buildExit -ne 0)")
+            && Before(verify, "$previewBuildExit = $LASTEXITCODE", "if ($previewBuildExit -ne 0)")
+            && Before(verify, "$previewRunExit = $LASTEXITCODE", "if ($previewRunExit -ne 0)"),
+            "R43 主项目构建、预览器构建与运行均按原生退出码判红");
+
         var resolve = typeof(VideoEncoder).GetMethod("ResolveCodec", sf, null, new[] {
             typeof(VideoEncoder.OutContainer), typeof(VideoEncoder.VideoCodec), typeof(VideoEncoder.HardwareBackend),
             typeof(bool), typeof(bool), typeof(string) }, null);

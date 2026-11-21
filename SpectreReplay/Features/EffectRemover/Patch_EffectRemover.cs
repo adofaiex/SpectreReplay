@@ -9,7 +9,13 @@ namespace SpectreReplay.Features.EffectRemover;
 internal static class Patch_LevelDataDecode
 {
     [SpectrePatch(typeof(ADOFAI.LevelData), "Decode", PatchType.Postfix, Feature = FeatureKeys.EffectRemover)]
-    internal static void Postfix(ADOFAI.LevelData __instance) => EffectRemover.OnLevelDataDecode(__instance);
+    internal static void Postfix(ADOFAI.LevelData __instance, LoadResult status)
+    {
+        // Decode 会先写入一部分字段，再以 out status 报 FutureVersion / DLC / Error；
+        // 失败对象可能正是当前编辑器对象，不能把半成品再做去特效。
+        if (status != LoadResult.Successful) return;
+        EffectRemover.OnLevelDataDecode(__instance);
+    }
 }
 
 internal static class Patch_LevelDataCopySafety
@@ -34,6 +40,12 @@ internal static class Patch_EffectDataSafety
 
     [SpectrePatch(typeof(scnEditor), "SaveLevel", PatchType.Postfix)]
     internal static void SavedPostfix(scnEditor __instance) => EffectRemover.RefreshEditorSaveButtons(__instance);
+
+    [SpectrePatch(typeof(scnEditor), "ExportLevel", PatchType.Prefix)]
+    internal static bool ExportPrefix(scnEditor __instance) => EffectRemover.OnExportLevelPrefix(__instance);
+
+    [SpectrePatch(typeof(scnEditor), "PublishToSteam", PatchType.Prefix)]
+    internal static bool PublishPrefix(scnEditor __instance) => EffectRemover.OnExportLevelPrefix(__instance);
 
     // Level export and Steam publishing also write the current level file directly.
     // Guard RDFile's final text write so every such path uses the same target-path policy.
