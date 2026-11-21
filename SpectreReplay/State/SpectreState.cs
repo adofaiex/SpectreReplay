@@ -500,8 +500,11 @@ public static class SpectreState
         return num;
     }
 
-    internal static bool SaveFile(bool without_sound = false, bool retry = false, bool notify = true)
+    internal static bool SaveFile(bool without_sound = false, bool retry = false, bool notify = true,
+        ReplayData savedData = null, string saveDirectory = null)
     {
+        ReplayData data = savedData ?? SpectreState.data;
+        saveDirectory ??= Settings.SavePath;
         if (data == null)
         {
             return true;
@@ -527,17 +530,41 @@ public static class SpectreState
             }
             return false;
         }
+        var audioStop = data.KeybdSoundStop;
+        if (!without_sound && audioStop != null && !audioStop.IsCompleted)
+        {
+            if (!audioStop.SaveQueued)
+            {
+                var snapshot = data.SnapshotForSave();
+                snapshot.FileName ??= CreateFileName();
+                audioStop.SaveQueued = true;
+                audioStop.WhenCompleted(_ => SaveFile(without_sound, retry, notify, snapshot, saveDirectory));
+                Debug.Log("[SpectreReplay] 已排队保存回放，等待录音封头完成: " + snapshot.FileName);
+            }
+            // 已接收保存请求；下一局可以 Reset 当前数据，独立快照负责这次保存。
+            return true;
+        }
         string message = "";
+        if (audioStop != null && audioStop.IsCompleted)
+        {
+            data.KeybdSoundHash = audioStop.Hash;
+            if (string.IsNullOrEmpty(audioStop.Hash))
+            {
+                data.KeybdSoundFileName = null;
+                message += LocalizationManager.GetLocalizedText("note.keybdsoundfile_save_fail") + "\n";
+            }
+        }
         bool success = true;
         string savedPath = null;
         if (retry)
         {
             data.FileName = CreateFileName(safe_mode: true);
-            data.KeybdSoundFileName = data.FileName + ".wav";
+            if (data.KeybdSoundFileName != null)
+                data.KeybdSoundFileName = data.FileName + ".wav";
         }
         // 旧字典版用 ContainsKey 判存在：空串算“有值”。这里必须是 == null，不能换成 IsNullOrEmpty。
         string fileName = data.FileName == null ? CreateFileName() : data.FileName;
-        string savePath = Path.Combine(Settings.SavePath, fileName);
+        string savePath = Path.Combine(saveDirectory, fileName);
         if (ReplayManager.SaveReplay(data, savePath, debug_no_encryption, embedKeybdSound: !without_sound))
         {
             message += LocalizationManager.GetLocalizedText("note.save_success") + "\n";
@@ -552,7 +579,7 @@ public static class SpectreState
         // 留一份会让磁盘与云端体积直接翻倍，而这正是「彻底融入」要消灭的东西。
         // 代价是老版本模组读新回放会没有声音（画面照常），这是可接受的单向升级。
         bool soundEmbedded = data.KeybdAudio.HasData;
-        string tmpPath = Path.Combine(Settings.SavePath, "tmp.wav");
+        string tmpPath = Path.Combine(saveDirectory, "tmp.wav");
         // 只在主文件真的写成功后才清理：写失败会走 retry 重存一次，
         // 那时还指望 tmp.wav 里的音频，先删了就等于把声音弄丢。
         if (soundEmbedded && savedPath != null)
@@ -579,7 +606,7 @@ public static class SpectreState
             }
             else
             {
-                string wavPath = Path.Combine(Settings.SavePath, keybdName);
+                string wavPath = Path.Combine(saveDirectory, keybdName);
                 try
                 {
                     if (File.Exists(tmpPath))
@@ -640,7 +667,7 @@ public static class SpectreState
                 // 同名 wav 复制过去。失败只提示、不算整局保存失败。
                 try
                 {
-                    string srcWav = Path.Combine(Settings.SavePath, backupWav);
+                    string srcWav = Path.Combine(saveDirectory, backupWav);
                     if (File.Exists(srcWav))
                     {
                         Directory.CreateDirectory(backupDir);
@@ -672,7 +699,7 @@ public static class SpectreState
                     && data.KeybdSoundFileName is string cloudWavName
                     && !string.IsNullOrEmpty(cloudWavName))
                 {
-                    cloudWav = Path.Combine(Settings.SavePath, cloudWavName);
+                    cloudWav = Path.Combine(saveDirectory, cloudWavName);
                 }
                 if (CloudReplay.OnReplaySaved(savedPath + cloudExt, cloudWav))
                 {
@@ -690,7 +717,7 @@ public static class SpectreState
         if (notify && (success || retry)) TriggerMessage(message);
         if (!success && !retry)
         {
-            return SaveFile(without_sound, retry: true, notify: notify);
+            return SaveFile(without_sound, retry: true, notify: notify, savedData: data, saveDirectory: saveDirectory);
         }
         return success;
     }

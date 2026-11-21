@@ -26,7 +26,7 @@ internal static class SaveToastOnceCheck
         Expect(source.Contains("if (notify && (success || retry)) TriggerMessage(message);",
                 StringComparison.Ordinal),
             "SaveFile must suppress the first failed attempt and report only the retry outcome");
-        Expect(source.Contains("return SaveFile(without_sound, retry: true, notify: notify);",
+        Expect(source.Contains("return SaveFile(without_sound, retry: true, notify: notify, savedData: data, saveDirectory: saveDirectory);",
                 StringComparison.Ordinal),
             "the safe-name retry must preserve the caller's notification decision");
         Expect(misc.Contains("if (!ManualSaveHotkey.TryConsume()) return;",

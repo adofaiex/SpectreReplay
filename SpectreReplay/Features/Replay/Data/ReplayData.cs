@@ -16,6 +16,8 @@ public sealed class ReplayData
     public string KeybdSoundFileName { get; set; }
     /// <summary>按键音 wav 内容哈希。原键 keybdsoundHash。</summary>
     public string KeybdSoundHash { get; set; }
+    // 仅录制/保存时使用，不进入回放格式；Reset 后不得影响下一局。
+    internal RecordingStop KeybdSoundStop { get; set; }
     /// <summary>曲名。原键 song_name。</summary>
     public string SongName { get; set; }
     /// <summary>曲师。原键 artist_name。</summary>
@@ -198,12 +200,23 @@ public sealed class ReplayData
         }
     }
 
+    // 延迟保存不能持有会被下一局 Reset 清空的列表。
+    internal ReplayData SnapshotForSave()
+    {
+        var snapshot = (ReplayData)MemberwiseClone();
+        snapshot.KeyEvents = new List<KeyEvent>(KeyEvents);
+        snapshot.HitSnapshots = new List<HitSnapshot>(HitSnapshots);
+        snapshot.CursorTrack = new List<CursorSample>(CursorTrack);
+        return snapshot;
+    }
+
     /// <summary>清空为"一张空回放"的状态。旧名 reset()。</summary>
     public void Reset()
     {
         FileName = null;
         KeybdSoundFileName = null;
         KeybdSoundHash = null;
+        KeybdSoundStop = null;
         SongName = null;
         ArtistName = null;
         SceneName = null;

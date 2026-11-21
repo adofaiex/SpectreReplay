@@ -1503,8 +1503,7 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "成功帧回收必须走 RecycleOrHold（保留帧不提前回池）",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
-                s => s.Contains("pendingEncodeRecycle = frames.RecycleOrHold;", StringComparison.Ordinal)
-                    && s.Contains("encoder.TrySubmit(pendingEncodeData", StringComparison.Ordinal)
+                s => s.Contains("encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold,", StringComparison.Ordinal)
                     && !s.Contains("frames.Recycle,", StringComparison.Ordinal));
             // 渲染期歌曲排程推迟（2026-11-08 用户实测：画面源冷启动 1.3s 实时
             // 烧掉剩余倒计时，成片从歌曲 0 拍开始，倒计时整段丢失）。三条硬序：

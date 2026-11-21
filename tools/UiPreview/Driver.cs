@@ -150,10 +150,14 @@ namespace UiPreview
             int timingContextFail = ReplayTimingContextCheck.Run(
                 ProjectDir);
             int reviewRegressionFail = ReviewRegressionCheck.Run();
+            int lifecycleRegressionFail = LifecycleRegressionCheck.Run();
+            int boundaryRegressionFail = BoundaryRegressionCheck.Run();
             int orphanFail = PortedCompletenessCheck.NoOrphanChecks(
                 ProjectDir);
             int total = locFail + hardFail + replayFail + encMatrixFail + timelineFail + wavFail + runtimeFail + portedFail + shapeFail + effectSnapshotFail + cpuRetryFail + hdrProbeFail + tenBitFail + hdr10Fail + overlayFilterFail + writeSafetyFail + missingKeyFail + keybdFail + cfgFail + patchFail + reflectFail + levelFail + xthreadFail + cryptoFail + enumFail + loadMarkerFail + locFallbackFail + locLangFail + pinStateFail + injectFail + logPrefixFail + scatterFail + cursorFail + cursorTrackFail + keybdAudioFail + keybdPrefsFail + crossInputFail + saveToastFail + cloudFail + debugFail + muxOffsetFail + apiSurfaceFail + rkBridgeFail + ledgerFail + verBaseFail + advanceGuardFail + timingContextFail + orphanFail;
             total += reviewRegressionFail;
+            total += lifecycleRegressionFail;
+            total += boundaryRegressionFail;
             total += EffectSaveGuardCheck.Run();
             Console.WriteLine();
             Console.WriteLine(total == 0

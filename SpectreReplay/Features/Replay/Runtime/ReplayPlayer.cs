@@ -586,7 +586,8 @@ internal static class ReplayPlayer
                     catch (Exception ex) { Debug.LogException(ex); }
                 }
             }
-            if (sendInput && num != 0 && num != 27 && !IsBlockedKey(num))
+            if (sendInput && num != 0 && num != 27 && !IsBlockedKey(num)
+                && !ManagedInput.IsModHotkey(num))
             {
                 _mirrorUsedThisPlayback = true;
                 inputs.Add(KeyboardSimulation.MakeInput((byte)num, ev.IsPressed, IsExtendedKey(num)));

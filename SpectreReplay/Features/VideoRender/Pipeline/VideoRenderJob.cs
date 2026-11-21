@@ -11,7 +11,7 @@ using static SpectreReplay.SpectreState;
 namespace SpectreReplay.Features.VideoRender;
 
 // 单次渲染作业：隐藏宿主组件，协程分阶段推进。
-// 阶段：重启回放 → 等待回放接管 → 钉扎时间线逐帧捕获 → 合成收尾。
+// 阶段：准备回放 → 等待回放接管 → 钉扎时间线逐帧捕获 → 合成收尾。
 // 回放引擎（按键/命中）全部按 songposition 驱动，时间被钉扎后行为与正常回放一致，
 // 只是按输出帧率确定性逐帧推进。
 internal sealed class VideoRenderJob : MonoBehaviour
@@ -34,12 +34,6 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private string wavPath;
     private byte[] blackout;
     private int delivered;
-    // 编码队列满时保留已完成但尚未入队的一帧，下一次 Flush 再试；
-    // 这样主线程只让出协程，不等待 ffmpeg。
-    private bool pendingEncode;
-    private byte[] pendingEncodeData;
-    private Action<byte[]> pendingEncodeRecycle;
-    private System.Diagnostics.Stopwatch encodeStallClock;
     // VideoPlayer 接管（视频背景确定性化）：渲染期间 Unity VideoPlayer 仍走实时播放，
     // 渲染比实时慢时背景跑 ahead——暂停后每帧按 RenderClock 定位
     private readonly List<UnityEngine.Video.VideoPlayer> pinnedVideos = new();
@@ -420,7 +414,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 渲染期推迟歌曲排程（见 Patch_VideoDeferStartMusic）：画面源冷启动的
         // 1.3s 不再实时烧掉倒计时，排程落到捕获循环内的虚拟时钟域。
         Patch_VideoDeferStartMusic.Arm();
-        // 走既有回放启动链：重启关卡后 Start_Rewind 补丁会做完整性校验并自动开始回放
+        // 走既有回放启动链：编辑器 Play，普通关卡由玩家按键起跑；
+        // Start_Rewind 补丁做完整性校验并开始回放，不额外重载普通关卡。
         SpectreState.PlayActions.SwitchToPlayMode();
         Patch_StartRewind.ResetRejectLog();
 
@@ -463,8 +458,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
         {
             int floorLimit = ADOBase.lm != null && ADOBase.lm.listFloors != null ? ADOBase.lm.listFloors.Count - 1 : 0;
             GCS.checkpointNum = Mathf.Clamp(requestedStartFloor, 0, Math.Max(0, floorLimit));
-            // 普通关卡与编辑器同样主动重开；CPU 重试不能等待玩家手动触发 Rewind。
-            scrController.instance.Restart();
+            // 普通关卡只准备回放，保留当前预备状态，等待玩家按键起跑。
+            // CPU 重试也沿用这个入口，不替玩家重载关卡或自动起跑。
         }
 
         SetPhase(VideoRender.Phase.WaitingPlayback, "rendervideo.stage.waiting", "");
@@ -583,6 +578,10 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 时钟 = 基值 + 已捕获帧数/fps，与成片帧号严格锁定；captureFramerate
         // 让 Unity 缩放时间与 AudioRenderer 混音采样按同一步长推进。三类时钟
         // （游戏歌曲、unscaled 动画、离线混音）全部帧驱动，单一权威。
+        // 普通关卡准备、等待起跑时继续走真实时钟；到这里回放已接管，
+        // 才能冻结绝对时间并由捕获循环推进。编辑器已在准备期装好，沿用原路径。
+        if (!UnscaledDeltaPin.Installed)
+            UnscaledDeltaPin.Install(fps);
         Time.captureFramerate = fps;
         UnscaledDeltaPin.InstallDsp();
         // **顺序敏感**：dsp 钉扎与 captureFramerate 必须先于 Release——排程
@@ -639,11 +638,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         while (frameIndex < hardStop && !cancelRequested && !sceneExited)
         {
-            // 回读或编码入队受阻时先排空再继续，不能继续推进捕获时间轴。
-            while ((pendingEncode || frames.InFlight >= frames.MaxInFlight) && !cancelRequested && !sceneExited)
+            // 回读在途满时先排空再继续（反压）
+            while (frames.InFlight >= frames.MaxInFlight && !cancelRequested)
             {
                 Flush();
-                if (!pendingEncode && frames.InFlight < frames.MaxInFlight)
+                if (frames.InFlight < frames.MaxInFlight)
                     break;
                 yield return null;
             }
@@ -976,10 +975,10 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         // 排空残余在途回读
         int drainGuard = fps * 5;
-        while ((frames.InFlight > 0 || pendingEncode) && drainGuard-- > 0 && !cancelRequested)
+        while (frames.InFlight > 0 && drainGuard-- > 0 && !cancelRequested)
         {
             Flush();
-            if (frames.InFlight > 0 || pendingEncode)
+            if (frames.InFlight > 0)
                 yield return null;
         }
 
@@ -1325,8 +1324,6 @@ internal sealed class VideoRenderJob : MonoBehaviour
     // TryTake），这里只剩真正的最后防线：上个成功帧缺位（开局连败）时才黑帧。
     private void Flush()
     {
-        if (!TryFlushPendingEncode()) return;
-
         while (frames.TryTake(out int index, out byte[] pixels, out bool failed))
         {
             if (failed || pixels == null)
@@ -1339,52 +1336,26 @@ internal sealed class VideoRenderJob : MonoBehaviour
                     Debug.LogWarning("[SpectreReplay] 已替换 10 个黑帧（开局连败形态）："
                         + "回读反复失败，建议改用「纯净相机」画面来源、降低渲染帧率，或更新显卡驱动");
                 }
-                pendingEncodeData = blackout;
-                pendingEncodeRecycle = null;
+                encoder.Submit(blackout, blackout.Length, 1, null, () => cancelRequested);
             }
             else
             {
                 // RecycleOrHold：保留帧（回读失败的顶替源）在泵写完后不回池，
                 // 其余照常回池——见 VideoFrameSource.RecycleOrHold 的时序说明。
-                pendingEncodeData = pixels;
-                pendingEncodeRecycle = frames.RecycleOrHold;
+                encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold, () => cancelRequested);
             }
-            pendingEncode = true;
-            if (!TryFlushPendingEncode()) return;
+            VideoRender.Current.FramesDone = ++delivered;
+            // 剩余时间 = 未交付帧数 ÷ 捕获以来平均交付速率；
+            // 前半秒速率未成形（首帧含回读建立开销）时不给估计，避免开局跳变
+            if (captureClock != null && delivered > 0)
+            {
+                double elapsedSeconds = captureClock.Elapsed.TotalSeconds;
+                double rate = delivered / elapsedSeconds;
+                VideoRender.Current.EtaSeconds = elapsedSeconds >= 0.5 && rate > 0.01
+                    ? Math.Max(0.0, (VideoRender.Current.FramesTotal - delivered) / rate)
+                    : -1;
+            }
         }
-    }
-
-    private bool TryFlushPendingEncode()
-    {
-        if (!pendingEncode) return true;
-        if (!encoder.TrySubmit(pendingEncodeData, pendingEncodeData.Length, 1,
-                pendingEncodeRecycle, () => cancelRequested))
-        {
-            // 保留原有 120 秒卡死看门狗，但重试之间交还主线程，取消仍可响应。
-            if (encodeStallClock == null) encodeStallClock = System.Diagnostics.Stopwatch.StartNew();
-            if (encodeStallClock.ElapsedMilliseconds >= 120_000)
-                throw new TimeoutException("encoder stalled: frame queue full for 120s (ffmpeg stopped consuming stdin?)");
-            return false;
-        }
-        pendingEncode = false;
-        pendingEncodeData = null;
-        pendingEncodeRecycle = null;
-        encodeStallClock = null;
-        VideoRender.Current.FramesDone = ++delivered;
-        UpdateEncodeEta();
-        return true;
-    }
-
-    private void UpdateEncodeEta()
-    {
-        // 剩余时间 = 未交付帧数 ÷ 捕获以来平均交付速率；
-        // 前半秒速率未成形（首帧含回读建立开销）时不给估计，避免开局跳变
-        if (captureClock == null || delivered <= 0) return;
-        double elapsedSeconds = captureClock.Elapsed.TotalSeconds;
-        double rate = delivered / elapsedSeconds;
-        VideoRender.Current.EtaSeconds = elapsedSeconds >= 0.5 && rate > 0.01
-            ? Math.Max(0.0, (VideoRender.Current.FramesTotal - delivered) / rate)
-            : -1;
     }
 
     /// <summary>
@@ -1612,8 +1583,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // captureFramerate **不在这里设**：设了它倒计时也按 1/fps 每帧推进，
         // 而"等待回放"阶段每帧真实耗时极短，倒计时会被瞬间烧完。它连同
         // dspTime 钉扎一起在捕获就绪时装配（见 capture-ready 段的顺序说明）。
-        // fps 显式传入：安装点先于 captureFramerate，读不到正确值。
-        UnscaledDeltaPin.Install(fps); // unscaledDeltaTime 钉到虚拟帧长（见 VideoRenderPatches）
+        // 编辑器原地 Play 沿用已验证的准备期钉扎。普通关卡等待玩家起跑时
+        // 保持真实时间，预备动画及玩家主动触发的转场仍需继续推进；
+        // TickFrame 只在捕获期调用，所以普通关卡到捕获就绪才安装时钟。
+        if (ADOBase.isLevelEditor)
+            UnscaledDeltaPin.Install(fps);
         QualitySettings.vSyncCount = 0;
         Application.targetFrameRate = Math.Max(1000, fps * 4);
         Application.runInBackground = true;
@@ -1957,16 +1931,6 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // Delete 临时目录、二次 Destroy(gameObject)
         if (tornDown) return;
         tornDown = true;
-        // 非阻塞入队失败时，最后一帧仍由本作业持有；取消/卸载不能把它遗留在
-        // 大数组池外。正常成功路径 pendingEncode 已在 drain 中清空，这里是兜底。
-        if (pendingEncode)
-        {
-            try { pendingEncodeRecycle?.Invoke(pendingEncodeData); }
-            catch (Exception ex) { Debug.LogException(ex); }
-            pendingEncode = false;
-            pendingEncodeData = null;
-            pendingEncodeRecycle = null;
-        }
         // **先把游戏交还回去再看收尾。** 正常路径下协程走到这里时已经释放过（幂等），
         // 但 OnDestroy 兜底路径是从半途掐断的——此时游戏可能正带着冻结的钉扎时钟跑，
         // 早一帧释放就少一帧"星球不动"。

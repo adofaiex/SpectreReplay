@@ -148,8 +148,8 @@ internal static class ReviewRegressionCheck
             && phases.Contains("finalizingReplay = true;", StringComparison.Ordinal)
             && job.Contains("else if (finalizingReplay)", StringComparison.Ordinal),
             "R15 合成成功后才消费回放，等待时暂停两种模式");
-        Check(phases.Contains("scrController.instance.Restart();", StringComparison.Ordinal),
-            "R16 普通关卡启动和CPU重试主动重开");
+        Check(!phases.Contains("scrController.instance.Restart();", StringComparison.Ordinal),
+            "R16 普通关卡渲染和CPU重试不自动重启场景");
         Check(Body(job, "NotifyFailed").Contains("encoder.UsingHardware", StringComparison.Ordinal)
             && !Body(job, "NotifyFailed").Contains("Settings.RenderHardware", StringComparison.Ordinal)
             && job.Contains("message, options);", StringComparison.Ordinal)
@@ -248,19 +248,6 @@ internal static class ReviewRegressionCheck
             && player.Contains("_mirrorUsedThisPlayback = false;", StringComparison.Ordinal),
             "R41 镜像中途关闭设置仍按本轮实际注入状态补发按键释放");
 
-        string encoderSource = Read("Features/VideoRender/Pipeline/VideoEncoder.cs");
-        string jobSource = Read("Features/VideoRender/Pipeline/VideoRenderJob.cs");
-        Check(encoderSource.Contains("internal bool TrySubmit(", StringComparison.Ordinal)
-            && encoderSource.Contains("return queue.TryAdd(frame);", StringComparison.Ordinal)
-            && !Body(encoderSource, "TrySubmit").Contains("while (true)", StringComparison.Ordinal)
-            && jobSource.Contains("private bool pendingEncode;", StringComparison.Ordinal)
-            && jobSource.Contains("encoder.TrySubmit(pendingEncodeData", StringComparison.Ordinal)
-            && jobSource.Contains("while ((frames.InFlight > 0 || pendingEncode)", StringComparison.Ordinal)
-            && jobSource.Contains("if (frames.InFlight > 0 || pendingEncode)\n                yield return null;", StringComparison.Ordinal)
-            && jobSource.Contains("while ((pendingEncode || frames.InFlight >= frames.MaxInFlight)", StringComparison.Ordinal)
-            && Body(jobSource, "TryFlushPendingEncode").Contains("encodeStallClock.ElapsedMilliseconds >= 120_000", StringComparison.Ordinal),
-            "R42 编码队列满时主线程只保留待提交帧并让出协程，不同步等待ffmpeg");
-
         string verify = File.ReadAllText(Path.Combine(Driver.ProjectDir, "..", "tools", "verify.ps1"));
         Check(Before(verify, "$buildExit = $LASTEXITCODE", "if ($buildExit -ne 0)")
             && Before(verify, "$previewBuildExit = $LASTEXITCODE", "if ($previewBuildExit -ne 0)")
@@ -273,6 +260,22 @@ internal static class ReviewRegressionCheck
             && Before(unloadReplay, "Features.VideoRender.VideoRender.CancelRender();", "PlayActions.StopPlaying();")
             && Before(phases, "VideoRender.CaptureInProgress = false;", "ConsumeLoadedReplay();"),
             "R44 捕获中卸载先取消再停回放，正常合成完成后消费不取消");
+
+        string recorder = Read("State/AudioRecorder.cs");
+        string recorderCleanup = Body(recorder, "Cleanup");
+        string pendingCleanup = BlockAfter(recorderCleanup, "if (WorkersRunning)");
+        string deferredUpdate = Body(recorder, "Update");
+        Check(pendingCleanup.Contains("go.AddComponent<PendingCleanup>().Owner = this;", StringComparison.Ordinal)
+            && pendingCleanup.Contains("cleanupPending = true;", StringComparison.Ordinal)
+            && pendingCleanup.Contains("return;", StringComparison.Ordinal)
+            && Before(recorderCleanup, "if (WorkersRunning)", "UnityEngine.Object.Destroy(recordingClip);")
+            && Before(recorderCleanup, "if (WorkersRunning)", "processingThread = null;")
+            && Before(deferredUpdate, "if (owner.WorkersRunning) return;", "owner.Cleanup();")
+            && deferredUpdate.Contains("!ReferenceEquals(owner, null)", StringComparison.Ordinal)
+            && Before(Body(recorder, "StartRecording"), "if (cleanupPending)", "Microphone.devices.Length")
+            && Before(Body(recorder, "startMicrophone"), "if (cleanupPending)", "Microphone.Start(")
+            && Body(recorder, "OnDestroy").Contains("Cleanup(End_microphone: true);", StringComparison.Ordinal),
+            "R48 录音线程超时保留引用，独立主线程回收器等退出后释放，清理期间不复用资源");
 
         string startupRestore = Body(cloudState, "RestoreOnStartup");
         string scheduleRestore = Body(cloudState, "ScheduleStartupRestore");

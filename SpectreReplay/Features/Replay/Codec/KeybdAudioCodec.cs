@@ -62,11 +62,16 @@ internal static class KeybdAudioCodec
     private const int MaxChannels = 16;
 
     /// <summary>
-    /// 样本数硬上限（100M）。这是「荒谬值」的闸门：不设它的话，一份几字节的
-    /// 坏负载声称 20 亿个样本，就能让解码端直接申请几个 GB。
-    /// 9 分钟的 44.1kHz 实录只有 2400 万样本，离这个上限还很远。
+    /// 解码样本数硬上限（16M，约 12 分钟 @22.05kHz）。不能只按负载密度推断内存：
+    /// ADPCM 静音块每 4 字节就表示 1024 个样本，一份几百 KB 的稀疏负载便能
+    /// 声称 1 亿个样本，随后同时分配 PCM、float、WAV 与 AudioClip 缓冲而耗尽内存。
+    /// 16M 把 PCM16 + float 的托管解码数组限在约 96 MB，WAV/AudioClip 也随之有界。
     /// </summary>
-    private const int MaxSampleCount = 100 * 1000 * 1000;
+    internal const int MaxSampleCount = 16_000_000;
+
+    // 源 WAV 是真实 PCM，不能把降采样后的预算直接用于源帧数，否则一段本可安全
+    // 压成 22.05kHz 的 44.1kHz 录音会提前被拒。保留原有源文件上限。
+    private const int MaxSourceSampleCount = 100_000_000;
 
     /// <summary>ADPCM 每块样本数（约 64ms @16kHz）。见 <c>EncodeAdpcm</c> 的块结构说明。</summary>
     private const int AdpcmBlockSamples = 1024;
@@ -128,6 +133,11 @@ internal static class KeybdAudioCodec
         {
             float[] samples = ReadMono(wavFile, fmt);
             samples = Resample(samples, fmt.SampleRate, TargetRateFor(quality), out int rate);
+            if (samples.Length > MaxSampleCount)
+            {
+                error = "音频过长";
+                return default;
+            }
             GateSilence(samples);
             if (samples.Length == 0)
             {
@@ -156,6 +166,15 @@ internal static class KeybdAudioCodec
             try
             {
                 float[] mono = ReadMono(wavFile, fmt);
+                int rate = fmt.SampleRate;
+                // 预算内仍保留原有 PCM16 原采样率兜底；只有超预算时才尝试降采样。
+                if (mono.Length > MaxSampleCount)
+                    mono = Resample(mono, fmt.SampleRate, TargetRateFor(quality), out rate);
+                if (mono.Length > MaxSampleCount)
+                {
+                    error = "音频过长";
+                    return default;
+                }
                 GateSilence(mono);
                 if (mono.Length == 0)
                 {
@@ -174,7 +193,7 @@ internal static class KeybdAudioCodec
                 return new KeybdAudioBlob
                 {
                     Codec = CodecPcm16,
-                    SampleRate = fmt.SampleRate,
+                    SampleRate = rate,
                     Channels = 1,
                     SampleCount = pcm.Length,
                     Payload = payload,
@@ -457,7 +476,7 @@ internal static class KeybdAudioCodec
             return false;
         }
 
-        if (frames > MaxSampleCount)
+        if (frames > MaxSourceSampleCount)
         {
             error = "音频过长";
             return false;

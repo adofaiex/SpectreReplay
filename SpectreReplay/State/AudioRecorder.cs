@@ -36,12 +36,8 @@ public class AudioRecorder : MonoBehaviour
     // 非 volatile 的字段读可以被 JIT 缓存/重排，处理线程可能迟迟看不到停止标志，
     // 于是 Join(1000) 超时后主线程还得干等它。
     //
-    // **注意 volatile 只保证可见性，不保证互斥。** 真正避免"一边关流一边写流"
-    // 的是 FinalizeWavFile 的调用点持有了 bufferLock（StopRecording 里
-    // `lock (bufferLock) { ... FinalizeWavFile(); }`）——采集线程写盘也持这把锁，
-    // 所以 Join 超时后主线程会在锁上等当前 chunk 做完，而不是并发写。
-    // 采集线程每轮只睡 10ms、整个循环体有 try/catch 兜底，等待有上界，
-    // 不会死锁。改这块时**别把 volatile 当成锁来用**。
+    // volatile 不代替互斥：后台封头线程先等采集/初始化退出，再持 bufferLock
+    // 收尾。磁盘 Write/Flush 没有耗时上界，主线程只能限时 Join，不能再等锁。
     private volatile bool isRecording = false;
 
     // 同理：主线程赋值，处理线程在循环里判空后调用 GetData
@@ -53,6 +49,19 @@ public class AudioRecorder : MonoBehaviour
     private Thread processingThread;
 
     private Thread initThread;
+    private Thread finalizeThread;
+    private volatile string finalizedHash;
+
+    // 完成通知只在主线程发布，早于释放 cleanupPending；保存方因此能消费
+    // 完整 WAV，下一局才获准删除/覆盖 tmp.wav。
+    internal RecordingStop LastStop { get; private set; }
+
+    // 超时的线程仍可能读取 clip 或写入缓冲区；清理完成前不得开始下一次录音。
+    private bool cleanupPending;
+
+    private bool WorkersRunning => (processingThread != null && processingThread.IsAlive)
+        || (initThread != null && initThread.IsAlive)
+        || (finalizeThread != null && finalizeThread.IsAlive);
 
     private readonly object bufferLock = new object();
 
@@ -89,6 +98,8 @@ public class AudioRecorder : MonoBehaviour
 
     internal bool IsRecording => isRecording;
 
+    internal bool IsCleanupPending => cleanupPending;
+
     private void Awake()
     {
         if (_instance != null && _instance != this)
@@ -103,6 +114,11 @@ public class AudioRecorder : MonoBehaviour
 
     internal bool StartRecording(string filePath = null, string deviceName = null, int duration = 10, int frequency = 44100)
     {
+        if (cleanupPending)
+        {
+            Debug.LogWarning("[AudioRecorder] 上次录音线程仍在收尾，本次录音未启动");
+            return false;
+        }
         if (isRecording)
         {
             Debug.Log("已经在录制中");
@@ -115,6 +131,7 @@ public class AudioRecorder : MonoBehaviour
         }
         try
         {
+            LastStop = null;
             if (!string.IsNullOrEmpty(deviceName) && ValidateDevice(deviceName)
                 && deviceName != microphoneDevice)
             {
@@ -172,7 +189,7 @@ public class AudioRecorder : MonoBehaviour
                 // 直接 return 会把句柄泄漏在那里：文件删不掉（Windows 上 FileShare.Read
                 // 不含 Delete），下次 StartRecording 也会撞上残留。收尾后再报失败。
                 WaitForInitThread();
-                CloseFileStreamQuietly();
+                Cleanup();
                 return false;
             }
             isRecording = true;
@@ -402,7 +419,8 @@ public class AudioRecorder : MonoBehaviour
         }
         finally
         {
-            initThread = null;
+            // Join 超时仍保留引用，由 Cleanup 的延迟回收器等待真正结束。
+            if (!t.IsAlive) initThread = null;
         }
     }
 
@@ -430,25 +448,19 @@ public class AudioRecorder : MonoBehaviour
             return null;
         }
         isRecording = false;
-        string audioHash = null;
-        if (initThread != null && initThread.IsAlive)
-        {
-            initThread.Join(1000);
-        }
-        if (processingThread != null && processingThread.IsAlive)
-        {
-            processingThread.Join(1000);
-        }
+        var stopped = new RecordingStop();
+        LastStop = stopped;
+        finalizedHash = null;
         try
         {
-            lock (bufferLock)
+            finalizeThread = new Thread(FinalizeRecording)
             {
-                if (fileStream != null)
-                {
-                    audioHash = FinalizeWavFile();
-                }
-            }
-            Debug.Log(("[AudioRecorder] 录制停止，哈希: " + (audioHash ?? "无")));
+                IsBackground = true,
+                Priority = ThreadPriority.AboveNormal
+            };
+            finalizeThread.Start();
+            if (!finalizeThread.Join(1000))
+                Debug.LogWarning("[AudioRecorder] 录音仍在后台封头，回放保存将等待完整音频");
         }
         catch (Exception ex)
         {
@@ -458,7 +470,39 @@ public class AudioRecorder : MonoBehaviour
         {
             Cleanup(End_microphone);
         }
-        return audioHash;
+        return stopped.Hash;
+    }
+
+    private void FinalizeRecording()
+    {
+        try
+        {
+            // 只有这个后台线程可以无界等磁盘；主线程不再争抢 bufferLock。
+            initThread?.Join();
+            processingThread?.Join();
+            lock (bufferLock)
+            {
+                // 初始化期间积压的最后一块也必须落盘，不能只封已有的前缀。
+                if (fileStream != null && wavDataBuffer.Count > 0)
+                {
+                    byte[] buffered = wavDataBuffer.ToArray();
+                    fileStream.Write(buffered, 0, buffered.Length);
+                    lock (hashLock)
+                        hashAlgorithm?.TransformBlock(buffered, 0, buffered.Length, null, 0);
+                    wavDataBuffer.Clear();
+                }
+                finalizedHash = FinalizeWavFile();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError("[AudioRecorder] 音频收尾失败，回放将不附带该段录音: " + ex);
+        }
+        finally
+        {
+            // 封头失败后的 Close 也可能触发磁盘 Flush，仍由后台线程负责。
+            CloseFileStreamQuietly();
+        }
     }
 
     private string FinalizeWavFile()
@@ -643,6 +687,28 @@ public class AudioRecorder : MonoBehaviour
     private void Cleanup(bool End_microphone = false)
     {
         isRecording = false;
+        if (End_microphone && !string.IsNullOrEmpty(microphoneDevice))
+        {
+            Microphone.End(microphoneDevice);
+        }
+        if (WorkersRunning)
+        {
+            if (!cleanupPending)
+            {
+                cleanupPending = true;
+                // 独立于模组的 MainThread 泵：关闭模组或销毁录音器之后，仍需等线程
+                // 退出，再在 Unity 主线程销毁 clip。不能丢弃活线程或提前销毁其输入。
+                var go = new GameObject("SpectreReplay.AudioCleanup");
+                Object.DontDestroyOnLoad(go);
+                go.AddComponent<PendingCleanup>().Owner = this;
+                Debug.LogWarning("[AudioRecorder] 录音线程尚未退出，资源将在退出后回收");
+            }
+            return;
+        }
+        // Join/IsAlive 确认后台线程已结束后，在主线程发布保存通知。期间保持
+        // cleanupPending，防止通知尚未消费 tmp.wav 时下一局开始录音。
+        try { LastStop?.Complete(finalizedHash); }
+        catch (Exception ex) { Debug.LogError("[AudioRecorder] 延迟保存失败: " + ex); }
         lock (hashLock)
         {
             if (hashAlgorithm != null)
@@ -667,15 +733,8 @@ public class AudioRecorder : MonoBehaviour
         CloseFileStreamQuietly();
         if (recordingClip != null)
         {
-            if (processingThread == null || !processingThread.IsAlive)
-            {
-                UnityEngine.Object.Destroy(recordingClip);
-                recordingClip = null;
-            }
-        }
-        if (End_microphone && !string.IsNullOrEmpty(microphoneDevice))
-        {
-            Microphone.End(microphoneDevice);
+            UnityEngine.Object.Destroy(recordingClip);
+            recordingClip = null;
         }
         lock (bufferLock)
         {
@@ -683,6 +742,26 @@ public class AudioRecorder : MonoBehaviour
         }
         processingThread = null;
         initThread = null;
+        finalizeThread = null;
+        cleanupPending = false;
+    }
+
+    private sealed class PendingCleanup : MonoBehaviour
+    {
+        internal AudioRecorder Owner;
+
+        private void Update()
+        {
+            // Unity 的 == null 会把已销毁的录音器判空，但其托管字段和 clip 仍需收尾。
+            AudioRecorder owner = Owner;
+            if (!ReferenceEquals(owner, null))
+            {
+                if (owner.WorkersRunning) return;
+                owner.Cleanup();
+                Owner = null;
+            }
+            Object.Destroy(gameObject);
+        }
     }
 
     private byte[] CreateWAVHeader(int channels, int sampleRate, int bitDepth, int dataLength)
@@ -708,6 +787,11 @@ public class AudioRecorder : MonoBehaviour
 
     internal void startMicrophone(string deviceName = null)
     {
+        if (cleanupPending)
+        {
+            Debug.LogWarning("[AudioRecorder] 上次录音线程仍在收尾，麦克风预热已延后");
+            return;
+        }
         if (!ValidateDevice(deviceName))
         {
             Debug.Log("device name illegal");
@@ -747,6 +831,10 @@ public class AudioRecorder : MonoBehaviour
         if (isRecording)
         {
             StopRecording(End_microphone: true);
+        }
+        else
+        {
+            Cleanup(End_microphone: true);
         }
     }
 }

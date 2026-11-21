@@ -357,19 +357,16 @@ internal sealed class VideoEncoder : IDisposable
         }
     }
 
-    // 入队必须是非阻塞的：调用方在 Unity 主线程，队列满时应让协程 yield，
-    // 不能在这里等待 ffmpeg。返回 false 表示 PendingFrame 仍归调用方所有，
-    // 调用方可在下一帧重试，不会丢帧或提前回收缓冲。
-    internal bool TrySubmit(byte[] data, int length, int repeat, Action<byte[]> recycle, Func<bool> canceled)
-    {
-        if (canceled != null && canceled())
-            throw new OperationCanceledException("canceled");
-        if (pipe == null || pipe.HasExited)
-            throw new InvalidOperationException("encoder process exited unexpectedly"
-                + StderrSuffix());
-        if (pumpFailure != null)
-            throw new InvalidOperationException("encoder pump failed" + StderrSuffix(), pumpFailure);
+    // 队列满时自旋等待；取消检查交给回调。
+    // 另加卡死看门狗：ffmpeg 若停止读 stdin（磁盘满/编码器挂起），泵线程会堵在
+    // 管道 Write 上，队列随之填满——此时若用户不点取消，Submit 会无限自旋，
+    // 协程永远到不了带超时的 FinishVideo，整次渲染静默挂死（与本文件其余路径
+    // 的"超时即失败上报"策略不一致）。连续入队失败超过阈值即判定编码器卡死。
+    private const int SubmitStallTimeoutMs = 120_000;
+    private const int SubmitRetryMs = 50;
 
+    internal void Submit(byte[] data, int length, int repeat, Action<byte[]> recycle, Func<bool> canceled)
+    {
         var frame = new PendingFrame
         {
             Data = data,
@@ -377,7 +374,23 @@ internal sealed class VideoEncoder : IDisposable
             Repeat = Math.Max(1, repeat),
             Recycle = recycle
         };
-        return queue.TryAdd(frame);
+        var waitedMs = 0;
+        while (true)
+        {
+            if (canceled != null && canceled())
+                throw new OperationCanceledException("canceled");
+            if (pipe == null || pipe.HasExited)
+                throw new InvalidOperationException("encoder process exited unexpectedly"
+                    + StderrSuffix());
+            if (pumpFailure != null)
+                throw new InvalidOperationException("encoder pump failed" + StderrSuffix(), pumpFailure);
+            if (queue.TryAdd(frame, SubmitRetryMs))
+                return;
+            waitedMs += SubmitRetryMs;
+            if (waitedMs >= SubmitStallTimeoutMs)
+                throw new TimeoutException("encoder stalled: frame queue full for "
+                    + (SubmitStallTimeoutMs / 1000) + "s (ffmpeg stopped consuming stdin?)");
+        }
     }
 
     // 关闭管道收尾：等待写线程排空并让 ffmpeg 正常退出

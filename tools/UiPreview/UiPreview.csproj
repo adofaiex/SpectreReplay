@@ -58,6 +58,7 @@
     
     <Compile Include="..\..\SpectreReplay\Features\Replay\Codec\ReplayCrypto.cs" Link="Real\ReplayCrypto.cs" />
     <Compile Include="..\..\SpectreReplay\Features\Replay\Data\ReplayData.cs" Link="Real\ReplayData.cs" />
+    <Compile Include="..\..\SpectreReplay\State\RecordingStop.cs" Link="Real\RecordingStop.cs" />
     <Compile Include="..\..\SpectreReplay\Features\Replay\Timeline\ReplayTimeline.cs" Link="Real\ReplayTimeline.cs" />
     <!-- 回放命中推进兜底（重判窗口比录制时窄时把角度收进窗口边缘）：纯算术、不碰
          UnityEngine，所以闸门能链接真源码跑断言（HitAdvanceGuardCheck），而不是
@@ -85,6 +86,18 @@
   <ItemGroup>
     <PackageReference Include="System.Drawing.Common" Version="8.0.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- 使用已安装 SDK 的编译器执行提取的真实源码分支；不下载新依赖，不加载游戏。 -->
+  <ItemGroup>
+    <Reference Include="Microsoft.CodeAnalysis">
+      <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.CodeAnalysis.CSharp">
+      <HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
   </ItemGroup>
 
 </Project>

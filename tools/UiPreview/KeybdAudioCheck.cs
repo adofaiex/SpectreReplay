@@ -38,6 +38,7 @@ namespace UiPreview
             fail += RejectsHugePayloadLength();
             fail += CodecRoundTrip();
             fail += CodecRobustness();
+            fail += SourceWavBudget();
             if (fail == 0) Console.WriteLine("    ✓ 嵌入键盘音全部通过");
             return fail;
         }
@@ -296,6 +297,21 @@ namespace UiPreview
             fail += Check("⒁ 荒谬样本数被拒（不 OOM）",
                 !KeybdAudioCodec.TryDecodeToSamples(huge, out _, out _, out _), "");
 
+            // 最小体积的静音块可编码 1024 个样本 / 4 字节；密度检查本身无法约束
+            // 解码后的内存。样本数刚越过资源预算时必须在分配 short[] 前拒绝。
+            const int sparseCount = 16_000_001; // 固定资源预算，不能随被测上限一起放宽。
+            byte[] sparsePayload = SilentPayload(sparseCount);
+            var sparse = new KeybdAudioBlob
+            {
+                Codec = KeybdAudioCodec.CodecAdpcm, SampleRate = 16000, Channels = 1,
+                SampleCount = sparseCount, Payload = sparsePayload,
+            };
+            bool sparseRejected = !KeybdAudioCodec.TryDecodeToSamples(
+                sparse, out _, out _, out string sparseError)
+                && sparseError == "样本数无效";
+            fail += Check("⒁b 超预算的稀疏静音负载先拒绝再分配", sparseRejected,
+                sparseError ?? "");
+
             // 空块：两条路线都不能崩
             var empty = new KeybdAudioBlob();
             fail += Check("⒂ 空块不崩",
@@ -305,6 +321,31 @@ namespace UiPreview
             KeybdAudioBlob junk = KeybdAudioCodec.Encode(new byte[] { 1, 2, 3, 4, 5 }, KeybdAudioCodec.QualityBalanced, out string je);
             fail += Check("⒃ 非法 wav 被拒", !junk.HasData && !string.IsNullOrEmpty(je), je ?? "");
             return fail;
+        }
+
+        private static byte[] SilentPayload(int sampleCount)
+        {
+            int blocks = (sampleCount + 1023) / 1024;
+            var payload = new byte[blocks * 4];
+            for (int block = 0; block < blocks; block++)
+                payload[block * 4 + 3] = 1; // AdpcmFlagSilent
+            return payload;
+        }
+
+        private static int SourceWavBudget()
+        {
+            // 真实高采样率源文件的帧数可超过解码预算，只要降采样后在预算内就应可编码。
+            const int frames = 16_000_001, rate = 192000;
+            var wav = new byte[44 + frames * 2];
+            Buffer.BlockCopy(MakeKeybdWav(0), 0, wav, 0, 44);
+            BitConverter.GetBytes(wav.Length - 8).CopyTo(wav, 4);
+            BitConverter.GetBytes(rate).CopyTo(wav, 24);
+            BitConverter.GetBytes(rate * 2).CopyTo(wav, 28);
+            BitConverter.GetBytes(wav.Length - 44).CopyTo(wav, 40);
+            KeybdAudioBlob blob = KeybdAudioCodec.Encode(wav, 0, out string error);
+            return Check("⒃ 源WAV帧数与降采样后解码预算分开限制",
+                blob.HasData && blob.SampleCount < KeybdAudioCodec.MaxSampleCount
+                    && KeybdAudioCodec.TryDecodeToSamples(blob, out _, out _, out _), error);
         }
 
         // ── 工具 ────────────────────────────────────────────────

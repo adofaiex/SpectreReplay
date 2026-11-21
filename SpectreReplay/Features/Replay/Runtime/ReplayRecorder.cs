@@ -77,21 +77,25 @@ internal static class ReplayRecorder
         // num8 * 0.9875^checkpointsUsed（scrMarginTracker.cs:216）。此前只算
         // 分子/分母——检查点回放的 xacc 显示偏高。次数一并落盘（ChkCount 尾
         // 段），信息页重算与将来的工具才有依据；次数为 0（全程无检查点）时
-        // 惩罚是 1，与旧行为逐位一致。
+        // 惩罚是 1，与旧行为逐位一致。编辑器试玩按官方规则豁免，场景取录制元数据，
+        // 避免转场收尾时 scnEditor.instance 已销毁而误罚。
         data.CheckpointsUsed = Math.Max(0, scrController.checkpointsUsed);
-        data.PercentXacc = ComputePercentXacc()
-            * System.Math.Pow(0.9875, data.CheckpointsUsed.Value);
+        data.PercentXacc = ComputePercentXacc();
+        if (data.SceneName != "scnEditor")
+            data.PercentXacc *= System.Math.Pow(0.9875, data.CheckpointsUsed.Value);
         int peak = data.MaximumUsedKeys ?? 0;
         int cur = ADOBase.controller?.maximumUsedKeys ?? 0;
         data.MaximumUsedKeys = Math.Max(peak, cur);
         data.FileName = CreateFileName();
-        if (Settings.KeybdSoundRecordActive)
+        // 清理等待期间下一局可能只录到按键；未起录不能认领上一局的 tmp.wav。
+        if (Settings.KeybdSoundRecordActive && data.KeybdSoundStartTick.HasValue)
         {
             data.KeybdSoundFileName = data.FileName + ".wav";
         }
         if (AudioRecorder.Instance.IsRecording)
         {
             data.KeybdSoundHash = AudioRecorder.Instance.StopRecording();
+            data.KeybdSoundStop = AudioRecorder.Instance.LastStop;
         }
         if (!LateSaveMode)
         {

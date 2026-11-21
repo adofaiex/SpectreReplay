@@ -53,6 +53,9 @@ internal class Patch_HoldKeysCrashGuard
 // 多目标：同一方法挂三个 [SpectrePatch]
 internal class Patch_PlayerControlUpdate
 {
+    // 设备或文件初始化持续失败时限速重试，避免每帧建文件和刷日志。
+    private static System.Diagnostics.Stopwatch keybdStartRetryClock;
+
     // —— 命中判定的角度源：本帧将要渲染的角度（越界帧判定） ——
     //
     // 星球角度不是逐帧积分值，而是歌曲位置的导出值（scrPlanet.Update_RefreshAngles，
@@ -100,6 +103,8 @@ internal class Patch_PlayerControlUpdate
 
         if (is_recording && Settings.KeybdSoundRecordActive
             && !AudioRecorder.Instance.IsRecording
+            && !AudioRecorder.Instance.IsCleanupPending
+            && (keybdStartRetryClock == null || keybdStartRetryClock.ElapsedMilliseconds >= 500)
             && !data.KeybdSoundStartTick.HasValue)
         {
             string filePath = Path.Combine(Settings.SavePath, "tmp.wav");
@@ -115,7 +120,6 @@ internal class Patch_PlayerControlUpdate
                 // 清不掉不阻断录音：旧文件顶多是音频不对，录了总比不录好
                 Debug.LogWarning("[SpectreReplay] 清理陈旧 tmp.wav 失败（本次录音可能挂上旧音频）: " + ex.Message);
             }
-            AudioRecorder.Instance.StartRecording(filePath, Settings.MicrophoneDeviceName);
             // 起录帧拿不到导体是常态（倒计时/检查点阶段切场景）。**不能在这里 return**：
             // 那会同时跳过本帧的 Record_kbdstate，更糟的是 tick 永远缺着——回放侧
             // 判到没有基准就整段不播，键盘声整段消失且没有任何提示
@@ -123,7 +127,14 @@ internal class Patch_PlayerControlUpdate
             // 记 NaN 占位：它让下面"缺 tick 就补"的分支接管，导体就绪后立刻补真值。
             // **不能拿 0 当占位**：0 是合法基准（录制恰从歌曲 0 秒起），与"没记到"
             // 无法区分，那样的回放会被当成没有基准而整段不播。
-            data.KeybdSoundStartTick = double.NaN;
+            // 只有真正起录才占位；失败时保持 null，让后续帧重试，且不跳过按键录制。
+            if (AudioRecorder.Instance.StartRecording(filePath, Settings.MicrophoneDeviceName))
+            {
+                data.KeybdSoundStartTick = double.NaN;
+                keybdStartRetryClock = null;
+            }
+            else
+                keybdStartRetryClock = System.Diagnostics.Stopwatch.StartNew();
         }
 
         // 补起始时间戳：起录帧没有导体时留下的是 NaN，这里每帧试着换成真值。

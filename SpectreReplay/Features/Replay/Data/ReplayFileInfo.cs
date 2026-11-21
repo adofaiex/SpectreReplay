@@ -216,7 +216,9 @@ internal sealed class ReplayFileInfo
         // 重算的是「无惩罚分子/分母」——官方口径还要乘 0.9875^checkpointsUsed
         // （scrMarginTracker.cs:216）。次数段在场才乘（新录制才有）；旧回放
         // 不知道次数，维持原样显示（偏高是已知口径缺口，不伪造数据）。
-        if (recomputed >= 0.0 && data.CheckpointsUsed is int used && used > 0)
+        // 豁免看回放的来源场景，与当前在哪个界面查看无关。
+        if (recomputed >= 0.0 && data.SceneName != "scnEditor"
+            && data.CheckpointsUsed is int used && used > 0)
             recomputed *= System.Math.Pow(0.9875, used);
         info.Xacc = recomputed >= 0.0 ? recomputed : info.PercentXacc;
 
@@ -228,7 +230,8 @@ internal sealed class ReplayFileInfo
                 info.JudgmentCounts);
             double crossX = SpectreReplay.Features.Compat.HitMarginCompat.LegacyXAcc(
                 info.JudgmentCounts);
-            if (crossX >= 0.0 && data.CheckpointsUsed is int crossUsed && crossUsed > 0)
+            if (crossX >= 0.0 && data.SceneName != "scnEditor"
+                && data.CheckpointsUsed is int crossUsed && crossUsed > 0)
                 crossX *= System.Math.Pow(0.9875, crossUsed);
             info.CrossXacc = crossX;
         }

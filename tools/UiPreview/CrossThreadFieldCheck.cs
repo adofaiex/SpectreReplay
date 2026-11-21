@@ -24,6 +24,7 @@ namespace UiPreview
         {
             (@"State\AudioRecorder.cs",        "isRecording"),
             (@"State\AudioRecorder.cs",        "recordingClip"),
+            (@"State\AudioRecorder.cs",        "finalizedHash"),
             (@"Features\VideoRender\Pipeline\VideoConverter.cs", "Running"),
             (@"Features\VideoRender\Pipeline\VideoConverter.cs", "Total"),
             (@"Features\VideoRender\Pipeline\VideoConverter.cs", "Done"),
