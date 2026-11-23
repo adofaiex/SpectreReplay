@@ -4,7 +4,7 @@
 > 读完这份就该能改代码、能判断自己有没有真的改对。深挖时看结尾的文档索引。
 > 约定：本文里的路径统一用 `/`，在 PowerShell 里两种分隔符等价。
 
-**English tl;dr.** ADOFAI replay / record / render mod for UnityModManager (`netstandard2.1`, game `r150`, Unity `6000.3.25f1`). Build: `dotnet build SpectreReplay.slnx -c Release`. Gate: `tools/verify.ps1` — never trust a green you did not run, and 0 assertions means no verdict. Every new assertion needs a mutant that turns it red (`tools/mutate.ps1 -Which MUT-X`; exit code `2` means the mutant never applied). Localization is generated: edit `tools/i18n/source.json`, run `tools/i18n/gen-locdata.ps1`, never hand-edit `Ui/LocData.cs`. Replay files are encrypted and versioned: add, do not change; old files must keep loading.
+**English tl;dr.** ADOFAI replay / record / render mod for UnityModManager (`netstandard2.1`, game `r150`, Unity `6000.3.25f1`). Build: `dotnet build SpectreReplay.slnx -c Release`. Gate: `tools/verify.ps1` — never trust a green you did not run, and 0 assertions means no verdict. Every new assertion needs a mutant that turns it red (`tools/mutate.ps1 -Which MUT-X`; exit code `2` means the mutant never applied). Localization is generated: edit `tools/i18n/source.json`, run `tools/i18n/gen-locdata.ps1`, never hand-edit `Ui/LocData.cs`. New copy goes only into source.json (see §6.6). Replay files are encrypted and versioned: add, do not change; old files must keep loading.
 
 ## 0. 一句话和三条铁律
 
@@ -78,7 +78,7 @@ tools/                    验证与工具链（对产品的改动一律先过这
   ffmpeg-probe.ps1        探 ffmpeg 参数与编码器（需游戏自带 ffmpeg）
   convert-probe.ps1       探 键音/音频 转换路径
   UiPreview/              离线验证套件（net10.0-windows，不链接 Features/）
-  i18n/                   文案唯一事实源 + 生成器（生成 Ui/LocData.cs）
+  i18n/                   界面文案唯一事实源 + 生成器（生成 Ui/LocData.cs；功能层手写表见 §6.6）
 
 docs/  README*.md  verify.md  audit/  INTRO_*.md  SPECTRE_COMPARISON.md
 ```
@@ -173,7 +173,7 @@ powershell -File tools/i18n/gen-locdata.ps1   # 从 source.json 重新生成 Loc
 
 - **新增检查必须同时加一条变异**证明它能红。
 - **变异要退回真实的 bug 形状**，不能只做 `true→false` 这种必然红的偷懒改法。
-- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-17 实测：313 条 `✓`、518 键（14 语言）、349 个变异标签、6 个只读审计。** 引用前先跑，或直接写「以实跑为准」。
+- **报告数字要说明来源。** 文档里的数字普遍滞后：`docs/verify.md` 写「111 条断言 / 153 条变异」、`tools/i18n/README.md` 写「325 键」、`docs/audit/SUMMARY.md` 写「155 个变异标签」。2026-10-28 04:30 实测是 **153 条 `✓`、417 键、160 个变异标签**；2026-11-12 复测是 **188 条 `✓`、486 键、266 个变异标签**；同日晚二轮实测 **202 条 `✓`、486 键、269 个变异标签**。**2026-11-17 实测：313 条 `✓`、518 键（14 语言）、349 个变异标签、6 个只读审计。** **2026-11-23 实测：404 条 `✓`、523 键（14 语言）。** 引用前先跑，或直接写「以实跑为准」。
 - **判据锚点与变异模式从当前文件实读，不凭记忆写。** 闸门的 Check 先经 `SrcUtil.Clean` 剥注释再跑判据——锚点带 `//` 尾巴必失配；行首缩进/文本要逐字一致；源码重构后旧模式会命中 0 次（2026-11-15 实测两起：FF 行锚点带注释尾巴、U125 模式缩进过时）。
 
 ## 6. 架构
@@ -265,7 +265,7 @@ private static bool Hit_Prefix(...) { ... }
 - **原生对话框延后一拍**（`_pickOutDirPending` 模式）；在 GUI 事件里直接弹文件框会弄坏这一帧。
 - **文本框在关闭面板时提交**（`OnHide` → `FlushConfig`）：玩家拖完滑块直接关窗是常态。
 - tooltip 留到整页画完再一次性画（`Gui.cs:767+`）；不要复用 UMM 内部 tooltip 字段。
-- 提示统一走 `Ui/Status.Say(key, detail, Level.Info|Warning, extra)`，底层是**游戏自带的 `Notification`**：时长 = 玩家设定（`Settings.NotificationSeconds`，默认 3 秒）+ `extra`，`Status.Warn(...)` 固定 `extra = 2`。别自建一套「设置页顶栏提示」——玩家不进设置页就看不见（注释里记着那次返工）。
+- 提示统一走 `Ui/Status.Say(key, detail, Level.Info|Warning, extra)`，底层是自绘的 `Ui.Toast`（2026-11-05 起；此前是游戏自带的 `Notification`）：时长 = 玩家设定（`Settings.NotificationSeconds`，默认 3 秒）+ `extra`，`Status.Warn(...)` 固定 `extra = 2`。别自建一套「设置页顶栏提示」——玩家不进设置页就看不见（注释里记着那次返工）。
 - 提示时长落盘为 `notification_seconds`，载入时 `Mathf.Clamp` 到 1–10 秒：手写配置给了 `0` 等于「弹了但看不见」，给 `999` 等于永不消失。
 - 文案一律 `Loc.T`/`Loc.F`，界面里不许有字面量（`HardTextCheck` 会红）。
 - **控件宽度不许写死**：用 `Gui.CtrlW`（`Ui/Gui.cs:102`）。写死宽度在别的分辨率/缩放上会错位。
@@ -276,12 +276,14 @@ private static bool Hit_Prefix(...) { ... }
 ### 6.6 文案（i18n）管线
 
 ```
-tools/i18n/source.json     唯一事实源：[{key, zh, en}, …]，顺序即生成顺序（今天 518 键）
+tools/i18n/source.json     唯一事实源：[{key, zh, en}, …]，顺序即生成顺序（2026-11-23 实测 523 键）
 tools/i18n/locales/*.json  12 个语言译文（zh-t ja ko es pt fr de pl cs ro ru vi）
 tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本）
 ```
 
 **`Ui/LocData.cs` 是生成物，永远不要手改。** 改文案 = 改源 → 跑生成器 → 让 `LocCheck` 变绿。`Loc.cs` 只剩选择逻辑，不含任何键值。
+
+**两套文案来源：新文案只进 `source.json`。** `Loc.T`/`Loc.F` 的键全部来自 `source.json`（界面和 `Features/VideoRender/` 等功能层都用它）。功能层的运行时通知（`LocalizationManager.GetLocalizedText("note.*")`）另有一张**手写**的 14 语言表 `SpectreReplay/State/LocalizationManager.cs`，不经生成器、不在 `source.json` 里。这张表是存量，见 §11 I18N-1，**不要再往里加新键**。
 
 ### 6.7 云端 / 兼容 / 去特效
 
@@ -407,7 +409,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 - 界面无字面量文案。
 - `Loc.F` 的参数个数要与各语言占位符一致。
 - 关面板先 `FlushConfig`。
-- 新提示一律 `Status.Say`/`Status.Warn`：`extra` 是「在玩家设定值之上多加的秒数」，**不是绝对时长**；写死秒数会让「提示条停留时长」这项设置对那条提示失效。
+- 提示只有两个入口，都落到 `Ui.Toast`：界面层用 `Ui.Status.Say`/`Status.Warn`，功能层用 `SpectreState.TriggerMessage`（`NotifType.Warning` 即警告样式）。不许新增第三条通道。两个入口的 `extra` 都是「在玩家设定值之上多加的秒数」，**不是绝对时长**；写死秒数会让「提示条停留时长」这项设置对那条提示失效。统一成哪一个入口尚未裁定，见 §11 I18N-3。
 
 ### 8.6 生命周期 / 线程
 
@@ -433,7 +435,7 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 3. **注释剥离器要区分 `inStr`/`inChar`。** 历史事故：字符常量里的 `//` 被当注释。数 attribute 请用仓库的工具，别自己写正则。
 4. **`mutate.ps1` 的锚点与标签都要唯一**（重名会静默失效）。**锚点会随源码重构腐烂**：2026-10-28 跑 `mutate-regression.ps1 -Filter C` 抓到 3 条已烂掉的（CI5 锚的 `Available` 属性在 `ba92948` 清理注释时删了、CI10 的成员名在 `ReplayPlayer` 里出现两次、CI6 对应的断言根本不存在）。症状分别是 exit 2 / exit 2 / exit 1。**改完源码必须跑一遍变异回归，别只跑闸门。**
 5. **退出码 2 会伪装成「断言是假的」**，先分清是哪一种失败。
-6. **模组目录判定看是否含 `*/Info.json`**，不是看目录存在。顺序：参数 → `SRM_MODS_ROOT` → `Mods` → `UMMMods` → 默认（`_gameroot.ps1:45-65`）。本机两个目录都有模组，猜错就是「部署成功但游戏没变」。
+6. **模组目录判定看是否含 `*/Info.json`**，不是看目录存在。顺序：参数 → `SRM_MODS_ROOT` → `Mods` → `UMMMods` → 默认（`tools/_gameroot.ps1` 的 `Get-SrmModsRootCandidates` / `Get-SrmModsRoot`）。本机两个目录都有模组，猜错就是「部署成功但游戏没变」。**2026-11-23 实测：加载器实际扫的是 `Mods`。** 依据是游戏日志 `Player.log`（`%USERPROFILE%/AppData/LocalLow/7th Beat Games/A Dance of Fire and Ice/`）里的 `[Manager] Mods path: …/Mods` 一行，以及随后加载的 `Mods/SpectreReplay`；`UMMMods/SpectreReplay` 里只有 `Replays`，没有 dll 也没有 `Info.json`。判断加载目录以日志为准，不要凭目录名猜。
 7. **游戏在跑 → dll 被锁 → 部署失败**；先关游戏，或用 `-SkipDeploy`。
 8. **有 4 个审计会把注释里的例子算进去**（E-F2 未修），计数偏多不代表覆盖更好。
 9. **`PatchTargetCheck` 拿不到游戏程序集时静默返回 0**（未修）——CI 上这条等于没跑。
@@ -467,6 +469,9 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 | E-F5 变异回归不在 CI | 未修 | 断言腐烂无人发现 |
 | C-F4 NVENC 探针管道死锁 | 已修 | 探测改为 `BeginOutputReadLine`/`BeginErrorReadLine` + 15 秒超时；C-F5..C-F8 仍需实机确认 |
 | 版本门控是 fail-open | 设计如此 | `SpectrePatchHub` 明确 fail-open：`VerifiedBuild` 只用于日志/属性，`MaxVersion` 只用于 r149/r150 签名分叉；挂载失败会 fail-closed，但「签名不变、语义变了」无法离线发现 |
+| I18N-1 功能层通知文案不在 `source.json` | `note.*` 运行时通知的 14 语言表手写在 `State/LocalizationManager.cs`，zh 块共 22 条 `note.*` 键；其中 `note.keybd_start_fail` 是 2026-11-23 新增的（e7b1bb3），也放在这张表里 | 违反 §6.6「新文案只进 `source.json`」。手写表不经生成器；键齐全由 `LocRuntimeCheck` 守，但翻译没有与 `source.json` 对照。迁移范围待裁定 |
+| I18N-2 功能层 `Loc.T` 键没有存在性检查 | `LocCheck` 只扫 `Pages/`、`ReplayInfoPanel.cs` 与 `Ui/OnGui.cs`；`Features/` 里的 `Loc.T` 键（如 `render.cpu_retry`）不在扫描范围内 | 键漏进 `source.json` 时玩家看到的是原始键名，闸门不红。待补扫描 |
+| I18N-3 §8.5 提示入口不统一 | §8.5 原文要求提示「一律 `Status.Say`/`Status.Warn`」，实际 `Features/` 里约 25 处用 `SpectreState.TriggerMessage`（同样落到 `Ui.Toast`），没有 `Status.*` 调用 | 显示与时长口径一致，只是规则与代码不符。统一与否待裁定；裁定前两个入口都按 §8.5 执行 |
 
 另外：`ui.patchfailed (N)` 是唯一**常驻**的「补丁没挂上」信号；只弹一次的通知会被玩家忽略。
 
@@ -476,14 +481,14 @@ tools/i18n/gen-locdata.ps1 生成 SpectreReplay/Ui/LocData.cs（.py 等价副本
 - 实机路径：`tools/deploy.ps1` → 进游戏 → 按设置页热键（默认 `Settings.WindowButton`）开面板 → 进关卡录一局 → 手动保存 → **重新载入该关卡**后回放（回放要重开那一关才真正开始）→ 渲染一段短片。
 - 2B-0 颜色先导：`tools/hdr-probe.ps1`（或游戏启动参数 `--spectre-hdr-probe`）→ 进入关卡后读 `hdr-probe.txt` / `hdr-probe.png`，看 `max` 与 `over1`。`max <= 1.0` 则 2B 降级为 10-bit 精度。
 - 热键：面板、手动保存、放弃保存、中止渲染都在设置页可改；默认值见 `Settings.WindowButton` / `SaveButton` / `CancelSaveButton` / 渲染中止键。
-- 已知需要实机确认的假设：15fps 下 `AudioRenderer` 溢出、`ScreenCapture` 回读帧对齐、`Microphone.Start` 采样率行为、`ScreenCapture` 回读失败时的上一帧复制路径。
+- 已知需要实机确认的假设：15fps 下 `AudioRenderer` 溢出、`ScreenCapture` 回读帧对齐、`Microphone.Start` 采样率行为、`ScreenCapture` 回读失败时的上一帧复制路径；键盘音起录失败的警告（设备不可用时，持续失败约 2 秒后出现一次，同一段只出现一次，见 `NoteKeybdStartFailure`）。
 
 ## 13. 提交前清单
 
 - [ ] `dotnet build SpectreReplay.slnx -c Release` 0 警告
 - [ ] `tools/verify.ps1` 退出码 0（或能说清跳过了什么）
 - [ ] 新断言配了变异，`tools/mutate.ps1 -Which …` 退出 0
-- [ ] 改了文案：生成器跑过、14 语言齐、`LocCheck` 绿
+- [ ] 改了文案：新文案只进 `source.json`（不进 `LocalizationManager.cs` 手写表，见 §6.6、§11 I18N-1）；生成器跑过、14 语言齐、`LocCheck` 绿
 - [ ] 改了补丁：启动日志「挂上 x/y」满、`ui.patchfailed` 为 0
 - [ ] 改了容器：拿一个旧回放真读一次
 - [ ] 改了 `Settings`/`Configs.json` 形状：拿一份**旧的** `Configs.json` 加载一次（缺键要走默认，不能报错吞设置）
