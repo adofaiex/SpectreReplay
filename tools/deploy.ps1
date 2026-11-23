@@ -69,25 +69,31 @@ if (Test-Path (Join-Path $binDir 'SpectreReplay.pdb')) {
 Copy-Item (Join-Path $projDir 'info.json') (Join-Path $modDir 'info.json') -Force
 
 # ffmpeg 是外部程序，没有它视频渲染会在启动编码器时直接失败。
-# 优先用工程 tools/ 下的那份；没有就从 Spectre 的模组目录**复制**一份过来
-# （只读 Spectre，不改它），免得两个模组引用不同版本导致输出参数对不上。
-# Spectre 的目录也在同一个 mods root 下，所以顺着 $resolved 取，别再写死 Mods。
-$ffmpegPlaced = $false
+# 放置（有来源才复制，覆盖模组目录里的旧文件）：优先工程 tools/ 下的那份；没有就从 Spectre 模组
+# **复制**一份（只读 Spectre，不改它），免得两个模组引用不同版本导致输出参数对不上。
+# Spectre 不一定和 SpectreReplay 在同一个父目录（本机在 UMMMods，Mods 里没有它），所以用
+# Get-SrmSpectreFfmpeg 按全部候选父目录去找，不再只看 $resolved.Root。
+#
+# 判定看的是**游戏会不会找到它**，而不是「这次有没有复制」：Get-SrmFfmpeg 与
+# VideoEncoder.LocateEncoder 同口径（模组目录 → 游戏根目录 → PATH）。原先只检查来源、
+# 不看目的地，模组目录里早就有的 ffmpeg.exe 也会被报成 not found（2026-11-23 实测）。
 $ownFfmpeg = Join-Path $projectRoot 'tools\ffmpeg.exe'
-if (Test-Path $ownFfmpeg) {
+if (Test-Path -LiteralPath $ownFfmpeg -PathType Leaf) {
     Copy-Item $ownFfmpeg (Join-Path $modDir 'ffmpeg.exe') -Force
-    $ffmpegPlaced = $true
-    Write-Output "ffmpeg: from project tools/"
+    Write-Output 'ffmpeg: copied from project tools/'
 } else {
-    $spectreFfmpeg = Join-Path $resolved.Root 'Spectre\ffmpeg.exe'
-    if (Test-Path $spectreFfmpeg) {
+    $spectreFfmpeg = Get-SrmSpectreFfmpeg -ModsRoot $ModsRoot
+    if ($spectreFfmpeg) {
         Copy-Item $spectreFfmpeg (Join-Path $modDir 'ffmpeg.exe') -Force
-        $ffmpegPlaced = $true
-        Write-Output "ffmpeg: copied from Spectre (read-only)"
+        Write-Output "ffmpeg: copied from Spectre (read-only): $spectreFfmpeg"
     }
 }
-if (-not $ffmpegPlaced) {
-    Write-Warning 'ffmpeg.exe not found: recording works, video render will fail.'
+
+$ffmpegPath = Get-SrmFfmpeg -ModsRoot $ModsRoot
+if ($ffmpegPath) {
+    Write-Output "ffmpeg: found at $ffmpegPath (game lookup: mod folder -> game root -> PATH)"
+} else {
+    Write-Warning 'ffmpeg.exe not found in mod folder, game root or PATH: recording works, video render will fail.'
 }
 
 foreach ($d in 'Replays', 'Videos') {

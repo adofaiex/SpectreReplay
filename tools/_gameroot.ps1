@@ -64,12 +64,11 @@ function Test-SrmLooksLikeModsRoot {
     return $false
 }
 
-function Get-SrmModsRoot {
+function Get-SrmModsRootCandidates {
     <#
-      返回一个描述对象，不做任何写入：
-        Root      最终选中的模组父目录
-        IsValid   Root 是否像真模组目录（$false = 只是写入默认值，加载器其实没有它）
-        Source    选中的来源，用于日志：「显式参数 / 环境变量 / Mods / UMMMods / 默认」
+      模组父目录的候选，按优先级排列（只列路径，不判断它像不像模组目录）：
+        显式参数 → 环境变量 SRM_MODS_ROOT → <game>\Mods → <game>\UMMMods
+      Get-SrmModsRoot 从中选出第一个「像模组目录」的；Get-SrmSpectreFfmpeg 在其中找 Spectre。
     #>
     param([string]$ModsRoot)
 
@@ -84,8 +83,20 @@ function Get-SrmModsRoot {
     }
     $candidates += @{ Path = (Join-Path $game 'Mods');    Source = 'Mods' }
     $candidates += @{ Path = (Join-Path $game 'UMMMods'); Source = 'UMMMods' }
+    return $candidates
+}
 
-    foreach ($c in $candidates) {
+function Get-SrmModsRoot {
+    <#
+      返回一个描述对象，不做任何写入：
+        Root      最终选中的模组父目录
+        IsValid   Root 是否像真模组目录（$false = 只是写入默认值，加载器其实没有它）
+        Source    选中的来源，用于日志：「显式参数 / 环境变量 / Mods / UMMMods / 默认」
+    #>
+    param([string]$ModsRoot)
+
+    $game = Get-SrmGameRoot
+    foreach ($c in (Get-SrmModsRootCandidates -ModsRoot $ModsRoot)) {
         if (Test-SrmLooksLikeModsRoot -Path $c.Path) {
             return [pscustomobject]@{
                 Root    = $c.Path
@@ -105,6 +116,22 @@ function Get-SrmModsRoot {
     }
 }
 
+function Get-SrmSpectreFfmpeg {
+    <#
+      Spectre 模组自带的 ffmpeg，只作为 deploy 的备用来源（只读，不改 Spectre）。
+      Spectre 不一定和 SpectreReplay 在同一个父目录：本机 Spectre 在 UMMMods\Spectre，
+      Mods 里没有它。所以按全部候选父目录依次找，返回第一个存在的 Spectre\ffmpeg.exe；
+      找不到返回 $null。
+    #>
+    param([string]$ModsRoot)
+
+    foreach ($c in (Get-SrmModsRootCandidates -ModsRoot $ModsRoot)) {
+        $p = Join-Path $c.Path 'Spectre\ffmpeg.exe'
+        if (Test-Path -LiteralPath $p -PathType Leaf) { return $p }
+    }
+    return $null
+}
+
 function Get-SrmModDir {
     # 模组自己的目录：<mods root>\SpectreReplay
     param([string]$ModsRoot)
@@ -114,12 +141,12 @@ function Get-SrmModDir {
 
 function Get-SrmFfmpeg {
     <#
-      与 SpectreReplay.Features.VideoRender.VideoEncoder.LocateEncoder 同口径：
+      与 SpectreReplay.Features.VideoRender.VideoEncoder.LocateEncoder 同口径（VideoEncoder.cs 约 :188-206）：
         ① 模组目录\ffmpeg.exe
         ② 游戏根目录\ffmpeg.exe
-        ③ 系统 PATH 上的 ffmpeg
-      模组那份代码在 :117-119 只认这两个文件位置，这里多一步 PATH 是因为
-      离线 probe 脚本要能跑在没部署模组的机器上（CI / 新克隆）。
+        ③ 系统 PATH 上的 ffmpeg（游戏侧同样以裸名 "ffmpeg" 交给系统解析，是最后一级）
+      游戏侧还会对候选做 -version 能跑的校验（VerifyEncoder）；这里只判「文件在不在」，
+      用来回答部署脚本关心的问题：有没有一份游戏会去找的 ffmpeg。
       找不到返回 $null——**不要 throw**，由调用方决定是报错还是提示。
     #>
     param([string]$ModsRoot)
