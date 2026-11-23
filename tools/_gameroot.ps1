@@ -1,26 +1,24 @@
 ﻿# 共用：定位游戏根目录 / 运行时模组目录 / ffmpeg。
 #
-# **为什么要有这个文件。** 2026-10-25 查出一条真事故：deploy.ps1 / verify.ps1 /
-# ffmpeg-probe.ps1 / convert-probe.ps1 四个脚本各自硬编码了同一个路径
-# `<game>\Mods\SpectreReplay`，而本机 UMM 0.33 实际扫描的是 `<game>\UMMMods`
-# （见 UnityModManager\Log.txt 的 `[Manager] Mods path:` 一行）。于是：
-#   - deploy.ps1 一直在把一个没人读的目录当部署目标（空操作）；
-#   - verify.ps1 的「部署一致性」永远报「线上 dll 不存在」，
-#     而 docs/verify.md 把它误解释成「本机从没部署过」，于是长期用 -Ci 跳过，
-#     **唯一的实机一致性检查等于常年关闭**；
-#   - 两个 probe 脚本第一句 Test-Path 就 throw，编码参数链路没有可执行验证。
-# 四处各写一份是这件事能发生的根因，所以路径解析只留这一份，其它脚本点源引用。
+# **为什么要有这个文件。** 四个脚本（deploy.ps1 / verify.ps1 / ffmpeg-probe.ps1 /
+# convert-probe.ps1）原先各自硬编码了同一个路径 `<game>\Mods\SpectreReplay`，
+# 路径解析因此分散在四处。现在只留这一份，其它脚本点源引用。
+#
+# **加载器扫描哪个目录，以游戏日志为准。** 2026-11-23 实测，游戏日志
+# `%USERPROFILE%\AppData\LocalLow\7th Beat Games\A Dance of Fire and Ice\Player.log`
+# 第一条 `[Manager] Mods path:` 指向 `<game>\Mods`，并从那里加载了 13/13 个模组；
+# `<game>\UMMMods` 不被加载。2026-10-25 的记录认为加载器扫的是 UMMMods，依据是
+# `UnityModManager\Log.txt`。该文件现已不存在，当前日志显示加载的是 Mods，那条结论作废。
 #
 # ── 解析顺序（先 Mods，找不到退 UMMMods）──────────────────────
 #   1. 显式参数 -ModsRoot <path>（最高优先，调试/异机用）
 #   2. 环境变量 SRM_MODS_ROOT
-#   3. <game>\Mods\<模组>       —— 存在且**看起来是真模组目录**时用
-#   4. <game>\UMMMods\<模组>    —— 同上
+#   3. <game>\Mods\<模组>       —— 存在且**看起来是真模组目录**时用（当前加载器读的目录）
+#   4. <game>\UMMMods\<模组>    —— 同上；加载器不加载它，只在 Mods 里没有模组时作为回退
 #   5. <game>\Mods              —— 都没有时作为**写入默认值**（首次部署要往哪放）
 #
-# **不能用「目录存在」当判据。** 本机 `Mods` 目录是存在的、只是空的
-# （用户把真正的模组目录改名成了 UMMMods）。只判存在会挑中一个空的 Mods，
-# 于是部署"成功"、加载器却看不见——症状与本 bug 完全一样。所以判据是
+# **判据是「目录里真有模组」，不是「目录存在」。** 目录存在但没有模组时，加载器看不见它；
+# 只判存在会挑中一个空目录，于是部署显示成功、加载器却看不见。所以判据是
 # 「该目录下有至少一个 *\Info.json」，即它真的能被 UMM 扫出模组来。
 #
 # ── 用法（点源，不执行任何有副作用的事）────────────────────────
@@ -108,7 +106,7 @@ function Get-SrmModsRoot {
 
     # 一个都不像模组目录：往 Mods 写（首次部署的常规落点）。
     # IsValid=$false 让调用方能把「要部署但加载器还不认这个目录」说清楚，
-    # 而不是静默部署到一个没人读的地方——那正是上一轮踩的坑。
+    # 而不是静默部署到一个没人读的地方——这是 2026-10-25 记录过的一类症状。
     return [pscustomobject]@{
         Root    = (Join-Path $game 'Mods')
         IsValid = $false
@@ -182,12 +180,13 @@ function Format-SrmModsDiagnosis {
         if (-not (Test-Path -LiteralPath $p -PathType Container)) {
             $lines += ("  {0,-8} 不存在" -f $name)
         } elseif (Test-SrmLooksLikeModsRoot -Path $p) {
-            $lines += ("  {0,-8} 存在且含模组 → 加载器会扫描" -f $name)
+            $lines += ("  {0,-8} 存在且含模组" -f $name)
         } else {
             $lines += ("  {0,-8} 存在但没有模组（空目录）" -f $name)
         }
     }
     $chosen = Get-SrmModsRoot -ModsRoot $ModsRoot
     $lines += "选定：$($chosen.Root)（来源 $($chosen.Source)）"
+    $lines += '加载器实际扫描的目录以游戏日志 Player.log 的 [Manager] Mods path 为准（2026-11-23 实测为 Mods）'
     return ($lines -join [Environment]::NewLine)
 }

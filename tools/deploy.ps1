@@ -1,9 +1,10 @@
 ﻿# 部署 SpectreReplay 到**加载器真正扫描的**模组目录。
 # 与 Spectre 的部署完全独立——两个模组可以各自单独部署、单独回滚。
 #
-# 目录不再硬编码成 `<game>\Mods\SpectreReplay`：本机 UMM 0.33 实际扫的是
-# `<game>\UMMMods`，写死 Mods 会让部署变成空操作（详见 tools\_gameroot.ps1
-# 开头的事故记录）。解析顺序 = Mods → UMMMods，判据是「该目录下真有模组」。
+# 目录不硬编码成 `<game>\Mods\SpectreReplay`，交给 tools\_gameroot.ps1 解析：
+# 显式参数 → SRM_MODS_ROOT → Mods → UMMMods，判据是「该目录下真有模组」。
+# 2026-11-23 实测：加载器扫描的是 `<game>\Mods`（见 tools\_gameroot.ps1 开头），
+# UMMMods 不被加载，只作为解析回退。
 param(
     [ValidateSet('Release', 'Debug')]
     [string]$Config = 'Release',
@@ -55,7 +56,7 @@ New-Item -ItemType Directory -Path $modDir -Force | Out-Null
 # 那为什么还留着这段删除？因为这些文件是纯冗余副本——删掉只会省空间，
 # 不会改变任何加载行为。**别再把它当成"修了没效果"的解释**：那个现象的真因
 # 通常更朴素（dll 没覆盖成功 / 游戏没重启 / 部署到了加载器不扫描的目录，
-# 后者见 tools\_gameroot.ps1 开头那次事故）。
+# 判定方法见 tools\_gameroot.ps1 开头。
 Get-ChildItem -Path $modDir -Filter "$([System.IO.Path]::GetFileName($dll)).*.cache*" -ErrorAction SilentlyContinue |
     ForEach-Object {
         Remove-Item $_.FullName -Force

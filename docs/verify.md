@@ -17,17 +17,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 > 其余各项在 CI 里照常全跑）。
 >
 > **2026-10-25 更正上面这条的旧解释。** 它原先写的是「本机从没部署过（`Mods\SpectreReplay` 为空）」，
-> 那个诊断是错的，而错的诊断比没有诊断更糟——它让这一项看起来天经地义地该红，
-> 于是长期用 `-Ci` 跳过，**唯一的实机一致性检查等于常年关闭**。真实情况是：
-> 本机 UMM 0.33 扫描的模组目录是 `<game>\UMMMods`（见 `UnityModManager\Log.txt` 的
-> `[Manager] Mods path:` 一行），而四个脚本各自把路径写死成了 `<game>\Mods\SpectreReplay`。
-> 于是部署脚本一直在写一个没人读的目录（空操作），比对也一直在查一个不存在的 dll。
-> 四处各写一份**就是这件事能发生的根因**，现在路径解析只剩 `tools\_gameroot.ps1` 一份：
+> 那个诊断是错的，而错的诊断比没有诊断更糟——它让这一项看起来天经地义地该红，于是长期用 `-Ci` 跳过。
 >
-> - 解析顺序：`-ModsRoot` 参数 → `SRM_MODS_ROOT` 环境变量 → `Mods` → `UMMMods` → 默认 `Mods`；
-> - 判据是「该目录下有至少一个 `*\Info.json`」，**不是「目录存在」**——本机 `Mods`
->   目录是存在的、只是空的，只判存在会挑中一个空目录，症状与本 bug 一模一样；
-> - `deploy.ps1` / `verify.ps1` / `ffmpeg-probe.ps1` / `convert-probe.ps1` 全部点源引用它。
+> **2026-11-23 再更正：当时认为加载器扫的是 `UMMMods`，这个结论已作废。** 游戏日志
+> `%USERPROFILE%\AppData\LocalLow\7th Beat Games\A Dance of Fire and Ice\Player.log` 的第一条
+> `[Manager] Mods path:` 指向 `<game>\Mods`，并从那里加载了全部模组（13/13，含 SpectreReplay）；
+> `UMMMods` 不被加载。原先引用的 `UnityModManager\Log.txt` 在游戏根目录已经不存在，不要再用它判断。
+> 因此部署一致性检查比对的，就是游戏实际加载的那份 dll。
+>
+> - 解析顺序：`-ModsRoot` 参数 → `SRM_MODS_ROOT` 环境变量 → `Mods` → `UMMMods` → 默认 `Mods`。`UMMMods` 只是回退，加载器不加载它。
+> - 判据是「该目录下有至少一个 `*\Info.json`」，**不是「目录存在」**：目录存在但没有模组时，加载器看不见它，只判存在会挑中它。
+> - `deploy.ps1` / `verify.ps1` / `ffmpeg-probe.ps1` / `convert-probe.ps1` 全部点源引用 `tools\_gameroot.ps1`。
 >
 > 另：部署后若目录里残留 `SpectreReplay.dll.<pid>.cache*`，闸门现在会**告警**——
 > UMM 启动时优先加载那个缓存，缓存没清掉时"dll 已更新、游戏仍跑旧代码"是最难查的形态。

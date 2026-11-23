@@ -243,10 +243,9 @@ Step '部署一致性' {
         Write-Host '  · CI 模式跳过：本机无 Steam 安装，比对没有意义'
         return
     }
-    # 模组目录不再硬编码 Mods：本机 UMM 实际扫的是 UMMMods，写死 Mods 会让
-    # 这一项永远报「线上 dll 不存在」，而 docs/verify.md 把它误读成
-    # 「本机从没部署过」→ 长期用 -Ci 跳过 → **唯一的实机一致性检查常年关闭**。
-    # 解析顺序与 deploy.ps1 同源（Mods → UMMMods），判据是「该目录真有模组」。
+    # 模组目录不硬编码：交给 tools\_gameroot.ps1 解析（Get-SrmModsRoot，与 deploy.ps1 同源：
+    # 显式参数 → SRM_MODS_ROOT → Mods → UMMMods，判据是「该目录真有模组」）。
+    # 加载器实际扫描的是 Mods（2026-11-23 实测，见 _gameroot.ps1 开头），所以这里比对的是游戏真正加载的那份 dll。
     . (Join-Path $root 'tools\_gameroot.ps1')
     $resolved = Get-SrmModsRoot
     $built = Join-Path $root 'SpectreReplay\bin\Release\SpectreReplay.dll'
