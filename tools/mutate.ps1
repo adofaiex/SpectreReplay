@@ -1256,6 +1256,22 @@ switch ($Which) {
         ReplaceExact 'Main.cs' '                Ui.ModernSettingsWindow.Ensure();' ''
         ReplaceExact 'Main.cs' '                WavLoader.reset();' ('                WavLoader.reset();' + "`n" + '                Ui.ModernSettingsWindow.Ensure();')
     }
+    'MUT-U145' {
+        # 起录持续失败须满 2 秒才提示：阈值退回 0，线程刚退出的瞬时失败也会立刻弹警告。
+        # LifecycleRegressionCheck LC23 的「满 2 秒前不提示」守住这一点。
+        Backup 'Features\Replay\Patches\Patch_Playback.cs'
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' 'keybdStartFailClock.ElapsedMilliseconds < 2000' 'keybdStartFailClock.ElapsedMilliseconds < 0'
+    }
+    'MUT-U146' {
+        # 同一段失败只提示一次的位被翻成 false：持续失败时每 2 秒重复弹一次。LC23 的「只提示一次」守住这一点。
+        Backup 'Features\Replay\Patches\Patch_Playback.cs'
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' 'keybdStartFailNotified = true;' 'keybdStartFailNotified = false;'
+    }
+    'MUT-U147' {
+        # 线程卡住（清理未完）时不再计入起录失败，退回原先「静默跳过、没有任何提示」的形态。LC23 的 A 段守住这一点。
+        Backup 'Features\Replay\Patches\Patch_Playback.cs'
+        ReplaceExact 'Features\Replay\Patches\Patch_Playback.cs' 'NoteKeybdStartFailure(); // 线程收尾中' '// 线程收尾中'
+    }
     'MUT-U144' {
         # ⑬c20：退回延迟 OnDestroy 无条件清理共享输入挡板，快速重开会误伤新窗口。
         Backup 'Ui\ModernSettingsWindow.cs'

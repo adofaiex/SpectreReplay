@@ -55,6 +55,21 @@ internal class Patch_PlayerControlUpdate
 {
     // 设备或文件初始化持续失败时限速重试，避免每帧建文件和刷日志。
     private static System.Diagnostics.Stopwatch keybdStartRetryClock;
+    // 起录持续失败的计时与「本段失败已提示」位（见 NoteKeybdStartFailure）
+    private static System.Diagnostics.Stopwatch keybdStartFailClock;
+    private static bool keybdStartFailNotified;
+
+    // 起录持续失败满 2 秒才提示一次，同一段失败只提示一次。线程刚退出、清理未完这类
+    // 瞬时失败通常下一次重试就自愈，不该吓到玩家；线程卡住或设备缺失则会持续下去，
+    // 这时必须让玩家看见（原先这些失败只写日志，玩家在游戏里什么也看不到）。
+    private static void NoteKeybdStartFailure()
+    {
+        keybdStartFailClock ??= System.Diagnostics.Stopwatch.StartNew();
+        if (keybdStartFailNotified || keybdStartFailClock.ElapsedMilliseconds < 2000) return;
+        keybdStartFailNotified = true;
+        Debug.Log("[SpectreReplay] 键盘音起录持续失败（录音线程未退出或设备不可用），已提示玩家；本局键盘音可能缺失");
+        TriggerMessage(LocalizationManager.GetLocalizedText("note.keybd_start_fail"), type: NotifType.Warning);
+    }
 
     // —— 命中判定的角度源：本帧将要渲染的角度（越界帧判定） ——
     //
@@ -101,11 +116,22 @@ internal class Patch_PlayerControlUpdate
     {
         if (__instance == null) return;
 
-        if (is_recording && Settings.KeybdSoundRecordActive
+        bool keybdWanted = is_recording && Settings.KeybdSoundRecordActive
             && !AudioRecorder.Instance.IsRecording
-            && !AudioRecorder.Instance.IsCleanupPending
-            && (keybdStartRetryClock == null || keybdStartRetryClock.ElapsedMilliseconds >= 500)
-            && !data.KeybdSoundStartTick.HasValue)
+            && !data.KeybdSoundStartTick.HasValue;
+        if (!keybdWanted)
+        {
+            // 不需要起录（未开录制 / 已在录 / 已占位）：清掉失败计时，下一段失败重新计。
+            keybdStartFailClock = null;
+            keybdStartFailNotified = false;
+        }
+        else if (AudioRecorder.Instance.IsCleanupPending)
+        {
+            // 上一局的录音线程还没退出：起录被挡住。这同样是起录失败，须计入持续时间，
+            // 否则线程真卡住时玩家什么都看不到（原先这里直接跳过，没有任何提示）。
+            NoteKeybdStartFailure(); // 线程收尾中
+        }
+        else if (keybdStartRetryClock == null || keybdStartRetryClock.ElapsedMilliseconds >= 500)
         {
             string filePath = Path.Combine(Settings.SavePath, "tmp.wav");
             // 清掉遗留的 tmp.wav：若上次录音因崩溃或强退而异常结束，tmp.wav 会留在
@@ -134,7 +160,10 @@ internal class Patch_PlayerControlUpdate
                 keybdStartRetryClock = null;
             }
             else
+            {
                 keybdStartRetryClock = System.Diagnostics.Stopwatch.StartNew();
+                NoteKeybdStartFailure();
+            }
         }
 
         // 补起始时间戳：起录帧没有导体时留下的是 NaN，这里每帧试着换成真值。

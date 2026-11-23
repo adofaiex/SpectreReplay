@@ -49,6 +49,7 @@ internal static class LifecycleRegressionCheck
                 .Replace("__RECORDING__", recording, StringComparison.Ordinal)
                 .Replace("__RETRY_FIELD__", playbackType.Members.OfType<FieldDeclarationSyntax>()
                     .Single(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == "keybdStartRetryClock")).ToString(), StringComparison.Ordinal)
+                .Replace("__FAIL_MEMBERS__", FailMembers(playbackType), StringComparison.Ordinal)
                 .Replace("__RECORDED_ACCURACY__", recordedAccuracy, StringComparison.Ordinal)
                 .Replace("__INFO_ACCURACY__", infoAccuracy, StringComparison.Ordinal)
                 .Replace("__PUMP__", Source(Method("Features/Replay/Runtime/ReplayPlayer.cs", "ReplayPlayer", "PumpInput", 2)), StringComparison.Ordinal)
@@ -103,6 +104,12 @@ internal static class LifecycleRegressionCheck
     private static string Source(MethodDeclarationSyntax method)
         => method.WithAttributeLists(default).ToString();
 
+    private static string FailMembers(ClassDeclarationSyntax playback)
+        => string.Join("\n", playback.Members.OfType<FieldDeclarationSyntax>()
+               .Where(f => f.Declaration.Variables.Any(v => v.Identifier.ValueText == "keybdStartFailClock" || v.Identifier.ValueText == "keybdStartFailNotified"))
+               .Select(f => f.ToString()))
+           + "\n" + Source(Method("Features/Replay/Patches/Patch_Playback.cs", "Patch_PlayerControlUpdate", "NoteKeybdStartFailure"));
+
     private static string StaticSource(MethodDeclarationSyntax method)
         => Source(method.AddModifiers(SyntaxFactory.Token(SyntaxKind.StaticKeyword).WithTrailingTrivia(SyntaxFactory.Space)));
 
@@ -128,6 +135,7 @@ public static class LifecycleFixture
     static void Record_kbdstate() { recordedFrames++; }
     static bool IsExtendedKey(ushort key) => false;
     __RETRY_FIELD__
+    __FAIL_MEMBERS__
     __BLOCKED__
     __PUMP__
     __RENDER_WAIT__
@@ -142,6 +150,67 @@ public static class LifecycleFixture
     static System.Diagnostics.Stopwatch _jobClock = System.Diagnostics.Stopwatch.StartNew();
     static void LogTiming(string stage, string detail = null) { }
     static void Frame() { __RECORDING__ }
+    static readonly List<string> Warnings = new List<string>();
+    static void TriggerMessage(string message, float extra = 0f, NotifType type = NotifType.Info)
+    {
+        if (type == NotifType.Warning) Warnings.Add(message);
+    }
+    static void StartStreak(AudioRecorder audio, bool cleanup)
+    {
+        data = new ReplayData();
+        audio.isRecording = false;
+        audio.cleanupPending = cleanup;
+        audio.NextSucceeds = false;
+    }
+    static void EndStreak(AudioRecorder audio)
+    {
+        audio.cleanupPending = false;
+        audio.NextSucceeds = true;
+        Frame();
+        Frame();
+        data = new ReplayData();
+    }
+    static void SetFailClock(long ms) { if (keybdStartFailClock != null) keybdStartFailClock.ElapsedMilliseconds = ms; }
+    static void SetRetryClock(long ms) { if (keybdStartRetryClock != null) keybdStartRetryClock.ElapsedMilliseconds = ms; }
+    static void KeybdStartFailure()
+    {
+        var audio = AudioRecorder.Instance;
+        Warnings.Clear();
+        keybdStartFailClock = null;
+        keybdStartFailNotified = false;
+        // A：录音线程卡住（清理未完）。起录不被调用，但失败仍要计时。
+        int a0 = audio.Attempts;
+        StartStreak(audio, cleanup: true);
+        Frame();
+        bool quiet = Warnings.Count == 0 && keybdStartFailClock != null && audio.Attempts == a0;
+        SetFailClock(1999);
+        Frame();
+        quiet &= Warnings.Count == 0;
+        SetFailClock(2000);
+        Frame();
+        bool shown = Warnings.Count == 1 && Warnings[0] == "note.keybd_start_fail";
+        Frame();
+        Frame();
+        bool once = Warnings.Count == 1;
+        EndStreak(audio);
+        bool cleared = keybdStartFailClock == null && !keybdStartFailNotified;
+        // B：StartRecording 返回 false，退避重试期间同样计时，同一段只提示一次。
+        int b0 = audio.Attempts;
+        int warned = Warnings.Count;
+        StartStreak(audio, cleanup: false);
+        Frame();
+        bool viaStart = audio.Attempts == b0 + 1 && keybdStartRetryClock != null && Warnings.Count == warned;
+        SetFailClock(2000);
+        SetRetryClock(500);
+        Frame();
+        viaStart &= audio.Attempts == b0 + 2 && Warnings.Count == warned + 1;
+        SetRetryClock(500);
+        Frame();
+        viaStart &= Warnings.Count == warned + 1;
+        EndStreak(audio);
+        Check(quiet && shown && once && cleared && viaStart,
+            "LC23 起录持续失败满 2 秒才提示一次（线程卡住与 StartRecording 失败同计），同段只提示一次，成功后清零");
+    }
     static void RecordAccuracy() { __RECORDED_ACCURACY__ }
     static Info ReadAccuracy()
     {
@@ -155,6 +224,7 @@ public static class LifecycleFixture
     public static string[] Run()
     {
         Recording();
+        KeybdStartFailure();
         Accuracy();
         Mirroring();
         RenderManualStart();
@@ -364,6 +434,7 @@ class AudioRecorder
     __CLEANUP_PROPERTY__
     public bool StartRecording(string path, string device) { Attempts++; isRecording = NextSucceeds; return NextSucceeds; }
 }
+enum NotifType { Info, Warning }
 enum KeyCode { F9 = 290, F10 = 291, F11 = 292 }
 namespace SpectreReplay { static class Settings { public static bool KeybdSoundRecordActive = true; public static string SavePath = "memory-only", MicrophoneDeviceName = "fixture"; public static int SaveButton = 290, CancelSaveButton = 291, RenderStopKey = 292; public static ushort[] key_code_convert = new ushort[256]; } }
 static class Debug { public static void Log(string value) { } public static void LogWarning(string value) { } public static void LogException(Exception value) { } }
