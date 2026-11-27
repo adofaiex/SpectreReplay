@@ -456,7 +456,6 @@ public static class Fixture
         AudioSettings.dspTime = 10;
         AsyncKeyRecorder.BeginRecording();
         KeyboardSimulation.Physical[65] = 128;
-        long oldTick = DateTime.Now.Ticks - 100000;
         SpectreState.SetGetKeyAsyncEnabled(true);
         AsyncKeyRecorder.FlushFrame();
         KeyboardSimulation.Physical[65] = 0;

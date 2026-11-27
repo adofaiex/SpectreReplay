@@ -444,10 +444,12 @@ static class ManagedInput
     public static List<ushort> Noted = new List<ushort>();
     public static bool Note(ushort key, bool pressed, ushort source, out bool aggregateChanged, out ushort aggregateVk)
     { Noted.Add(key); aggregateChanged = true; aggregateVk = key; return true; }
+    public static bool IsHeldVk(ushort key) => false;
+    public static void AssociateInjectedEvent(ushort source, ushort key, bool pressed, bool heldBefore, bool heldAfter, long ticks) { }
     __HOTKEY_MEMBERS__
 }
 static class KeyViewerBridge { public static int CachedNativeVk(KeyCode key) => (int)key - 170; }
-static class AsyncInputInjector { public static bool Injectable, Healthy = true; public static List<ushort> Injected = new List<ushort>(); public static void Inject(ushort key, bool pressed, double time) { Injected.Add(key); } }
+static class AsyncInputInjector { public static bool Injectable, Healthy = true; public static List<ushort> Injected = new List<ushort>(); public static bool Inject(ushort key, bool pressed, double time, out long ticks) { Injected.Add(key); ticks=100; return true; } }
 class Patch_MirrorEchoSuppressor { }
 namespace PatchShared { static class SpectrePatchHub { public static bool IsApplied(Type type) => true; } }
 static class KeyboardSimulation { public struct INPUT { public ushort Key; } public static List<ushort> Sent = new List<ushort>(); public static INPUT MakeInput(byte key, bool pressed, bool extended) => new INPUT { Key = key }; public static void SendInputs(List<INPUT> inputs) { foreach (var input in inputs) Sent.Add(input.Key); } }

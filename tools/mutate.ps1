@@ -4925,9 +4925,10 @@ switch ($Which) {
         ReplaceExact 'State/SpectreState.cs' 'ReplayRecorder.RecordKeyboardState(forceSync: true, reconcileAsyncHandoff: true)' 'ReplayRecorder.RecordKeyboardState(forceSync: true)'
     }
     'MUT-SFIX11' {
-        # AS15：按时间upper_bound重插会把同歌曲时间的后续UP放到旧DOWN前。
+        # AS15：按lower_bound插入会把同歌曲时间的新边沿放到已有前缀之前。
         Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
-        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        events.Insert(handoff.PrefixCount + handoff.Published.Count, edge);' '        int index = events.FindLastIndex(e => e.SongPosition <= position) + 1;
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        events.Insert(handoff.PrefixCount + handoff.Published.Count, edge);' '        int index = events.FindIndex(e => e.SongPosition >= position);
+        if (index < 0) index = events.Count;
         events.Insert(index, edge);'
     }
     'MUT-SFIX12' {
@@ -4942,16 +4943,9 @@ switch ($Which) {
             PrevKeyState[key] = held[key];' ''
     }
     'MUT-SFIX14' {
-        # AS16：本批采样后UP先按旧基线去重，重建迟到DOWN已无法救回该UP。
+        # AS14/17：交接窗口事件已回溯后又按旧快照走实时消费，制造重复/反序边沿。
         Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
-        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        if (rebuildHandoff) RebuildSynchronousHandoff(synchronousHandoff);
-        foreach (SkyHookEvent ev in FrameBuffer)' '        foreach (SkyHookEvent ev in FrameBuffer)'
-        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                SongPosition = songPos
-            });
-        }' '                SongPosition = songPos
-            });
-        }
-        if (rebuildHandoff) RebuildSynchronousHandoff(synchronousHandoff);'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                && (long)ev.GetTimeInTicks() <= synchronousHandoff.SampleTicks) continue;' '                && false) continue;'
     }
     'MUT-SFIX15' {
         # AS17：交接后的第一条真实边沿若不保留到Tail，迟交采样内边沿会复活错误状态。
@@ -4973,13 +4967,45 @@ switch ($Which) {
         Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
         ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' '        finally { AsyncKeyRecorder.EndRecording(); }' '        finally { }'
     }
+    'MUT-SFIX19' {
+        # F12：多来源同VK时仍走原生HashSet，第二次DOWN计数被合并。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '        NativeFallbackTicks.Add(tick);' '        // Keep the colliding press on the native HashSet path.'
+    }
+    'MUT-SFIX20' {
+        # F14：碰撞tick的动作键查询若退回整帧状态，会提前读到后续tick的按键。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '        if (_nativeTickContext != long.MinValue && NativeFallbackTicks.Contains(_nativeTickContext))
+            return MatchesNativeTick(state, vk, _nativeTickContext);' '        if (false)
+            return MatchesNativeTick(state, vk, _nativeTickContext);'
+    }
+    'MUT-SFIX21' {
+        # ⑦b：省略 ProcessKeyInputs Prefix 的 tick 上下文，配对结构接线断言。
+        Backup 'Features/Replay/Patches/Patch_InputInjection.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_InputInjection.cs' '    internal static void ProcessKeyInputs_Prefix(long __0)
+        => ManagedInput.BeginNativeTick(__0);' '    internal static void ProcessKeyInputs_Prefix(long __0) { }'
+    }
+    'MUT-SFIX22' {
+        # F13：Count 的 tick 分支若错配 tick（或整体失效），同 tick 双来源计数
+        # 退回帧级路径——帧级路径在同场景下计数为 0 或合并为 1，F13 变红。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '                if (edge.Tick == _nativeTickContext && edge.Pressed) tickCount++;' '                if (edge.Tick != _nativeTickContext && edge.Pressed) tickCount++;'
+    }
+    'MUT-SFIX23' {
+        # F13：Append 经 TryGetNativeTickPresses 取碰撞 tick 重复数；该查询
+        # 失效时 holdKeys 退回帧级计数，同 tick 双来源少追加，F13 变红。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '            if (edge.Tick == _nativeTickContext && edge.Vk == vk && edge.Pressed) count++;
+        return true;' '            count = 0;
+        return false;'
+    }
     'MUT-SHR1' {
         # F21C2 回退为后台调用带 Unity 日志的包装层；真实保存失败必须被专项击中。
         Backup 'Features/Replay/Runtime/ReplaySaveOperation.cs'
         ReplaceExact 'Features/Replay/Runtime/ReplaySaveOperation.cs' 'if (!noEncryption) bytes = ReplayCrypto.EncryptCore(bytes);' 'if (!noEncryption) bytes = ReplayCrypto.Encrypt(bytes);'
     }
     default {
-        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142 / MUT-QC1 / MUT-QC2 / MUT-QC3 / MUT-QC4 / MUT-QC5 / MUT-QC6 / MUT-QC7 / MUT-QC8 / MUT-QC9 / MUT-QC10 / MUT-QC11 / MUT-QC12 / MUT-QC13 / MUT-QC14）"
+        throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-SFIX19 / MUT-SFIX20 / MUT-SFIX21 / MUT-SFIX22 / MUT-SFIX23 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142 / MUT-QC1 / MUT-QC2 / MUT-QC3 / MUT-QC4 / MUT-QC5 / MUT-QC6 / MUT-QC7 / MUT-QC8 / MUT-QC9 / MUT-QC10 / MUT-QC11 / MUT-QC12 / MUT-QC13 / MUT-QC14）"
     }
 }
 

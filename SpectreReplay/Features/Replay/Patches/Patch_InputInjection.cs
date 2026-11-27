@@ -72,6 +72,20 @@ internal static class Patch_RDInput
         catch (Exception ex) { Debug.LogException(ex); }
     }
 
+    // 原生 UpdateInput 按 eventTick 分组并对每组各调用 ProcessKeyInputs。
+    // 多来源同VK时只在被HashSet合并的tick组内用托管来源计数，不能整帧回退，
+    // 否则同帧多个tick组会重复读取整帧PressCount。
+    [SpectrePatch(typeof(scrController), "ProcessKeyInputs", PatchType.Prefix, Feature = FeatureKeys.Replay)]
+    internal static void ProcessKeyInputs_Prefix(long __0)
+        => ManagedInput.BeginNativeTick(__0);
+
+    [SpectrePatch(typeof(scrController), "ProcessKeyInputs", PatchType.Finalizer, Feature = FeatureKeys.Replay)]
+    internal static Exception ProcessKeyInputs_Finalizer(Exception __exception)
+    {
+        ManagedInput.EndNativeTick();
+        return __exception;
+    }
+
     // 检查点前导期也要泵（2026-11-07「中间开始按键提前/晚打」实测）：中间
     // 开始时游戏走 States.Checkpoint——音乐已 scrub、歌曲位置已从起点起走，
     // 但 PlayerControl_Update 在前导期不跑，泵挂在它上面会让首键等到状态

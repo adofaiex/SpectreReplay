@@ -154,6 +154,11 @@ namespace UiPreview
                 "⑦ 没有在 UpdateInput 的 Prefix 上记账 —— 异步链由 UpdateInput → ProcessKeyInputs 驱动");
             Expect(patch.Contains("ReplayPlayer.PumpInput()"),
                 "⑦ 两个 Prefix 没有真正调用 PumpInput —— 事件根本没人灌");
+            Expect(Has(patch, @"typeof\(scrController\)\s*,\s*""ProcessKeyInputs""\s*,\s*PatchType\.Prefix")
+                && patch.Contains("ManagedInput.BeginNativeTick(__0)")
+                && Has(patch, @"typeof\(scrController\)\s*,\s*""ProcessKeyInputs""\s*,\s*PatchType\.Finalizer")
+                && patch.Contains("ManagedInput.EndNativeTick()"),
+                "⑦b 原生tick组没有设置/清理输入上下文 —— 多来源碰撞回退会整帧重复计数或泄漏到下一组");
 
             // ⑧ 按下/抬起按帧戳判定。
             //    靠清集合的写法在「无待办事件」时走不到清空，按下会一直挂着。

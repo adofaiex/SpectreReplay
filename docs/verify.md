@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 线上 dll 与构建产物的 sha256 一致、上游 Spectre 工作区干净。
 （后两项只在本地跑，`-Ci` 跳过；上游路径优先读 `SPECTRE_UPSTREAM`。）
 
-> **当前打印 663 条断言 0 失败**（2026-11-27 退出保存与异步交接修复后 `verify.ps1 -Ci` 实跑；Release 0 错误/0 警告、6 项只读审计通过；整体仍因工作区未提交改动返回 1）。
+> **当前打印 691 条断言 0 失败**（2026-11-27 键盘输入修复后 `verify.ps1 -Ci` 实跑；Release 0 错误/0 警告、6 项只读审计通过；整体仍因工作区 11 项未提交改动返回 1）。
 > 这个数字会随轮次变，引用前先跑一遍 `verify.ps1` 看真实条数。
 > **注意它是「✓ 行数」而不是判据数**——`UiLogicShapeCheck` 现有 195 条判据只印 1 行，
 > 所以加判据这个数字不变。
@@ -95,8 +95,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 - `ShippingRenderCheck` 的 F17 用实际 `Flush` 和三条协程调用路径验证保留帧：编码器泵回调不能提前回池，只能由保留帧所有者释放。`MUT-U111` 恢复裸 `Recycle`，对应三项行为失败；不是以夹具编译失败充作检出。`MUT-U33` 已更新到当前 `RowHotkey`，仍由原行距检查检出。
 - `ShippingReplayCheck` 的 F21R 提取真实手动保存、普通过关、无失误过关和失败保存调用方，实际制造目录为文件的双重写盘失败，再经真实保存热键重试；请求接受与失败均不能清 `PendingSave`，成功完成才清。另验证旧作业完成不能修改替换实例或原地 `Reset` 后的新会话，失败不能重新开启已取消的待保存。对应 `MUT-SHR2` 至 `MUT-SHR9`；仅使用临时目录和受控 Unity 边界，不接触真实设备、游戏或云端。
 - `ShippingRenderCheck` 的 F20 当前9项：提取真实视频时钟接管函数及 `TearDown → ReleaseGameControl → UnpinVideoPlayers` 调用，保留释放入口的幂等守卫。验证已激活/未激活播放器切换 `GameTime`，不抢跑或改写游戏播放状态、pitch/time，受控游戏启动门仍按阈值初始化 `vidOffset/pitch/time`，收尾逐个恢复原模式，无视频关卡可走完生命周期，并保留作业帧率快照。旧代码六项行为红；`MUT-SHV1` 至 `MUT-SHV8` 均有效检出，其中SHV6验证不能把各播放器原模式统一记为DSPTime。这里没有独立的重复收尾行为断言；调用提取不保留完整协程顺序、分支及所有退出路径，假VideoPlayer也不推进时间或解码。因此不能据此证明准备/寻帧、反压等待期间的视频时间冻结、画面连续性或音画同步；这些仍待实机验收。独立专项审查未发现高置信度新增缺陷，但不作原始视觉问题已修复的保证。
+- 键盘多来源映射：`ManagedInput` 为合成按下事件保留原生 tick 记录；当不同来源键映射到同一 VK 时，按 tick 暂时退出原生 HashSet 接管并由托管来源计数补齐按下沿，同 tick 两个来源则保留双计数。`ProcessKeyInputs` 的 Prefix/Finalizer 设置并清理 tick 上下文；记录保留到对应 tick 消费完，过期两秒后清理未消费事件（此两句为设计语义，暂无变异背书——掏空 EndNativeTick 或删 Prune 调用现有断言不会红，残留边被精确 tick 匹配天然过滤，实际风险低）。F12/F13 分别覆盖不同 tick 与同 tick；F14覆盖碰撞 tick 的动作状态查询，既阻止看到后续 tick 的按下，也保留当前 tick 中仍按住、稍后才抬起的状态。`MUT-SFIX19`、`20`、`21` 分别击穿计数、动作查询与 Prefix 接线断言；`22`（Count 的 tick 匹配反号）与 `23`（TryGetNativeTickPresses 失效）击穿 F13 的 tick 计数与 Append/holdKeys 路径。未启动游戏或真实按键注入。
 
-**总数以 `verify.ps1` 实跑为准**（2026-11-27 退出保存与异步交接修复后离线套件实跑 663 条 `✓` 行、0 失败；CI 闸门仅因96项未提交改动返回 1；`-Ci` 跳过部署一致性与本机上游工作区检查）。
+**总数以 `verify.ps1` 实跑为准**（2026-11-27 键盘输入修复后离线套件实跑 691 条 `✓` 行、0 失败；CI 闸门仅因11项未提交改动返回 1；`-Ci` 跳过部署一致性与本机上游工作区检查）。
 这个数字会随轮次变；引用前先跑一遍。**它是「✓ 行数」而不是判据数**，
 `UiLogicShapeCheck` 的 195 条判据只印 1 行，所以加判据这个数字不变。
 
