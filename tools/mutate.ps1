@@ -4999,6 +4999,70 @@ switch ($Which) {
         return true;' '            count = 0;
         return false;'
     }
+    'MUT-RFL1' {
+        # RF01/02/03/06/07：恢复只保存request，等FIFO轮询才读取，成功数据跨帧过期。
+        Backup 'Features/VideoRender/Pipeline/VideoFrameSource.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '        public bool Completed;' '        public bool Completed;
+        public Action Read;'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' 'Action<AsyncGPUReadbackRequest> completed = request => CompleteReadback(flight, request);' 'Action<AsyncGPUReadbackRequest> completed = request => flight.Read = () => CompleteReadback(flight, request);'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '        Flight head = flights.Peek();' '        Flight head = flights.Peek();
+        head.Read?.Invoke();
+        head.Read = null;'
+    }
+    'MUT-RFL2' {
+        # RF04：错误地按回调完成顺序而非FIFO交付顺序更新顶替源，失败帧取到未来画面。
+        Backup 'Features/VideoRender/Pipeline/VideoFrameSource.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '        buffers.HoldFrame(pixels);' '        // Held source was incorrectly adopted in the callback.'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '                flight.Pixels = pixels;' '                buffers.HoldFrame(pixels);
+                flight.Pixels = pixels;'
+    }
+    'MUT-RFL3' {
+        # RF05：取消关闭守卫，晚到回调在纹理释放后仍访问原生request。
+        Backup 'Features/VideoRender/Pipeline/VideoFrameSource.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '            if (disposed) return;
+            byte[] pixels = null;' '            byte[] pixels = null;'
+    }
+    'MUT-RFL4' {
+        # RF09：回调漏验像素长度，将尺寸异常当成功帧发布。
+        Backup 'Features/VideoRender/Pipeline/VideoFrameSource.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '                if (data.Length != frameBytes) return;' '                // Accept truncated native pixels.'
+    }
+    'MUT-RFL5' {
+        # RF08：复制完成前就发布缓冲，CopyTo抛异常后仍把半成品交给编码器。
+        Backup 'Features/VideoRender/Pipeline/VideoFrameSource.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoFrameSource.cs' '                data.CopyTo(pixels);
+                flight.Pixels = pixels;' '                flight.Pixels = pixels;
+                data.CopyTo(pixels);'
+    }
+    'MUT-EL1' {
+        # EL01/02：恢复直接读取编辑器levelData，Start前customLevel未赋值。
+        Backup 'Features/EffectRemover/EffectRemover.cs'
+        ReplaceExact 'Features/EffectRemover/EffectRemover.cs' '        return Safety.CanWrite(game == null ? null : game.levelData,' '        return Safety.CanWrite(editor == null ? CurrentLevelData : editor.levelData,'
+    }
+    'MUT-EL2' {
+        # EL02：Start前不查询已创建的游戏单例，去特效原谱被当成干净数据。
+        Backup 'Features/EffectRemover/EffectRemover.cs'
+        ReplaceExact 'Features/EffectRemover/EffectRemover.cs' '            ? editor.customLevel : ADOBase.customLevel;' '            ? editor.customLevel : null;'
+    }
+    'MUT-EL3' {
+        # EL03：刷新指定编辑器时误用全局单例，按钮与写盘入口保护对象脱节。
+        Backup 'Features/EffectRemover/EffectRemover.cs'
+        ReplaceExact 'Features/EffectRemover/EffectRemover.cs' '        SetEditorSaveButtons(editor, CanSave(editor));' '        SetEditorSaveButtons(editor, EditorSaveEnabled);'
+    }
+    'MUT-EL4' {
+        # EL04：漏传显式覆盖开关，去特效开启就绕过原谱保护。
+        Backup 'Features/EffectRemover/EffectRemover.cs'
+        ReplaceExact 'Features/EffectRemover/EffectRemover.cs' '            game == null ? null : game.levelPath,
+            !ModDisabled && Enabled && Settings.EffectRemoverEnableSave);' '            game == null ? null : game.levelPath,
+            !ModDisabled && Enabled);'
+    }
+    'MUT-EL5' {
+        # EL01/02：直写和还原入口保留不安全的当前谱面getter，Start前仍空引用。
+        Backup 'Features/EffectRemover/EffectRemover.cs'
+        ReplaceExact 'Features/EffectRemover/EffectRemover.cs' '            scnGame game = CurrentGame(scnEditor.instance);
+            return game == null ? null : game.levelData;' '            return scnEditor.instance != null ? scnEditor.instance.levelData
+                : ADOBase.customLevel == null ? null : ADOBase.customLevel.levelData;'
+    }
     'MUT-SHR1' {
         # F21C2 回退为后台调用带 Unity 日志的包装层；真实保存失败必须被专项击中。
         Backup 'Features/Replay/Runtime/ReplaySaveOperation.cs'

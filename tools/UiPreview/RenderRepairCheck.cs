@@ -701,7 +701,7 @@ public static class RenderRepairFixture_BackpressurePause
         return RunFixture("BackpressurePause", fixture);
     }
 
-    private static int RunFixture(string name, params string[] sources)
+    internal static int RunFixture(string name, params string[] sources)
     {
         try
         {
@@ -801,13 +801,19 @@ using System.Linq;
 using System.Threading;
 public static class RenderRepairFixture_FrameBufferOwnership
 {
+    private static byte[] NewFrame(SpectreReplay.Features.VideoRender.FrameBufferOwnership owner)
+    {
+        if (!owner.TryRentForReadback(8, out byte[] pixels)) throw new ObjectDisposedException("owner");
+        owner.HoldFrame(pixels);
+        return pixels;
+    }
     private static void Check(List<string> r, bool ok, string label)
         => r.Add((ok ? "✓ " : "✗ ") + label);
     public static string[] Run()
     {
         var r = new List<string>();
         var owner = new SpectreReplay.Features.VideoRender.FrameBufferOwnership(4);
-        byte[] first = owner.RentForFrame(8);
+        byte[] first = NewFrame(owner);
         for (int i = 0; i < first.Length; i++) first[i] = (byte)(i + 1);
         owner.RecycleOrHold(first);
         var sourceReady = new ManualResetEventSlim(false);
@@ -834,13 +840,20 @@ public static class RenderRepairFixture_FrameBufferOwnership
         });
         copier.Start();
         bool pinEstablished = sourceReady.Wait(2000);
-        byte[] next = owner.RentForFrame(8);
-        bool noEarlyReuse = !ReferenceEquals(first, next);
+        byte[] next = NewFrame(owner);
+        // 回读现在先租再交付：退役旧源后，还要安排一次独立的在途租借，
+        // 才能验证复制 pin 是否真正阻止退役源被回调复用。
+        bool pendingRented = owner.TryRentForReadback(8, out byte[] pendingReadback);
+        bool noEarlyReuse = pendingRented && !ReferenceEquals(first, next)
+            && !ReferenceEquals(first, pendingReadback);
+        if (pendingReadback != null) Array.Fill(pendingReadback, (byte)0xEE);
         allowCopy.Set();
         bool joined = copier.Join(2000);
-        bool copied = joined && error == null && copyDone.IsSet && copy.SequenceEqual(first);
+        bool copied = joined && error == null && copyDone.IsSet
+            && copy.SequenceEqual(Enumerable.Range(1, 8).Select(i => (byte)i));
+        owner.Recycle(pendingReadback);
         owner.RecycleOrHold(next);
-        byte[] reusedAfterRelease = owner.RentForFrame(8);
+        byte[] reusedAfterRelease = NewFrame(owner);
         bool releasedForReuse = ReferenceEquals(first, reusedAfterRelease);
         owner.Dispose();
         bool lateCallbackSafe = true;
@@ -851,7 +864,7 @@ public static class RenderRepairFixture_FrameBufferOwnership
         lateCallbackSafe &= ((System.Collections.ICollection)spareField.GetValue(owner)).Count == 0;
         Check(r, lateCallbackSafe, "Dispose 后晚到回调安全丢弃，不重新写入已关闭池");
         var race = new SpectreReplay.Features.VideoRender.FrameBufferOwnership(4);
-        byte[] a = race.RentForFrame(8);
+        byte[] a = NewFrame(race);
         var gate = race.GetType().GetField("gate", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(race);
         var entered = new ManualResetEventSlim(false);
         var returned = new ManualResetEventSlim(false);
@@ -862,10 +875,10 @@ public static class RenderRepairFixture_FrameBufferOwnership
             callback.Start();
             bool ready = entered.Wait(2000);
             serialized = ready && !returned.Wait(100);
-            b = race.RentForFrame(8);
+            b = NewFrame(race);
         }
         bool callbackJoined = callback.Join(2000);
-        byte[] c = race.RentForFrame(8);
+        byte[] c = NewFrame(race);
         Check(r, serialized && callbackJoined && !ReferenceEquals(b, c), "RR09 A迟到回调与B登记被同锁串行化，B编码前绝不回池");
         race.Dispose();
         return r.ToArray();

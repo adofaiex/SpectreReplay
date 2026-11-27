@@ -22,10 +22,11 @@ internal enum VideoSurface
 
 internal sealed class VideoFrameSource
 {
-    private struct Flight
+    private sealed class Flight
     {
         public int Index;
-        public AsyncGPUReadbackRequest Request;
+        public bool Completed;
+        public byte[] Pixels;
         // 指针位置必须在 Grab 那一刻采样、随帧排队：回读是异步的，交付时才读
         // Input.mousePosition 会把「两三帧之后」的位置画进这一帧，快速移动会甩尾。
         // 见 CursorOverlay 的类注释。
@@ -48,6 +49,9 @@ internal sealed class VideoFrameSource
     private readonly VideoSurface surface;
     private readonly RenderTexture texture;
     private readonly Queue<Flight> flights = new Queue<Flight>();
+    // 只同步回读发布/消费和关闭；不与编码泵共锁，整帧复制不会阻塞泵回收。
+    private readonly object readbackGate = new object();
+    private bool disposed;
     // 所有权状态与池共用一个锁。大数组复制在 FrameBufferOwnership 返回后进行。
     private readonly FrameBufferOwnership buffers = new FrameBufferOwnership(8);
     private readonly int frameBytes;
@@ -245,12 +249,7 @@ internal sealed class VideoFrameSource
             if (camBackground != null && camBackground.targetTexture != texture) camBackground.targetTexture = texture;
             if (camMain != null && camMain.targetTexture != texture) camMain.targetTexture = texture;
         }
-        AsyncGPUReadbackRequest request = bytesPerPixel == 8
-            ? (hdr10
-                ? AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_SFloat, _ => { })
-                : AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_UNorm, _ => { }))
-            : AsyncGPUReadback.Request(texture, 0, TextureFormat.RGBA32, _ => { });
-        Flight flight = new Flight { Index = index, Request = request };
+        Flight flight = new Flight { Index = index };
         // 指针位置在**这一帧**采样：见 Flight 里 CursorDrawn 的注释。
         // 两条来源：
         //   · 录制轨迹——按钉扎歌曲时间插值，与画面同源，渲染速度/管线波动
@@ -288,6 +287,48 @@ internal sealed class VideoFrameSource
             }
         }
         flights.Enqueue(flight);
+        // Unity 的成功回读结果只保留完成那一帧；编码背压可能让 FIFO 等待多帧，
+        // 此后 request 已释放，hasError 也会变 true。必须在完成回调里拷出像素，
+        // 不能把 request 留到 TryTake 再 GetData。光标快照先填好，回调不操作画布。
+        Action<AsyncGPUReadbackRequest> completed = request => CompleteReadback(flight, request);
+        if (bytesPerPixel == 8)
+        {
+            if (hdr10)
+                AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_SFloat, completed);
+            else
+                AsyncGPUReadback.Request(texture, 0, GraphicsFormat.R16G16B16A16_UNorm, completed);
+        }
+        else
+            AsyncGPUReadback.Request(texture, 0, TextureFormat.RGBA32, completed);
+    }
+
+    private void CompleteReadback(Flight flight, AsyncGPUReadbackRequest request)
+    {
+        lock (readbackGate)
+        {
+            if (disposed) return;
+            byte[] pixels = null;
+            try
+            {
+                if (request.hasError) return;
+                NativeArray<byte> data = request.GetData<byte>();
+                if (data.Length != frameBytes) return;
+                if (!buffers.TryRentForReadback(frameBytes, out pixels)) return;
+                data.CopyTo(pixels);
+                flight.Pixels = pixels;
+                pixels = null; // 所有权交给该 flight，直到 FIFO 交付或 Dispose。
+            }
+            catch (Exception ex)
+            {
+                // 原生数据/复制失败按该帧回读失败处理，不从 Unity 回调向外抛。
+                Debug.LogException(ex);
+            }
+            finally
+            {
+                if (pixels != null) buffers.Recycle(pixels);
+                flight.Completed = true;
+            }
+        }
     }
 
     // 只看队首：完成或出错才交付，保证帧序
@@ -298,19 +339,19 @@ internal sealed class VideoFrameSource
         failed = false;
         if (flights.Count == 0) return false;
         Flight head = flights.Peek();
-        if (!head.Request.done && !head.Request.hasError)
-            return false;
+        lock (readbackGate)
+        {
+            if (!head.Completed) return false;
+            pixels = head.Pixels;
+            head.Pixels = null;
+        }
         flights.Dequeue();
         index = head.Index;
-        if (head.Request.hasError)
+        if (pixels == null)
             return SubstituteLastGood(out pixels, out failed);
-        NativeArray<byte> data = head.Request.GetData<byte>();
-        if (data.Length != frameBytes)
-            return SubstituteLastGood(out pixels, out failed);
-        // 在同一临界区退役旧帧、租借并登记新保留帧。编码回调不能在
-        // 退役与登记之间复用数组；大像素复制仍在锁外。
-        pixels = buffers.RentForFrame(frameBytes);
-        data.CopyTo(pixels);
+        // 完成回调可以乱序；只有 FIFO 消费时才替换「上一成功帧」。
+        // 保留位与泵回收的交接由同一把池锁保护，不再复制整帧。
+        buffers.HoldFrame(pixels);
         // 指针最后画：此时像素已拷进托管数组，且位置是 Grab 那一帧记下的。
         // rowsBottomUp 照 NeedsRowFlip——编码器只对 CleanCamera 做 vflip。
         if (head.CursorDrawn)
@@ -339,8 +380,8 @@ internal sealed class VideoFrameSource
     // 而顶替只在 2.4% 的帧发生——改为引用保留：heldFrame 持有最近成功帧的
     // 缓冲（池外），交付下一帧时由 RetireHeld 归还；归还与复用的时序由
     // RecycleOrHold（编码器写完才回调）保证，无数据竞争。失败帧复制一份租借
-    // 缓冲提交——顶替帧画面滞后 ≤MaxInFlight 帧（240fps 下 ≤25ms），不可感知，
-    // 行序/字节序与正常帧 100% 一致。上个成功帧缺位（开局连败）才回落黑帧。
+    // 缓冲提交，行序/字节序与正常帧一致。连续失败仍会造成可见停顿，
+    // 顶替只是防闪黑，不能代替及时保存成功回读。上个成功帧缺位才回落黑帧。
     // 顶替计数（供作业收尾写进完成日志）
     internal int SubstituteCount => substituteCount;
     internal int SubstituteMissing => substituteMissing;
@@ -472,12 +513,18 @@ internal sealed class VideoFrameSource
 
     internal void Dispose()
     {
+        lock (readbackGate)
+        {
+            if (disposed) return;
+            disposed = true;
+            // 回读晚到时不得再读原生数据或租借缓冲；清理尚未交付的托管像素。
+            foreach (Flight flight in flights) flight.Pixels = null;
+            flights.Clear();
+            // 后台泵回调可在 Dispose 后到达；池关闭后只丢弃回收。
+            buffers.Dispose();
+        }
         RestoreTargets();
         VideoRender.CurrentSurface = null;   // 会话结束：飘字门随帧源一起撤
-        flights.Clear();
-        // 后台泵回调可在 Dispose 后到达；标记后只丢弃回收，不会再把大数组
-        // 塞回已关闭的池。仍在使用的数组由提交队列/回调持有直至线程结束。
-        buffers.Dispose();
         if (texture != null)
         {
             texture.Release();
