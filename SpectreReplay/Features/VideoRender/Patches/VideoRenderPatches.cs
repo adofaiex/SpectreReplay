@@ -183,6 +183,8 @@ internal static class UnscaledDeltaPin
     private static double baseUnscaled;    // Time.unscaledTime 安装时基值
     private static double baseRealtime;    // Time.realtimeSinceStartup 安装时基值
     private static double virtualElapsed;  // 安装后累计的虚拟时间
+    private static float backpressureTimeScale;
+    private static bool backpressurePaused;
     private static double baseDsp;         // AudioSettings.dspTime 安装时基值
 
     // dspTime 的 detour 独立于 unscaled 列表管理：它在捕获就绪时才装（等待回放/
@@ -201,6 +203,7 @@ internal static class UnscaledDeltaPin
 
     internal static void Install(int fps)
     {
+        EndBackpressureWait();
         if (detours.Count > 0)
         {
             Uninstall();
@@ -264,9 +267,30 @@ internal static class UnscaledDeltaPin
         }
     }
 
-    // 渲染循环每帧调用一次，推进虚拟时钟（与增量钉扎值严格一致）
+    // 编码器/GPU 反压时仍要让出主线程，但这不是一个输出帧：暂停 scaled
+    // Time.time，并将钉扎增量置零，避免未捕获的 Unity Update 偷偷推进模拟。
+    internal static void BeginBackpressureWait()
+    {
+        if (backpressurePaused) return;
+        backpressureTimeScale = Time.timeScale;
+        backpressurePaused = true;
+        Time.timeScale = 0f;
+    }
+
+    internal static void EndBackpressureWait()
+    {
+        if (!backpressurePaused) return;
+        Time.timeScale = backpressureTimeScale;
+        backpressurePaused = false;
+    }
+
+    // 渲染循环每个输出帧调用一次，推进虚拟时钟（与增量钉扎值严格一致）。
+    // 反压等待不是捕获帧，不得补时。
     internal static void TickFrame()
-        => virtualElapsed += 1.0 / armedFps;
+    {
+        if (!backpressurePaused)
+            virtualElapsed += 1.0 / armedFps;
+    }
 
     // 供 RenderClock 时间源 Transpiler 复用：unscaled 绝对时间只有一个权威实现。
     // 否则"Transpiler 用 dsp 锚点"与"原生 detour 用 unscaled 基值"会形成两套虚拟时钟，
@@ -274,7 +298,7 @@ internal static class UnscaledDeltaPin
     internal static bool Installed => detours.Count > 0;
     internal static double CurrentUnscaledD => baseUnscaled + virtualElapsed;
     internal static float CurrentUnscaledF => (float)(baseUnscaled + virtualElapsed);
-    internal static float CurrentDelta => 1f / armedFps;
+    internal static float CurrentDelta => backpressurePaused ? 0f : 1f / armedFps;
 
     // 捕获就绪时调用一次：把 AudioSettings.dspTime getter 钉到虚拟时钟。
     // 必须晚于"等待回放"阶段（倒计时走真实时钟），早于任何捕获帧的游戏更新。
@@ -352,6 +376,7 @@ internal static class UnscaledDeltaPin
 
     internal static void Uninstall()
     {
+        EndBackpressureWait();
         // dsp detour 撤销失败时保留引用：PinnedDsp 在会话外会走 trampoline 回
         // 原值（探针在则游戏时钟不受影响），下一次 InstallDsp 会先重试撤销。
         if (dspDetour != null)
@@ -431,7 +456,7 @@ internal static class UnscaledDeltaPin
             && ps[3].ParameterType == typeof(bool);
     }
 
-    private static float PinnedDelta() => 1f / armedFps;
+    private static float PinnedDelta() => backpressurePaused ? 0f : 1f / armedFps;
     private static float PinnedUnscaled() => (float)(baseUnscaled + virtualElapsed);
     private static double PinnedUnscaledD() => baseUnscaled + virtualElapsed;
     private static float PinnedRealtime() => (float)(baseRealtime + virtualElapsed);

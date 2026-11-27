@@ -218,11 +218,9 @@ internal class Patch_OnLandOnPortal
         if (Settings.DontSaveWhenMiss)
         {
             // FailMiss/FailOverload 桶按名取（r150 枚举重排后旧下标 8/9 已指向别的判定）
-            if (HitMarginCompat.FailCount(HitMarginCounts) == 0 && SaveFile())
-                PendingSave = false;
+            if (HitMarginCompat.FailCount(HitMarginCounts) == 0) SaveFile();
         }
-        else if (SaveFile())
-            PendingSave = false;
+        else SaveFile();
     }
 }
 
@@ -236,7 +234,6 @@ internal class Patch_Fail2Action
         if (is_recording) TriggerMessage(LocalizationManager.GetLocalizedText("note.stop_recording"));
         PlayActions.StopPlaying();
         PlayActions.StopRecording();
-        if (Settings.FailSave && PendingSave && SaveFile())
-            PendingSave = false;
+        if (Settings.FailSave && PendingSave) SaveFile();
     }
 }

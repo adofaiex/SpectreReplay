@@ -91,12 +91,13 @@ internal static class Patch_RDInput
     {
         // NativeTakeover 时放行：事件已进 AsyncInputManager.keyQueue，游戏自己按 tick
         // 分组算 mainPressCount。这里再覆盖会把每个 tick 组都算成「本帧刚按下」。
-        if (!ManagedInput.Active || ManagedInput.NativeTakeover) return;
+        if (!ManagedInput.Active) return;
         if (TimelineController.InputCaptured)
         {
             __result = 0;
             return;
         }
+        if (ManagedInput.NativeTakeover) return;
         __result = ManagedInput.Count(state);
     }
 
@@ -105,12 +106,13 @@ internal static class Patch_RDInput
     [SpectrePatch(typeof(RDInput), "GetState", PatchType.Postfix, Feature = FeatureKeys.Replay)]
     internal static void GetState_Postfix(ref bool __result, InputAction inputAction, ButtonState state)
     {
-        if (!ManagedInput.Active || ManagedInput.NativeTakeover || !IsGameplayAction(inputAction)) return;
+        if (!ManagedInput.Active || !IsGameplayAction(inputAction)) return;
         if (TimelineController.InputCaptured)
         {
             __result = false;
             return;
         }
+        if (ManagedInput.NativeTakeover) return;
         __result = ManagedInput.Matches(inputAction, state);
     }
 
@@ -130,13 +132,14 @@ internal static class Patch_RDInput
         Feature = FeatureKeys.Replay, MaxVersion = 149)]
     internal static void GetStateKeys_PostfixOld(ref List<AnyKeyCode> __result, ButtonState state)
     {
-        if (!ManagedInput.Active || ManagedInput.NativeTakeover) return;
+        if (!ManagedInput.Active) return;
         if (TimelineController.InputCaptured)
         {
             if (__result != null)
                 __result.Clear();
             return;
         }
+        if (ManagedInput.NativeTakeover) return;
         List<AnyKeyCode> list = __result;
         if (list == null) list = new List<AnyKeyCode>();
         else list.Clear();
@@ -151,11 +154,15 @@ internal static class Patch_RDInput
     {
         // NativeTakeover 时放行：pressCount/heldCount 已由游戏按真实事件累积，
         // 覆盖成「此刻按住的全集」会丢掉 pressCount（WentDown）的语义。
-        if (!ManagedInput.Active || ManagedInput.NativeTakeover || keys == null) return;
+        if (!ManagedInput.Active || keys == null) return;
+        if (TimelineController.InputCaptured)
+        {
+            keys.Clear();
+            return;
+        }
+        if (ManagedInput.NativeTakeover) return;
         keys.Clear();
         ManagedInput.Append(keys, state);
-        if (TimelineController.InputCaptured)
-            keys.Clear();
     }
 
     /// <summary>

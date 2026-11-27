@@ -1,6 +1,14 @@
 {
   "lang": "pt",
   "entries": {
+    "render.video.rate_unsupported": "Esta plataforma não consegue manter a velocidade {0:0.######}× do vídeo de fundo. A renderização foi interrompida para evitar uma velocidade incorreta.",
+    "render.video.speed_control_unavailable": "Esta plataforma não consegue controlar a velocidade do vídeo de fundo. A renderização foi interrompida para evitar uma velocidade incorreta.",
+    "status.loaded_disabled": "{0} carregado, mas o interruptor principal está desligado. Ative-o em Gravação e reinicie o nível para reproduzir.",
+    "status.loaded_disabled_nosound": "{0} carregado, mas o interruptor principal está desligado e falta o áudio do teclado. Ative-o em Gravação e reinicie o nível para reproduzir.",
+    "playback.cloud.partial": "Operação na nuvem parcialmente concluída: {0}",
+    "playback.cloud.partial.detail": "Sucesso: {0}; falhas: {1}; {2}",
+    "render.ffmpeg.probing": "Verificando o codificador em segundo plano. Tente novamente em instantes.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Gravação",
     "page.playback": "Reprodução",
     "page.render": "Renderização de vídeo",

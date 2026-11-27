@@ -18,6 +18,10 @@ public sealed class ReplayData
     public string KeybdSoundHash { get; set; }
     // 仅录制/保存时使用，不进入回放格式；Reset 后不得影响下一局。
     internal RecordingStop KeybdSoundStop { get; set; }
+    // 成功从内存装载的旁挂 WAV，仅供当前播放会话导出，不进入回放格式。
+    internal byte[] KeybdSoundMemory { get; set; }
+    internal string KeybdSoundSourcePath { get; set; }
+    internal ReplaySaveOperation SaveOperation { get; set; }
     /// <summary>曲名。原键 song_name。</summary>
     public string SongName { get; set; }
     /// <summary>曲师。原键 artist_name。</summary>
@@ -204,9 +208,24 @@ public sealed class ReplayData
     internal ReplayData SnapshotForSave()
     {
         var snapshot = (ReplayData)MemberwiseClone();
-        snapshot.KeyEvents = new List<KeyEvent>(KeyEvents);
-        snapshot.HitSnapshots = new List<HitSnapshot>(HitSnapshots);
-        snapshot.CursorTrack = new List<CursorSample>(CursorTrack);
+        snapshot.KeyEvents = KeyEvents.ConvertAll(e => new KeyEvent
+            { KeyCode = e.KeyCode, IsPressed = e.IsPressed, SongPosition = e.SongPosition });
+        snapshot.HitSnapshots = HitSnapshots.ConvertAll(h => new HitSnapshot
+        {
+            CurrentFloorID = h.CurrentFloorID, CurrAngle = h.CurrAngle,
+            OverloadCounter = h.OverloadCounter, NoFailHit = h.NoFailHit, IsAuto = h.IsAuto,
+            NextFloorAuto = h.NextFloorAuto, CachedAngle = h.CachedAngle,
+            TargetExitAngle = h.TargetExitAngle, MidspinInfiniteMargin = h.MidspinInfiniteMargin,
+            RDC_auto = h.RDC_auto, curFreeRoamSection = h.curFreeRoamSection, HitTick = h.HitTick
+        });
+        snapshot.CursorTrack = CursorTrack.ConvertAll(c => new CursorSample
+            { SongPosition = c.SongPosition, X = c.X, Y = c.Y });
+        // 后台只持有独立字节；Reset/下一局和外部修改不能改变正在保存的数据。
+        snapshot.KeybdSoundMemory = KeybdSoundMemory == null ? null : (byte[])KeybdSoundMemory.Clone();
+        var audio = KeybdAudio;
+        if (audio.Payload != null) audio.Payload = (byte[])audio.Payload.Clone();
+        snapshot.KeybdAudio = audio;
+        snapshot.SaveOperation = null;
         return snapshot;
     }
 
@@ -217,6 +236,9 @@ public sealed class ReplayData
         KeybdSoundFileName = null;
         KeybdSoundHash = null;
         KeybdSoundStop = null;
+        KeybdSoundMemory = null;
+        KeybdSoundSourcePath = null;
+        SaveOperation = null;
         SongName = null;
         ArtistName = null;
         SceneName = null;

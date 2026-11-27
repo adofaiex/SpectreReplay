@@ -71,7 +71,7 @@ internal static class SpectrePatchHub
     // 本文件被各宿主 mod 以 <Compile Include> 编进各自程序集，静态状态随宿主隔离；
     // 游戏程序集与版本政策由宿主启动时注入（先于 Initialize 调用 Configure）
     internal static System.Reflection.Assembly GameAssembly;
-    // 宿主实测游戏 build；-1 = 未知（版本门控放行，只降级为日志警告）
+    // 宿主实测游戏 build；-1 = 未知（无分叉者尝试解析，必要版本分叉无法选择时拒绝）
     internal static int Release = -1;
     // 宿主政策：支持的最低游戏 build——所有补丁的隐式 MinVersion 地板
     internal static int MinSupportedBuild;
@@ -156,6 +156,8 @@ internal static class SpectrePatchHub
                         else
                             Resolve(spec);
                         _specs.Add(spec);
+                        if (spec.Error != null && !spec.VersionSkipped)
+                            RecordApplyFailure(spec.Id, spec.Error);
                     }
                 }
             }
@@ -220,6 +222,8 @@ internal static class SpectrePatchHub
             if (expr != null && expr.Invalid)
                 spec.Error = "Feature 语法错误（& 与 ,/| 不可混用）: " + feature;
             _specs.Add(spec);
+            if (spec.Error != null && !spec.VersionSkipped)
+                RecordApplyFailure(spec.Id, spec.Error);
         }
         Refresh();
     }
@@ -384,10 +388,9 @@ internal static class SpectrePatchHub
         }
         else if (a.MinVersion > 0 || a.MaxVersion > 0)
         {
-            // 版本探测失败（Release == -1）时不能放行带版本分叉的补丁：
-            // 分叉对（MaxVersion = 149 / MinVersion = 150）会同时注册，两条目标名一存在一不存在，
-            // 不存在的那条会以 Error（而非 VersionSkipped）污染 IsAvailable。宁可整体不挂并显式告警
-            spec.VersionSkipped = true;
+            // 未知版本无法确定必要分叉，不等于某个已知版本下的正常不适用。
+            // 保留真实 Error，让入口拒绝无效录放；已知的新版本仍按签名尝试，不改变 fail-open。
+            spec.VersionSkipped = false;
             spec.Error = "游戏版本探测失败（Release == -1），已跳过带版本约束的补丁：r141–r149 与 r150+ 无法区分";
             return;
         }
@@ -1241,7 +1244,7 @@ internal static class SpectrePatchHub
     /// </summary>
     public static int ApplyFailureCount
     {
-        get { lock (_lock) { return ApplyFailures.Count; } }
+        get { lock (_lock) { return _specs.Count(spec => spec.Error != null && !spec.VersionSkipped); } }
     }
 
     private static void RecordApplyFailure(string specId, string error)

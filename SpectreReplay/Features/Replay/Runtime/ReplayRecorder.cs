@@ -13,6 +13,7 @@ internal static class ReplayRecorder
         if (!is_recording)
         {
             Stop();
+            AsyncKeyRecorder.BeginRecording();
             PlayIndex = 0;
             KeyEventIndex = 0;
             is_recording = true;
@@ -42,6 +43,9 @@ internal static class ReplayRecorder
         {
             return;
         }
+        // 最后一帧后的异步边沿也属于本局，必须在翻标志/保存前排空。
+        try { AsyncKeyRecorder.FlushFrame(force: true, final: true); }
+        finally { AsyncKeyRecorder.EndRecording(); }
         is_recording = false;
         IgnoreMarkFail = false;
         // 与 Patch_Recording 同理：两个数组按 Max(HitMargin)+1 分配，正常等长。
@@ -120,9 +124,9 @@ internal static class ReplayRecorder
         LateSaveMode = false;
     }
 
-    internal static void RecordKeyboardState(bool forceSync = false)
+    internal static bool RecordKeyboardState(bool forceSync = false, bool reconcileAsyncHandoff = false)
     {
-        if (data == null) return;
+        if (data == null) return false;
         if (ADOBase.controller != null)
         {
             int prev = data.MaximumUsedKeys ?? 0;
@@ -134,11 +138,15 @@ internal static class ReplayRecorder
         // 指针轨迹与按键共用这个逐帧入口，但必须在异步早退**之前**采样：
         // 异步输入只接管按键事件的记账，指针两条路径都要每帧跑。
         RecordCursor();
+        // 关闭监听时若导体暂不可用，保留的尾部队列在同步入口恢复后排空。
+        if (!UseAsyncInput) AsyncKeyRecorder.FlushFrame(force: true);
 
         // 异步输入开启时按键由 AsyncKeyRecorder 记录，轮询路径只兜 forceSync（结算画面）
         if (!forceSync && UseAsyncInput)
-            return;
+            return false;
+        long sampleStarted = reconcileAsyncHandoff ? DateTime.Now.Ticks : 0;
         KeyboardSimulation.SampleKeyState(CurrKeyState);
+        long sampleFinished = reconcileAsyncHandoff ? DateTime.Now.Ticks : 0;
         // **必须自己确认导体可用。** 本方法由 Won_Update / UpdateInput 的补丁
         // 直接调用，而那两个补丁**没有 try**（Patch_Won_Update.Postfix 只对
         // __instance 判了空）：conductor 在结算转场/场景卸载期间会被销毁，
@@ -150,7 +158,14 @@ internal static class ReplayRecorder
         // 不会留下错位的 PrevKeyState。
         var conductor = ADOBase.conductor;
         if (conductor == null)
-            return;
+            return false;
+        if (reconcileAsyncHandoff)
+        {
+            if (conductor.song == null) return false;
+            AsyncKeyRecorder.RecordSynchronousHandoff(conductor, sampleStarted, sampleFinished);
+            return true;
+        }
+        AsyncKeyRecorder.ObserveSynchronousState(conductor.songposition_minusi);
         var events = data.KeyEvents;
         for (int i = 1; i < 256; i++)
         {
@@ -183,6 +198,7 @@ internal static class ReplayRecorder
             }
             PrevKeyState[i] = CurrKeyState[i];
         }
+        return true;
     }
 
     /// <summary>

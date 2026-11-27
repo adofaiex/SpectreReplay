@@ -1,6 +1,14 @@
 {
   "lang": "fr",
   "entries": {
+    "render.video.rate_unsupported": "Cette plateforme ne peut pas conserver la vitesse de la vidéo d’arrière-plan {0:0.######}×. Le rendu a été arrêté pour éviter une vitesse incorrecte.",
+    "render.video.speed_control_unavailable": "Cette plateforme ne peut pas contrôler la vitesse de la vidéo d’arrière-plan. Le rendu a été arrêté pour éviter une vitesse incorrecte.",
+    "status.loaded_disabled": "{0} est chargé, mais le commutateur principal est désactivé. Activez-le dans Enregistrement, puis relancez le niveau pour lire le replay.",
+    "status.loaded_disabled_nosound": "{0} est chargé, mais le commutateur principal est désactivé et le son du clavier manque. Activez-le dans Enregistrement, puis relancez le niveau.",
+    "playback.cloud.partial": "Opération cloud partiellement terminée : {0}",
+    "playback.cloud.partial.detail": "Réussites : {0} ; échecs : {1} ; {2}",
+    "render.ffmpeg.probing": "Vérification de l’encodeur en arrière-plan. Réessayez dans un instant.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Enregistrement",
     "page.playback": "Lecture",
     "page.render": "Rendu vidéo",

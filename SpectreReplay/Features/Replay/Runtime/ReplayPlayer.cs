@@ -322,8 +322,7 @@ internal static class ReplayPlayer
                 // Hotkeys were recorded in older replays; Restore does not write
                 // a frame stamp, so restoring them would leave them stuck down.
                 if (num == 0 || num == 27 || ManagedInput.IsModHotkey(num)) continue;
-                ManagedInput.Restore(num, ev.IsPressed);
-                Features.VideoRender.RenderOverlayCapture.QuartzKey(num, ev.IsPressed);
+                ManagedInput.Restore(num, ev.IsPressed, ev.KeyCode);
             }
         }
 
@@ -338,6 +337,10 @@ internal static class ReplayPlayer
         // 重建回干净受控态，再按净按住态逐键补 Down。跳过段的历史边沿不喂
         // ——与上面 Quartz「只喂净按住态」同一取舍。
         ReplayInputBridge.Reseed();
+        foreach (ushort vk in ManagedInput.SnapshotHeld())
+            Features.VideoRender.RenderOverlayCapture.QuartzKey(vk, true);
+        // Public subscribers also need the rebuilt held set, but not the skipped edges.
+        ManagedInput.BroadcastHeld();
 
         // Keep the SendInput mirror in sync so Stop() releases exactly the keys
         // that remain held after the rebuild.
@@ -399,7 +402,7 @@ internal static class ReplayPlayer
             KeyEventIndex = 0;
             PlayIndex = 0;
             Debug.Log("[SpectreReplay] replay finished (keys exhausted in Won state), stopping playback");
-            Stop();
+            PlayActions.StopPlaying();
             TriggerMessage(LocalizationManager.GetLocalizedText("note.stop_playing"));
             return;
         }
@@ -428,7 +431,7 @@ internal static class ReplayPlayer
             {
                 KeyEventIndex = 0;
                 PlayIndex = 0;
-                Stop();
+                PlayActions.StopPlaying();
                 TriggerMessage(LocalizationManager.GetLocalizedText("note.stop_playing"));
             }
         }
@@ -564,7 +567,10 @@ internal static class ReplayPlayer
             ushort num = ev.KeyCode < Settings.key_code_convert.Length
                 ? Settings.key_code_convert[ev.KeyCode]
                 : (ushort)0;
-            if (num != 0 && num != 27 && !ManagedInput.IsModHotkey(num))
+            bool sourceChanged = false;
+            bool aggregateChanged = false;
+            ushort aggregateVk = num;
+            if (!ev.IsPressed || (num != 0 && num != 27 && !ManagedInput.IsModHotkey(num)))
             {
                 // 托管输入侧：把回放状态并进 RDInput 的查询结果（见 Patch_RDInput）。
                 // 与平台/聚焦无关，也【不】受 IsBlockedKey 影响——那个表是给
@@ -572,26 +578,36 @@ internal static class ReplayPlayer
                 // 不过滤修饰键：原版 holdKeys 由 RDInput.GetMainHeldKeys 填充，
                 // Shift/Ctrl/Alt 同样算「按住」；若在此滤掉，录音里只按住修饰键的长条
                 // 会在回放时被判成松手。Esc(27) 与 0（未映射/无效）仍排除。
-                ManagedInput.Note(num, ev.IsPressed);
-                // Quartz KeyViewer has its own external-driver queue; it does not
-                // consume ManagedInput, SkyHook, or Unity Input. Feed the same edge
-                // here so its rain animation and key highlights share the replay clock.
-                Features.VideoRender.RenderOverlayCapture.QuartzKey(num, ev.IsPressed);
-                QuartzLiveBridge.Edge(num, ev.IsPressed);
-                // ReplayInput 契约同理：受控模式只认显式按键调用，VK→KeyCode 后转发。
-                ReplayInputBridge.Edge(num, ev.IsPressed);
-                if (asyncInject && AsyncInputInjector.Healthy)
+                sourceChanged = ManagedInput.Note(num, ev.IsPressed, ev.KeyCode,
+                    out aggregateChanged, out aggregateVk);
+                // Quartz, ReplayInput, and the other KeyViewer consumers expose a
+                // target-key state, so only the aggregate 0↔1 edge is broadcast.
+                if (aggregateChanged)
                 {
-                    try { AsyncInputInjector.Inject(num, ev.IsPressed, ev.SongPosition); }
+                    Features.VideoRender.RenderOverlayCapture.QuartzKey(aggregateVk, ev.IsPressed);
+                    QuartzLiveBridge.Edge(aggregateVk, ev.IsPressed);
+                    ReplayInputBridge.Edge(aggregateVk, ev.IsPressed);
+                }
+                // The async game input path is event/count based. Keep every real
+                // source edge (including two distinct downs mapped to one target VK).
+                if (sourceChanged && (ev.IsPressed || aggregateChanged)
+                    && asyncInject && AsyncInputInjector.Healthy)
+                {
+                    try { AsyncInputInjector.Inject(aggregateVk, ev.IsPressed, ev.SongPosition); }
                     catch (Exception ex) { Debug.LogException(ex); }
                 }
             }
-            if (sendInput && num != 0 && num != 27 && !IsBlockedKey(num)
-                && !ManagedInput.IsModHotkey(num))
+            // 松键认实际发过的 OS DOWN，不重读聚焦、镜像选项或新热键门槛。
+            bool releaseMirrored = !ev.IsPressed && aggregateVk < CurrKeyState.Length
+                && (CurrKeyState[aggregateVk] & 0x80) != 0;
+            if (aggregateChanged && aggregateVk != 0
+                && (releaseMirrored || (ev.IsPressed && sendInput
+                    && !IsBlockedKey(aggregateVk) && !ManagedInput.IsModHotkey(aggregateVk))))
             {
                 _mirrorUsedThisPlayback = true;
-                inputs.Add(KeyboardSimulation.MakeInput((byte)num, ev.IsPressed, IsExtendedKey(num)));
-                CurrKeyState[num] = (byte)(ev.IsPressed ? 128u : 0u);
+                inputs.Add(KeyboardSimulation.MakeInput((byte)aggregateVk, ev.IsPressed,
+                    IsExtendedKey(aggregateVk)));
+                CurrKeyState[aggregateVk] = (byte)(ev.IsPressed ? 128u : 0u);
             }
             KeyEventIndex++;
             pumped++;

@@ -175,9 +175,9 @@ internal static class ReviewRegressionCheck
             && Read("Features/Replay/Patches/Patch_Playback.cs").Contains("data.EndTile);", StringComparison.Ordinal)
             && vr.Contains("RenderOutputPolicy.UseTimelineRange", StringComparison.Ordinal),
             "R22 最后一击与默认时间轴规则接到实际调用点");
-        string pages = Read("Pages/Pages.cs");
+        string pages = Read("Pages/Pages.cs") + "\n" + Read("Pages/RenderPage.cs");
         Check(pages.Contains("RenderOutputPolicy.Hdr10Enabled", StringComparison.Ordinal)
-            && pages.Contains("Render10Bit || hdr10, hdr10", StringComparison.Ordinal)
+            && pages.Contains("RenderHdr10 && !RenderOutputPolicy.Hdr10Enabled", StringComparison.Ordinal)
             && pages.Contains("VideoRender.Job?.ActualEncoder", StringComparison.Ordinal)
             && pages.Contains("CRF → CQP", StringComparison.Ordinal), "R23 界面显示生效HDR/实际编码器/AMF模式映射");
         Check(Read("State/ConfigManager.cs").Contains("if (rawHardware == null && rawEncoder == 3 && Settings.RenderPreset == 0)", StringComparison.Ordinal)
@@ -228,17 +228,23 @@ internal static class ReviewRegressionCheck
         string cloudState = Read("Features/Cloud/CloudReplay.cs");
         string uploadGate = Body(cloudState, "ConfigUploadAllowedNow");
         string restoreConfig = Body(cloudState, "RestoreConfigIfMissing");
-        string localAppeared = BlockAfter(restoreConfig, "if (File.Exists(localPath))");
+        string localAppeared = BlockAfter(restoreConfig, "if (File.Exists(localPath) &&");
         string configConflict = BlockAfter(localAppeared, "if (SteamCloud.Exists(RemoteConfigName))");
         string restoreTimeout = BlockAfter(Body(cloudState, "RestoreWhenReady"), "if (!SteamCloud.Ready)");
-        Check(Body(cloudState, "RestoreOnStartup").Contains("BeginConfigRestoreWindow();", StringComparison.Ordinal)
-            && Body(cloudState, "BeginConfigRestoreWindow").Contains("_configLocalMissingAtStartup = string.IsNullOrEmpty(localPath) || !File.Exists(localPath);", StringComparison.Ordinal)
-            && Before(restoreConfig, "if (!_configLocalMissingAtStartup)", "_configRestoreSettled = true;")
+        bool r40Startup = Body(cloudState, "RestoreOnStartup").Contains("BeginConfigRestoreWindow();", StringComparison.Ordinal)
+            && Body(cloudState, "BeginConfigRestoreWindow").Contains("_configLocalMissingAtStartup = string.IsNullOrEmpty(localPath) || !File.Exists(localPath);", StringComparison.Ordinal);
+        bool r40Conflict = Before(restoreConfig, "if (!_configLocalMissingAtStartup)", "_configRestoreSettled = true;")
             && configConflict.Contains("return false;", StringComparison.Ordinal)
-            && !configConflict.Contains("_configRestoreSettled = true;", StringComparison.Ordinal)
+            && !configConflict.Contains("_configRestoreSettled = true;", StringComparison.Ordinal);
+        bool r40Timeout = !string.IsNullOrEmpty(restoreTimeout)
+            && restoreTimeout.Contains("yield break;", StringComparison.Ordinal)
+            && restoreTimeout.Contains("需手动上传确认本地配置", StringComparison.Ordinal)
             && !restoreTimeout.Contains("_configRestoreSettled = true;", StringComparison.Ordinal)
-            && !uploadGate.Contains("Time.realtimeSinceStartup > 90f", StringComparison.Ordinal)
-            && cloudState.Contains("需手动上传确认本地配置", StringComparison.Ordinal),
+            && !uploadGate.Contains("Time.realtimeSinceStartup > 90f", StringComparison.Ordinal);
+        if (!r40Startup || !r40Conflict || !r40Timeout)
+            Console.WriteLine("    R40 detail: startup=" + r40Startup + " conflict=" + r40Conflict + " timeout=" + r40Timeout
+                + " conflictBlock=" + configConflict.Replace("\r", "").Replace("\n", " "));
+        Check(r40Startup && r40Conflict && r40Timeout,
             "R40 启动期间本地配置与云端冲突时不因超时自动覆盖备份");
 
         string player = Read("Features/Replay/Runtime/ReplayPlayer.cs");
@@ -272,19 +278,26 @@ internal static class ReviewRegressionCheck
             && Before(recorderCleanup, "if (WorkersRunning)", "processingThread = null;")
             && Before(deferredUpdate, "if (owner.WorkersRunning) return;", "owner.Cleanup();")
             && deferredUpdate.Contains("!ReferenceEquals(owner, null)", StringComparison.Ordinal)
-            && Before(Body(recorder, "StartRecording"), "if (cleanupPending)", "Microphone.devices.Length")
+            && Before(Body(recorder, "StartRecording"), "if (cleanupPending)", "string[] devices = Microphone.devices;")
             && Before(Body(recorder, "startMicrophone"), "if (cleanupPending)", "Microphone.Start(")
             && Body(recorder, "OnDestroy").Contains("Cleanup(End_microphone: true);", StringComparison.Ordinal),
             "R48 录音线程超时保留引用，独立主线程回收器等退出后释放，清理期间不复用资源");
 
         string startupRestore = Body(cloudState, "RestoreOnStartup");
         string scheduleRestore = Body(cloudState, "ScheduleStartupRestore");
+        int restoreAllowedStart = cloudState.IndexOf("private static bool StartupRestoreAllowed(", StringComparison.Ordinal);
+        int restoreAllowedEnd = restoreAllowedStart < 0 ? -1 : cloudState.IndexOf(';', restoreAllowedStart);
+        string restoreAllowed = restoreAllowedStart < 0 || restoreAllowedEnd < 0 ? ""
+            : cloudState.Substring(restoreAllowedStart, restoreAllowedEnd - restoreAllowedStart);
         Check(Before(startupRestore, "BeginConfigRestoreWindow();", "ScheduleStartupRestore();")
             && !startupRestore.Contains("!Settings.CloudSyncOn", StringComparison.Ordinal)
             && !startupRestore.Contains("!Settings.CloudRestoreOnLoad", StringComparison.Ordinal)
             && startupRestore.Contains("_configRestoreScheduled = false;", StringComparison.Ordinal)
             && scheduleRestore.Contains("_configRestoreScheduled", StringComparison.Ordinal)
-            && scheduleRestore.Contains("!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad", StringComparison.Ordinal)
+            && scheduleRestore.Contains("_configInitializing", StringComparison.Ordinal)
+            && scheduleRestore.Contains("StartupRestoreAllowed(_restoreGeneration)", StringComparison.Ordinal)
+            && restoreAllowed.Contains("generation == _restoreGeneration", StringComparison.Ordinal)
+            && restoreAllowed.Contains("Settings.CloudSyncOn && Settings.CloudRestoreOnLoad", StringComparison.Ordinal)
             && Before(Body(cloudState, "OnConfigSaved"), "ScheduleStartupRestore();", "if (!SteamCloud.Ready) return false;"),
             "R45 关闭同步启动仍先记录文件状态，同会话启用后保存可安排恢复");
 
@@ -386,11 +399,13 @@ internal static class ReviewRegressionCheck
         string preStartTimeoutBlock = BlockAfter(phases, "if (encoder == null)");
         string drive = Body(job, "Drive");
         string resizeBranch = BlockAfter(phases, "if (frames.Width != preW || frames.Height != preH || frames.NeedsRowFlip != preFlip)");
-        // 只检查真实重建分支内包着 Begin 的处理，不把独立构造的异常当作调用点证据。
-        bool rebuildKeepsOriginal = Regex.IsMatch(resizeBranch,
-            @"\btry\s*\{\s*encoder\.Begin\(\);\s*\}\s*catch \(Exception ex\)\s*"
-            + @"when \(ex is not VideoEncoder\.PreStartException && ex is not OperationCanceledException\)\s*\{\s*"
+        // 重建必须先发布替代 encoder 引用，再调用可能失败的 Begin；异常仍需保留原异常类型。
+        bool replacementPublishedBeforeBegin = resizeBranch.Contains("EncoderPreStartOwnership<VideoEncoder>.CreateAndBeginReplacement(", StringComparison.Ordinal)
+            && Before(resizeBranch, "value => encoder = value,", "value => value.Begin());");
+        bool rebuildWrapsOriginal = Regex.IsMatch(resizeBranch,
+            @"catch \(Exception ex\) when \(ex is not VideoEncoder\.PreStartException && ex is not OperationCanceledException\)\s*\{\s*"
             + @"throw new VideoEncoder\.PreStartException\(\s*VideoEncoder\.PreStartFailureReason\.Generic,\s*""[^""]*"",\s*ex\);\s*\}");
+        bool rebuildKeepsOriginal = replacementPublishedBeforeBegin && rebuildWrapsOriginal;
         Check(reasonMapping && localizedReasons
             && enc.Contains("throw new PreStartException(PreStartFailureReason.EncoderCatalogUnavailable", StringComparison.Ordinal)
             && enc.Contains("throw new PreStartException(PreStartFailureReason.HardwarePreflightTimeout", StringComparison.Ordinal)

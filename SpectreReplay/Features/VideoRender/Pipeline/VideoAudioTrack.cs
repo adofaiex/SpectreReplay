@@ -155,24 +155,40 @@ internal sealed class VideoAudioTrack : IDisposable
         return _render;
     }
 
-    // 回写文件头，WAV 才能被读取
+    // 主线程结束捕获模式，立刻恢复游戏设备输出；封好的文件不随捕获资源销毁。
+    // Seal、场景退出和 Dispose 共用幂等出口，后台只读 WAV 路径，不碰 Unity。
+    internal void StopCapture()
+    {
+        if (capturing)
+        {
+            capturing = false;
+            try { AudioRenderer.Stop(); } catch { }
+        }
+        if (_render.IsCreated) _render.Dispose();
+        _render = default;
+    }
+
+    // 回写并关闭写端，后台合成只拥有已经封好的文件。
     internal void Seal()
     {
+        StopCapture();
         if (file == null) return;
-        file.Seek(0, SeekOrigin.Begin);
-        WriteHeader(written);
-        file.Flush();
+        try
+        {
+            file.Seek(0, SeekOrigin.Begin);
+            WriteHeader(written);
+            file.Flush();
+        }
+        finally
+        {
+            file.Dispose();
+            file = null;
+        }
     }
 
     public void Dispose()
     {
-        if (capturing)
-        {
-            try { AudioRenderer.Stop(); } catch { }
-            capturing = false;
-        }
-        if (_render.IsCreated) _render.Dispose();
-        _render = default;
+        StopCapture();
         file?.Dispose();
         file = null;
     }

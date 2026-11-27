@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using SpectreReplay.Features.Replay;
+using SpectreReplay.Features.VideoRender;
 
 namespace SpectreReplay.Features.Cloud
 {
@@ -66,6 +67,11 @@ namespace SpectreReplay.Features.Cloud
         private static bool _configRestoreWindowActive;
         private static bool _configRestoreScheduled;
         private static bool _configLocalMissingAtStartup;
+        private static bool _configInitializing;
+        private static bool _configApplyingRestore;
+        private static byte[] _configStartupGenerated;
+        private static int _restoreGeneration;
+        private static bool _startupRestoreEnabled;
 
         /// <summary>云端回放统计（UI 每帧要读，必须缓存）。</summary>
         internal struct Stats
@@ -177,13 +183,14 @@ namespace SpectreReplay.Features.Cloud
 
                 string remoteReplay = RemoteNameOf(Path.GetFileName(replayFullPath));
                 string err;
-                if (!SteamCloud.UploadFile(remoteReplay, replayFullPath, out err))
+                if (!SteamCloud.Exists(remoteReplay) && !SteamCloud.UploadFile(remoteReplay, replayFullPath, out err))
                 {
                     Debug.LogWarning("[SpectreReplay] 回放上传云端失败（" + err + "）：" + replayFullPath);
                     return false;
                 }
 
-                if (!string.IsNullOrEmpty(wavFullPath) && File.Exists(wavFullPath))
+                if (!string.IsNullOrEmpty(wavFullPath) && File.Exists(wavFullPath)
+                    && !SteamCloud.Exists(RemoteNameOf(Path.GetFileName(wavFullPath))))
                 {
                     try
                     {
@@ -674,7 +681,15 @@ namespace SpectreReplay.Features.Cloud
             {
                 return false;
             }
-            AtomicFile.WriteAllBytes(localPath, data ?? new byte[0]);
+            if (data == null || data.Length == 0) { error = "empty_file"; return false; }
+            // 存储层允许合法空文件；回放业务层还要拒绝截断/坏容器，不发布坏本体。
+            if (!remoteFileName.EndsWith(".wav", StringComparison.OrdinalIgnoreCase)
+                && !ReplayManager.ReadReplayData(out _, data, remoteFileName))
+            {
+                error = "decode_failed";
+                return false;
+            }
+            AtomicFile.WriteAllBytes(localPath, data);
             return true;
         }
 
@@ -836,19 +851,10 @@ namespace SpectreReplay.Features.Cloud
                     string localPath = Path.Combine(dir, name);
                     if (File.Exists(localPath)) continue;   // 本地已有：不覆盖
 
-                    byte[] data;
-                    string err;
-                    if (!SteamCloud.Download(e.Name, out data, out err))
-                    {
-                        r.Failed++;
-                        r.LastError = err;
-                        continue;
-                    }
-
                     try
                     {
-                        AtomicFile.WriteAllBytes(localPath, data ?? new byte[0]);
-                        r.Restored++;
+                        if (DownloadTo(name, localPath, out string err)) r.Restored++;
+                        else { r.Failed++; r.LastError = err; }
                     }
                     catch (Exception ex)
                     {
@@ -889,6 +895,14 @@ namespace SpectreReplay.Features.Cloud
         /// <returns>这份内容是否已经（刚才或此前）写进云端缓存。</returns>
         internal static bool OnConfigSaved(string localPath)
         {
+            // 初始化归一化不是玩家编辑；它生成的默认文件仍可被启动恢复替换。
+            if (_configInitializing || _configApplyingRestore) return false;
+            _configStartupGenerated = null;
+            if (!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad)
+            {
+                _restoreGeneration++;
+                _configRestoreScheduled = false;
+            }
             if (!Settings.CloudSyncOn) return false;
             try
             {
@@ -946,6 +960,7 @@ namespace SpectreReplay.Features.Cloud
         /// </summary>
         internal static void PrepareForExit()
         {
+            CancelStartupRestore();
             SteamCloud.Disable("quitting");
         }
 
@@ -964,8 +979,7 @@ namespace SpectreReplay.Features.Cloud
         private static bool ConfigUploadAllowedNow()
         {
             if (_configRestoreSettled) return true;
-            // 不恢复的配置下没有「还没读过的备份」可言，直接放行。
-            if (!Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return true;
+            // 关闭/取消恢复不等于读过云端备份，不能绕过缺失启动会话的冲突锁。
             // 不能用超时强行放行：本地缺失期间写出的设置可能已经与云端备份冲突，
             // 超时上传仍会把那份尚未读过的备份覆盖掉。由手动上传或安全恢复分支落定。
             Debug.Log("[SpectreReplay] 云端配置恢复尚未完成，暂不上传（避免覆盖还没读过的备份）");
@@ -1088,6 +1102,12 @@ namespace SpectreReplay.Features.Cloud
                 return false;
             }
 
+            if (!ConfigManager.ValidateConfigData(data, out error))
+            {
+                Debug.LogWarning("[SpectreReplay] 云端配置结构无效，保留本地配置：" + error);
+                return false;
+            }
+
             if (File.Exists(localPath))
             {
                 try
@@ -1114,12 +1134,13 @@ namespace SpectreReplay.Features.Cloud
                 return false;
             }
 
-            // 本地与云端此刻一致：既不算「待上传」，也别让启动恢复再来一次。
+            // 未成功应用前仍锁住上传，归一化写盘也不能把这次恢复反向覆盖。
+            _configRestoreSettled = false;
+            if (!ApplyRestoredConfig(localPath)) { error = "apply_failed"; return false; }
             _configUploaded = data;
             _configRestoreSettled = true;
             _configPending = false;
-
-            ApplyRestoredConfig(localPath);
+            _configStartupGenerated = null;
             Debug.Log("[SpectreReplay] 已从 Steam 云手动取回配置（" + data.Length + " 字节）");
             return true;
         }
@@ -1298,9 +1319,8 @@ namespace SpectreReplay.Features.Cloud
         /// <see cref="ApplyRestoredConfig"/>（载入 → 归一化 → 刷新补丁开关），
         /// 与设置页保存后的收尾同一条管线。</para>
         ///
-        /// <para>改内存的安全前提：**「本地缺失」本身就证明本次会话还没写过盘**——
-        /// 玩家任何一次设置改动都会先落盘，文件存在就走不到这里，因此不存在
-        /// 「覆盖掉玩家刚改的东西」。</para>
+        /// <para>启动缺失事实早于 Settings.check 捕获；仅初始化产生且尚未被玩家保存过的
+        /// 默认文件可按缺失恢复。任何之后的保存都会清除此豁免，继续走冲突锁。</para>
         ///
         /// <para>绝不抛异常：它挂在启动路径上，没网/Steam 未就绪都是常见情况。</para>
         /// </summary>
@@ -1317,7 +1337,9 @@ namespace SpectreReplay.Features.Cloud
                     Debug.Log("[SpectreReplay] 云端配置取回跳过：拿不到本地配置路径");
                     return false;
                 }
-                if (File.Exists(localPath))
+                if (File.Exists(localPath) && (!_configLocalMissingAtStartup
+                    || _configStartupGenerated == null
+                    || !BytesEqual(File.ReadAllBytes(localPath), _configStartupGenerated)))
                 {
                     if (!_configLocalMissingAtStartup)
                     {
@@ -1358,14 +1380,18 @@ namespace SpectreReplay.Features.Cloud
                     return false;
                 }
 
+                if (!ConfigManager.ValidateConfigData(data, out string validationError))
+                {
+                    Debug.LogWarning("[SpectreReplay] 云端配置结构无效，已忽略：" + validationError);
+                    return false;
+                }
                 string dir = Path.GetDirectoryName(localPath);
                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir)) Directory.CreateDirectory(dir);
                 AtomicFile.WriteAllBytes(localPath, data);
 
                 // 本地这份现在与云端逐字节一致：记下来，免得紧接着的一次写盘
                 // 把同一份内容再往云端重复写一遍。
-                _configUploaded = data;
-                _configRestoreSettled = true;
+                _configRestoreSettled = false;
 
                 // **只写盘不生效的话，这次找回会在一分钟后被自己抹掉。**
                 // 内存里此刻还是「配置缺失 → 默认值」那一份，而退出时
@@ -1374,10 +1400,11 @@ namespace SpectreReplay.Features.Cloud
                 // 那份也改成默认值）。所以这里走与设置页保存完全相同的收尾管线
                 // （见 Pages.SaveNow：载入/归一化/刷新补丁开关）。
                 //
-                // 时机是安全的：Steam 就绪通常只要一两秒，那时还在主菜单；而「本地配置
-                // 缺失」本身就意味着本次会话还没写过盘（任何一次设置改动都会先落盘，
-                // 文件存在就不会走到这里），所以不存在「覆盖玩家刚改的东西」。
-                ApplyRestoredConfig(localPath);
+                // 原先不存在，或仍与初始化默认快照一致且未经玩家保存：不覆盖玩家改动。
+                if (!ApplyRestoredConfig(localPath)) return false;
+                _configUploaded = data;
+                _configRestoreSettled = true;
+                _configStartupGenerated = null;
 
                 Debug.Log("[SpectreReplay] 已从 Steam 云取回配置文件（" + data.Length
                     + " 字节）并应用：" + localPath);
@@ -1396,42 +1423,41 @@ namespace SpectreReplay.Features.Cloud
         ///
         /// <para>三步与「设置页保存」之后的收尾同源（见 Pages.SaveNow）：
         /// 载入 → <see cref="Settings.check"/> 归一化（键表 / 热键 / 语言）→ 刷新补丁开关。
-        /// 任一步失败只记日志：这时配置文件已经好好躺在磁盘上了，下次启动必然生效；
-        /// 本次会话沿用载入前的值，也比让启动路径抛异常强得多。</para>
+        /// 任一步失败记日志并返回 false，调用方保持上传锁，不把未生效报告成成功。</para>
         /// </summary>
-        private static void ApplyRestoredConfig(string localPath)
+        private static bool ApplyRestoredConfig(string localPath)
         {
+            _configApplyingRestore = true;
             try
             {
-                ConfigManager.LoadConfigs(localPath);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[SpectreReplay] 云端配置载入内存失败（本次会话沿用原设置，磁盘上已找回）：" + ex.Message);
-                return;
-            }
+                // 保存仍按旧配置完成，不能先换保存路径/策略再收尾旧会话。
+                if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+                    SpectreReplay.Features.VideoRender.VideoRender.CancelRender();
+                SpectreState.PlayActions.StopPlaying();
+                SpectreState.PlayActions.StopRecording();
+                if (!ConfigManager.TryLoadConfigs(localPath, out string loadError))
+                    throw new InvalidOperationException(loadError ?? "load_failed");
 
-            string modPath = null;
-            try { modPath = Main.mod != null ? Main.mod.Path : null; }
-            catch (Exception) { }
-
-            try
-            {
+                string modPath = Main.mod != null ? Main.mod.Path : null;
                 Settings.check(modPath ?? "");
-            }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[SpectreReplay] 云端配置归一化失败（键表/热键可能要到下次启动才生效）：" + ex.Message);
-            }
-
-            try
-            {
+                // 与去特效页关闭路径同源：仅回滚未编辑对象，编辑历史保护仍由 owner 判定。
+                if (!Settings.EffectRemoverOn)
+                {
+                    SpectreReplay.Features.EffectRemover.EffectRemover.RestoreOriginalLevelData();
+                    SpectreReplay.Features.EffectRemover.EffectRemover.RestoreEditorSaveButtons();
+                }
+                else SpectreReplay.Features.EffectRemover.EffectRemover.RefreshEditorSaveButtons();
+                SpectreState.SetGetKeyAsyncEnabled(Settings.ReplayOn && Settings.GetDataFromAsyncInput);
                 PatchShared.SpectrePatchHub.Refresh();
+                Ui.OnGui.RefreshAfterConfigRestore();
+                return true;
             }
             catch (Exception ex)
             {
-                Debug.LogWarning("[SpectreReplay] 云端配置应用后刷新补丁开关失败：" + ex.Message);
+                Debug.LogWarning("[SpectreReplay] 云端配置应用失败，自动上传继续关闭：" + ex.Message);
+                return false;
             }
+            finally { _configApplyingRestore = false; }
         }
 
         /// <summary>
@@ -1476,17 +1502,52 @@ namespace SpectreReplay.Features.Cloud
         /// 所以这里起一个协程，每秒问一次"就绪了吗"，最多等 60 秒；就绪后
         /// 才真正回填。等不到就只记一行日志，绝不影响游戏启动。
         /// </summary>
-        internal static void RestoreOnStartup()
+        // Main.Load 在任何载入/归一化保存前调用；仅真正的新 Load 重建缺失快照。
+        // UMM 同进程禁用/重启只取消协程，不把初始缺失/后写冲突洗成「原来就有」。
+        internal static void CaptureStartupConfigState(string localPath)
         {
-            // 模组可在同一进程中被 UMM 关闭后重新启用；每次新的启用都必须重新
-            // 记录「启动前是否缺文件」，不能沿用上一轮已经落定的恢复窗口。
-            _configRestoreWindowActive = false;
-            _configRestoreScheduled = false;
-            _configRestoreSettled = false;
-            _configLocalMissingAtStartup = false;
+            CancelStartupRestore();
+            _configInitializing = true;
+            _configStartupGenerated = null;
+            _configUploaded = null;
+            _configPending = false;
+            _configPumpActive = false;
+            _configUploadTick = int.MinValue;
+            _configRestoreWindowActive = true;
+            _configLocalMissingAtStartup = string.IsNullOrEmpty(localPath) || !File.Exists(localPath);
+            _configRestoreSettled = !_configLocalMissingAtStartup;
+        }
+
+        internal static void CompleteStartupConfigInitialization()
+        {
             try
             {
-                // 无论开关当前是否启用都先记录文件状态，支持会话内稍后启用同步。
+                string path = LocalConfigPath();
+                if (_configLocalMissingAtStartup && !string.IsNullOrEmpty(path) && File.Exists(path))
+                    _configStartupGenerated = File.ReadAllBytes(path);
+            }
+            catch (Exception ex)
+            {
+                // 不能证明是刚生成的默认文件时按冲突处理，绝不冒险覆盖。
+                Debug.LogWarning("[SpectreReplay] 启动默认配置快照失败，保留本地配置：" + ex.Message);
+            }
+            finally { _configInitializing = false; }
+        }
+
+        internal static void CancelStartupRestore()
+        {
+            _restoreGeneration++;
+            _startupRestoreEnabled = false;
+            _configRestoreScheduled = false;
+        }
+
+        internal static void RestoreOnStartup()
+        {
+            _restoreGeneration++;
+            _startupRestoreEnabled = true;
+            _configRestoreScheduled = false;
+            try
+            {
                 BeginConfigRestoreWindow();
                 ScheduleStartupRestore();
             }
@@ -1496,13 +1557,17 @@ namespace SpectreReplay.Features.Cloud
             }
         }
 
+        private static bool StartupRestoreAllowed(int generation)
+            => generation == _restoreGeneration && _startupRestoreEnabled
+                && Settings.CloudSyncOn && Settings.CloudRestoreOnLoad;
+
         private static void ScheduleStartupRestore()
         {
-            if (!_configRestoreWindowActive || _configRestoreScheduled
-                || !Settings.CloudSyncOn || !Settings.CloudRestoreOnLoad) return;
+            if (!_configRestoreWindowActive || _configRestoreScheduled || _configInitializing
+                || !StartupRestoreAllowed(_restoreGeneration)) return;
             _configRestoreScheduled = true;
-            // 泵没装（极早期/异常）时动作为 null：退化成"现在就试一次"。
-            if (MainThread.StartCoroutine(RestoreWhenReady()) == null)
+            // 泵没装（极早期/异常）时动作为 null：退化成「现在就试一次」。
+            if (MainThread.StartCoroutine(RestoreWhenReady(_restoreGeneration)) == null)
                 DoRestoreOnce();
         }
 
@@ -1518,25 +1583,34 @@ namespace SpectreReplay.Features.Cloud
             }
             catch
             {
-                // 无法确认启动前是否有文件时按「缺失」处理，宁可暂不上传也不覆盖云端。
                 _configLocalMissingAtStartup = true;
                 _configRestoreSettled = false;
             }
         }
 
-        private static System.Collections.IEnumerator RestoreWhenReady()
+        private static System.Collections.IEnumerator RestoreWhenReady(int generation)
         {
             float deadline = Time.realtimeSinceStartup + 60f;
-            while (Time.realtimeSinceStartup < deadline && !SteamCloud.Ready)
+            while (Time.realtimeSinceStartup < deadline)
             {
+                // 先查开关/代际再碰 Steam；关闭后的旧协程不能借新会话就绪复活。
+                if (!StartupRestoreAllowed(generation))
+                {
+                    if (generation == _restoreGeneration) _configRestoreScheduled = false;
+                    yield break;
+                }
+                if (SteamCloud.Ready) break;
                 yield return new WaitForSecondsRealtime(1f);
+            }
+            if (!StartupRestoreAllowed(generation))
+            {
+                if (generation == _restoreGeneration) _configRestoreScheduled = false;
+                yield break;
             }
             if (!SteamCloud.Ready)
             {
                 Debug.Log("[SpectreReplay] Steam 云 60 秒内未就绪（原因：" + SteamCloud.Reason
                     + "），本次跳过云回填");
-                // 超时不代表云端备份已经被读过；继续关闭自动上传，避免把本地默认值
-                // 或启动期间的新改动覆盖到云端。用户可通过手动上传明确选择本地为准。
                 Debug.LogWarning("[SpectreReplay] 云端配置恢复超时，自动上传继续关闭，需手动上传确认本地配置");
                 yield break;
             }
@@ -1545,13 +1619,13 @@ namespace SpectreReplay.Features.Cloud
 
         private static void DoRestoreOnce()
         {
+            int generation = _restoreGeneration;
+            if (!StartupRestoreAllowed(generation)) return;
             try
             {
-                // 配置先做：它只有一份、几 KB，且「本地缺失」是换机后最先暴露的问题
-                //（设置全丢 / 语言被重置），比回放更该第一时间补回来。
-                // 本地已存在时这里什么都不做（绝不覆盖）。
                 RestoreConfigIfMissing();
-
+                // 取回的配置本身也可能关闭云同步/启动恢复。
+                if (!StartupRestoreAllowed(generation)) return;
                 RestoreResult r = RestoreMissing();
                 if (r.Restored > 0)
                 {

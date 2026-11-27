@@ -329,6 +329,8 @@ namespace SpectreReplay.Features.Cloud
             try
             {
                 name = ToUtf8(remoteName);
+                // GetFileSize 对不存在与合法空文件都返回 0，必须先独立判存在。
+                if (!SteamAPI_ISteamRemoteStorage_FileExists(_iface, name)) { error = "not_found"; return false; }
                 int size = SteamAPI_ISteamRemoteStorage_GetFileSize(_iface, name);
                 if (size < 0) { error = "not_found"; return false; }
                 if (size > MaxFileBytes) { error = "too_large"; return false; }

@@ -202,19 +202,21 @@ internal static class VideoRender
             TriggerMessage(LocalizationManager.GetLocalizedText("rendervideo.need_level"), type: NotifType.Warning);
             return;
         }
-        string encoderPath = VideoEncoder.LocateEncoder();
-        // **启动前能力校验（2026-11-02 审计）**：Locate 已对本地候选跑过
-        // -version（缓存命中零成本）；这里对最终选择（含 PATH 回落）统一再
-        // 门槛一次——坏 ffmpeg 在劫持相机之前就被拦下，报「缺少 ffmpeg」
-        // 而不是渲染中途离奇失败。
-        System.Diagnostics.Stopwatch clickSw = System.Diagnostics.Stopwatch.StartNew();
-        if (!VideoEncoder.VerifyEncoder(encoderPath))
+        // 点击开始也只读后台快照：冷缓存可见地拒绝本次启动，不能等预热线程的锁。
+        var clickProbeClock = System.Diagnostics.Stopwatch.StartNew();
+        VideoEncoder.WarmUp();
+        VideoEncoder.ProbeSnapshot probe = VideoEncoder.ReadProbeSnapshot();
+        Debug.Log("[SpectreReplay] render timing [click-verified] probe+"
+            + clickProbeClock.ElapsedMilliseconds + "ms state=" + probe.State);
+        if (probe.State != VideoEncoder.ProbeState.Ready)
         {
-            TriggerMessage(LocalizationManager.GetLocalizedText("rendervideo.ffmpeg_missing"), extra: 2f, type: NotifType.Warning);
+            string message = probe.State == VideoEncoder.ProbeState.Pending
+                ? SpectreReplay.Ui.Loc.T("render.ffmpeg.probing")
+                : LocalizationManager.GetLocalizedText("rendervideo.ffmpeg_missing");
+            TriggerMessage(message, extra: 2f, type: NotifType.Warning);
             return;
         }
-        Debug.Log("[SpectreReplay] render timing [click-verified] "
-            + clickSw.ElapsedMilliseconds + "ms");
+        string encoderPath = probe.Path;
         ResetLeakedPins();
         ResetSnapshot();
         CurrentPhase = Phase.Restarting;

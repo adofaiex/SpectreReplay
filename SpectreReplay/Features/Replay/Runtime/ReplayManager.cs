@@ -221,10 +221,6 @@ internal static class ReplayManager
         return true;
     }
 
-    internal static bool SaveReplay(ReplayData replayData, string filePath, bool no_encryption = false,
-        bool embedKeybdSound = true)
-        => SaveReplayNew(replayData, filePath, no_encryption, embedKeybdSound);
-
     internal static bool SaveReplayNew(ReplayData replayData, string filePath, bool no_encryption = false,
         bool embedKeybdSound = true)
     {
@@ -268,17 +264,28 @@ internal static class ReplayManager
     internal static void UnLoadReplay(out ReplayData replayData)
     {
         replayData = new ReplayData();
-        WavLoader.loaded_clip = null;
+        WavLoader.ClearLoadedClip();
         SpectreState.HasKeybdSound = false;
         TimelineController.Clear();
     }
 
     internal static bool LoadReplay(out ReplayData replayData, string filePath, bool no_encryption = false)
     {
-        if (!ReadReplayData(out replayData, filePath, no_encryption))
+        replayData = new ReplayData();
+        ReplayData loaded;
+        if (!ReadReplayData(out loaded, filePath, no_encryption))
             return false;
-        TryLoadKeybdSound(filePath, replayData);
-        TimelineController.Load(replayData, null);
+
+        // 只有完整解码成功后才切换会话；失败读取必须保留旧回放/录制与其音频。
+        // 替换是外部中断；先取消捕获，不能让 StopPlaying 被当成自然耗尽并发布短片。
+        if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+            SpectreReplay.Features.VideoRender.VideoRender.CancelRender();
+        SpectreState.PlayActions.StopPlaying();
+        SpectreState.PlayActions.StopRecording();
+        WavLoader.ClearLoadedClip();
+        TryLoadKeybdSound(filePath, loaded);
+        TimelineController.Load(loaded, null);
+        replayData = loaded;
         Debug.Log("replay load!");
         return true;
     }
@@ -387,10 +394,20 @@ internal static class ReplayManager
     internal static bool LoadReplayFromMemory(out ReplayData replayData, byte[] raw,
         string displayName, byte[] wavData = null, bool no_encryption = false)
     {
-        if (!ReadReplayData(out replayData, raw, displayName, no_encryption))
+        replayData = new ReplayData();
+        ReplayData loaded;
+        if (!ReadReplayData(out loaded, raw, displayName, no_encryption))
             return false;
-        TryLoadKeybdSoundFromMemory(replayData, wavData);
-        TimelineController.Load(replayData, null);
+
+        // 与文件装载相同：解码验证成功前不触碰旧会话；成功后才停录放并替换音频。
+        if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+            SpectreReplay.Features.VideoRender.VideoRender.CancelRender();
+        SpectreState.PlayActions.StopPlaying();
+        SpectreState.PlayActions.StopRecording();
+        WavLoader.ClearLoadedClip();
+        TryLoadKeybdSoundFromMemory(loaded, wavData);
+        TimelineController.Load(loaded, null);
+        replayData = loaded;
         Debug.Log("replay load (memory)!");
         return true;
     }
@@ -401,6 +418,10 @@ internal static class ReplayManager
     /// </summary>
     private static void TryLoadKeybdSoundFromMemory(ReplayData data, byte[] wavData)
     {
+        // 该方法也可能用于复用的会话对象；任何失败都不能留下上一次的内存 WAV。
+        data.KeybdSoundMemory = null;
+        data.KeybdSoundSourcePath = null;
+
         // **嵌入优先，与磁盘路径同一条规矩。**云端那份回放多半根本没有旁挂 wav
         // （上传时已经跳过了），必须先看体内有没有音频，否则「从云端播」永远静音。
         if (data.KeybdAudio.HasData)
@@ -433,12 +454,24 @@ internal static class ReplayManager
                 return;
             }
         }
-        WavLoader.loaded_clip = WavLoader.LoadFromMemory(wavData, Path.GetFileNameWithoutExtension(fileName));
-        SpectreState.HasKeybdSound = WavLoader.loaded_clip != null;
+        AudioClip nextClip = WavLoader.LoadFromMemory(wavData, Path.GetFileNameWithoutExtension(fileName));
+        WavLoader.ReplaceLoadedClip(nextClip);
+        SpectreState.HasKeybdSound = nextClip != null;
+        if (nextClip != null)
+        {
+            try { data.KeybdSoundMemory = (byte[])wavData.Clone(); }
+            catch (Exception ex)
+            {
+                // 播放已经成功；缓存分配失败只影响随后导出，不应中断回放。
+                Debug.LogWarning("[SpectreReplay] 缓存内存键盘音失败: " + ex.Message);
+            }
+        }
     }
 
     private static void TryLoadKeybdSound(string filePath, ReplayData data)
     {
+        data.KeybdSoundMemory = null;
+        data.KeybdSoundSourcePath = null;
         // **嵌入优先**：新回放的音频就在本体里，磁盘上根本没有同名 wav，
         // 先走这条路能省一次文件存在性检查，也让「新格式一定有声音」成立。
         if (data.KeybdAudio.HasData)
@@ -457,8 +490,19 @@ internal static class ReplayManager
         {
             string dir = Path.GetDirectoryName(filePath);
             string wavPath = Path.Combine(dir, fileName);
-            WavLoader.loaded_clip = WavLoader.LoadFromFile(wavPath, hash);
-            SpectreState.HasKeybdSound = WavLoader.loaded_clip != null;
+            try
+            {
+                // 播放、缓存和后续导出使用同一份经过校验的字节，不再从新 SavePath 猜来源。
+                byte[] wav = File.ReadAllBytes(wavPath);
+                TryLoadKeybdSoundFromMemory(data, wav);
+                if (SpectreState.HasKeybdSound)
+                    data.KeybdSoundSourcePath = Path.GetFullPath(wavPath);
+            }
+            catch (Exception ex)
+            {
+                SpectreState.HasKeybdSound = false;
+                Debug.LogWarning("[SpectreReplay] 读取旁挂键盘音失败: " + ex.Message);
+            }
         }
         else
         {
@@ -503,8 +547,9 @@ internal static class ReplayManager
             return;
         }
         string clipName = data.FileName ?? Path.GetFileNameWithoutExtension(replayPath);
-        WavLoader.loaded_clip = WavLoader.LoadFromMemory(wav, clipName);
-        SpectreState.HasKeybdSound = WavLoader.loaded_clip != null;
+        AudioClip nextClip = WavLoader.LoadFromMemory(wav, clipName);
+        WavLoader.ReplaceLoadedClip(nextClip);
+        SpectreState.HasKeybdSound = nextClip != null;
     }
 
     /// <summary>纯文件名校验：拒绝空、`.`、`..` 与任何目录成分。</summary>
@@ -550,12 +595,17 @@ internal static class ReplayManager
                 return false;
             }
         }
+        else if (source.KeybdSoundMemory is byte[] memory && memory.Length > 0)
+        {
+            // 不让 WAV 变换器或后续调用方持有/修改会话缓存本身。
+            wav = (byte[])memory.Clone();
+        }
         else if (source.KeybdSoundFileName is string name && IsPureFileName(name))
         {
-            string dir0 = Settings.SavePath;
+            string dir0 = Path.GetDirectoryName(source.KeybdSoundSourcePath);
             if (string.IsNullOrEmpty(dir0))
             {
-                error = "no_dir";
+                error = "no_sound";
                 return false;
             }
             string src = Path.Combine(dir0, name);
@@ -580,6 +630,33 @@ internal static class ReplayManager
             error = "no_sound";
             return false;
         }
+
+        if (!source.KeybdAudio.HasData
+            && (!SpectreState.DebugMode || !SpectreState.debug_skip_Verification)
+            && !AudioRecorder.VerifyAudioData(wav, source.KeybdSoundHash))
+        {
+            error = "no_sound";
+            return false;
+        }
+
+        // 导出与实时播放共用同一组有效设置：覆盖值有 Has 标志才替换全局值；
+        // 正偏移对应播放端 num=t+offset，因此在 WAV 时间轴裁头，负偏移则前补静音。
+        KeybdPrefs prefs = source.KeybdPrefs;
+        int volumeStep = Math.Max(0, Math.Min(10,
+            prefs.HasVolume ? prefs.Volume : Settings.KeybdSoundVolume));
+        int offsetMs = prefs.HasOffset ? prefs.OffsetMs : Settings.MicrophoneOffset;
+        scrConductor activeConductor = ADOBase.conductor;
+        if (activeConductor != null)
+            offsetMs = (int)Math.Max(int.MinValue, Math.Min(int.MaxValue,
+                (long)offsetMs + scrConductor.currentPreset.inputOffset));
+        if (!WavAudioTransform.TryApply(wav, volumeStep, offsetMs, prefs.IsMuted,
+            out byte[] adjustedWav, out string transformError))
+        {
+            Debug.LogWarning("[SpectreReplay] 键盘音导出 WAV 变换失败: " + transformError);
+            error = "transform_failed";
+            return false;
+        }
+        wav = adjustedWav;
 
         try
         {

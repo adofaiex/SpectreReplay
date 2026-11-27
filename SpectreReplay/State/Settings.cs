@@ -318,13 +318,22 @@ public static class Settings
     internal static void check(string path = "")
     {
         SavePath = string.IsNullOrEmpty(SavePath) ? path : SavePath;
+        bool microphoneSettingsChanged = false;
         // 提示卡锚点跟配置同步（ConfigManager 只读进 Settings，绘制侧读 Toast.Pos）。
         Ui.Toast.Pos = NotificationPos;
         CurrLanguage = string.IsNullOrEmpty(CurrLanguage) ? LocalizationManager.GetLangCode(RDString.language) : CurrLanguage;
-        if (string.IsNullOrEmpty(MicrophoneDeviceName))
-            MicrophoneDeviceName = Microphone.devices.Length != 0 ? Microphone.devices[0] : "None";
-        if (Microphone.devices.Length == 0)
+        // 每次 check 只取一份设备快照：None / 旧设备名都会切到当前可用设备；
+        // 完全无设备时保留明确的 None 并关掉录音项，避免热路径每半秒重试。
+        string previousMicrophone = MicrophoneDeviceName;
+        bool previousRecordSetting = KeybdSoundRecordActive;
+        string[] microphones = Microphone.devices;
+        string selectedMicrophone = AudioRecorder.ResolveConfiguredDevice(
+            MicrophoneDeviceName, microphones, persist: false);
+        MicrophoneDeviceName = selectedMicrophone ?? "None";
+        if (selectedMicrophone == null)
             KeybdSoundRecordActive = false;
+        microphoneSettingsChanged = !string.Equals(previousMicrophone, MicrophoneDeviceName, StringComparison.Ordinal)
+            || previousRecordSetting != KeybdSoundRecordActive;
         if (string.IsNullOrEmpty(KeyCodeConvert))
         {
             key_code_convert_list = new List<KeyValuePair<ushort, ushort>>();
@@ -379,6 +388,8 @@ public static class Settings
         // 整个盖成恒等映射。
         SpectreState.save_button = (KeyCode)SaveButton;
         SpectreState.cancel_save_button = (KeyCode)CancelSaveButton;
+        if (microphoneSettingsChanged)
+            CommitSafe();
     }
 
     /// <summary>热键归一化：必须是已定义的 KeyCode；非法时回退默认并留日志。</summary>

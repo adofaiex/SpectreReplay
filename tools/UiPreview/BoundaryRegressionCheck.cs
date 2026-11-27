@@ -11,12 +11,17 @@ namespace UiPreview;
 // 执行当前产品方法。屏障只安排合法线程交错；不复制池、时钟、封头或保存算法。
 internal static class BoundaryRegressionCheck
 {
-    internal static int Run()
+    internal static int Run() => Execute(Driver.ProjectDir, "Run");
+    internal static int RunNotifications(string projectRoot) => Execute(projectRoot, "RunNotifications");
+
+    private static int Execute(string projectRoot, string entry)
     {
         try
         {
-            var audio = Type("State/AudioRecorder.cs", "AudioRecorder");
-            var stopCaller = Method(Type("Features/Replay/Runtime/ReplayRecorder.cs", "ReplayRecorder"), "Stop")
+            var audio = Type(projectRoot, "State/AudioRecorder.cs", "AudioRecorder");
+            var state = Type(projectRoot, "State/SpectreState.cs", "SpectreState");
+            var misc = Type(projectRoot, "Features/Replay/Patches/Patch_Misc.cs", "Patch_ConductorUpdate");
+            var stopCaller = Method(Type(projectRoot, "Features/Replay/Runtime/ReplayRecorder.cs", "ReplayRecorder"), "Stop")
                 .Body.Statements.OfType<IfStatementSyntax>().Where(s => s.Condition.ToString() == "AudioRecorder.Instance.IsRecording"
                     || s.Condition.ToString().StartsWith("Settings.KeybdSoundRecordActive", StringComparison.Ordinal));
             string code = Fixture
@@ -27,33 +32,41 @@ internal static class BoundaryRegressionCheck
                     + Methods(audio, "StopRecording", "FinalizeRecording", "FinalizeWavFile", "CloseFileStreamQuietly", "Cleanup", "CreateWAVHeader", "TryComputePcmHash", "VerifyAudioFile")
                     + audio.Members.OfType<ClassDeclarationSyntax>().Single(t => t.Identifier.ValueText == "PendingCleanup").ToString()
                         .Replace("private void Update()", "internal void UpdateForTest()", StringComparison.Ordinal), StringComparison.Ordinal)
-                .Replace("__SAVE__", Methods(Type("State/SpectreState.cs", "SpectreState"), "SaveFile"), StringComparison.Ordinal)
-                .Replace("__DATA__", Type("Features/Replay/Data/ReplayData.cs", "ReplayData").ToString(), StringComparison.Ordinal)
-                .Replace("__STOP__", Type("State/RecordingStop.cs", "RecordingStop").ToString(), StringComparison.Ordinal);
+                .Replace("__SAVE__", Methods(state, "SaveFile", "CompleteSave") + "\n"
+                    + state.Members.OfType<ClassDeclarationSyntax>().Single(t => t.Identifier.ValueText == "SaveCompletion"), StringComparison.Ordinal)
+                .Replace("__HOTKEY__", Type(projectRoot, "Features/Replay/Patches/Patch_Misc.cs", "ManualSaveHotkey").ToString(), StringComparison.Ordinal)
+                .Replace("__MANUAL__", Members(misc, "StateFail", "StateFail2", "StateWon") + Methods(misc, "Postfix"), StringComparison.Ordinal);
+            string[] pure = { "State/RecordingStop.cs", "Features/Replay/Data/ReplayData.cs",
+                "Features/Replay/Data/Replay.cs", "Features/Replay/Data/ReplayConstants.cs",
+                "Features/Replay/Data/keyEvent.cs", "Features/Replay/Data/HitSnapshot.cs", "Features/Replay/Data/CursorSample.cs",
+                "Features/Replay/Data/KeybdAudioBlob.cs", "Features/Replay/Data/KeybdPrefs.cs",
+                "Features/Replay/Codec/ReplayEncoder.cs", "Features/Replay/Codec/ReplayDecoder.cs",
+                "Features/Replay/Codec/ReplayCompression.cs", "Features/Replay/Codec/ReplayCrypto.cs",
+                "Features/Replay/Codec/KeybdAudioCodec.cs", "Features/Replay/Runtime/ReplaySaveOperation.cs" };
             var trusted = ((string)AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES")).Split(Path.PathSeparator)
                 .Where(p => !string.Equals(p, typeof(Driver).Assembly.Location, StringComparison.OrdinalIgnoreCase))
                 .Select(p => MetadataReference.CreateFromFile(p));
-            var compilation = CSharpCompilation.Create("BoundaryFixture_" + Guid.NewGuid().ToString("N"),
-                new[] { CSharpSyntaxTree.ParseText(code) }, trusted,
+            var trees = new[] { code }.Concat(pure.Select(p => SrcUtil.Source(projectRoot, p))).Select(s => CSharpSyntaxTree.ParseText(s));
+            var compilation = CSharpCompilation.Create("BoundaryFixture_" + Guid.NewGuid().ToString("N"), trees, trusted,
                 new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
             using var image = new MemoryStream();
             var emitted = compilation.Emit(image);
             if (!emitted.Success) throw new InvalidOperationException(string.Join("; ", emitted.Diagnostics
-                .Where(d => d.Severity == DiagnosticSeverity.Error).Take(8)));
+                .Where(d => d.Severity == DiagnosticSeverity.Error).Take(12)));
             var fixture = Assembly.Load(image.ToArray()).GetType("BoundaryFixture");
-            var results = (string[])fixture.GetMethod("Run").Invoke(null, null);
+            var results = (string[])fixture.GetMethod(entry).Invoke(null, null);
             foreach (string result in results) Console.WriteLine("  " + result);
             return results.Count(r => r.StartsWith("✗", StringComparison.Ordinal));
         }
         catch (Exception ex)
         {
-            Console.WriteLine("  ✗ 边界真实源码回归无法执行：" + (ex.InnerException ?? ex).Message);
+            Console.WriteLine("  ✗ " + entry + " 边界真实源码回归无法执行：" + (ex.InnerException ?? ex).Message);
             return 1;
         }
     }
 
-    private static ClassDeclarationSyntax Type(string path, string name)
-        => CSharpSyntaxTree.ParseText(SrcUtil.Source(Driver.ProjectDir, path)).GetRoot().DescendantNodes()
+    private static ClassDeclarationSyntax Type(string root, string path, string name)
+        => CSharpSyntaxTree.ParseText(SrcUtil.Source(root, path)).GetRoot().DescendantNodes()
             .OfType<ClassDeclarationSyntax>().Single(t => t.Identifier.ValueText == name);
     private static MethodDeclarationSyntax Method(ClassDeclarationSyntax type, string name)
         => type.Members.OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.ValueText == name);
@@ -71,17 +84,35 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Reflection;
 using System.Diagnostics;
 using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using SpectreReplay;
+using SpectreReplay.Features.Replay;
+using static SpectreState;
 using ThreadPriority = System.Threading.ThreadPriority;
 
 public static class BoundaryFixture
 {
     static readonly List<string> results = new List<string>();
+    internal static readonly List<string> Saved = new List<string>();
+    internal static readonly List<int> EventThreads = new List<int>();
+    internal static readonly int MainId = Thread.CurrentThread.ManagedThreadId;
+    internal static bool Reenter;
     static void Check(bool ok, string label) => results.Add((ok ? "✓ " : "✗ ") + label);
+    static void Drain(ReplaySaveOperation operation)
+    {
+        if (operation == null || !SpinWait.SpinUntil(() => operation.IsCompleted, 10000))
+            throw new TimeoutException("save worker did not complete");
+        GameObject.TickAll(); GameObject.TickAll();
+    }
+    static void ResetProbe()
+    {
+        SaveProbe.Reset(); Saved.Clear(); EventThreads.Clear(); SpectreState.Messages.Clear();
+    }
     public static string[] Run()
     {
         Audio();
@@ -102,48 +133,64 @@ public static class BoundaryFixture
             bool callerLinked = ReferenceEquals(SpectreState.data.KeybdSoundStop, completion);
             bool waits = audio.IsCleanupPending && !completion.IsCompleted;
             Settings.SavePath = directory;
-            ReplayManager.Reset();
+            ResetProbe();
             bool accepted = SpectreState.SaveFile();
+            var operation = SpectreState.data.SaveOperation;
             SpectreState.SaveFile();
-            int prematureSaves = ReplayManager.Saves;
+            // 别名对象也带着同一录音凭据；不能只靠原对象的 SaveOperation 去重。
+            SpectreState.SaveFile(savedData: SpectreState.data.SnapshotForSave());
+            int prematureSaves = SaveProbe.Attempts;
+            SpectreState.data.KeyEvents[0].KeyCode = 99;
+            SpectreState.data.HitSnapshots[0].CurrentFloorID = 99;
+            SpectreState.data.CursorTrack[0].X = 0.9f;
             SpectreState.data.Reset();
             Settings.SavePath = Path.Combine(directory, "next-run");
             SpectreState.data.FileName = "next-run";
             audio.Release.Set();
             audio.WaitFinished();
-            // 旧流已关闭、主线程完成通知尚未消费tmp；此时下一局可能先停止/保存。
+            byte[] sealedWav = completion.AudioPath == null ? Array.Empty<byte>() : File.ReadAllBytes(completion.AudioPath);
+            // 封头已转交独占文件，但尚未发布完成；下一局不能认领它。
             ReplayStopCaller.Stop();
             Settings.SavePath = directory;
             SpectreState.SaveFile();
-            bool nextRunKeptAudio = ReplayManager.SavedAudioName == null && File.Exists(Path.Combine(directory, "tmp.wav"));
-            ReplayManager.Reset();
+            Drain(SpectreState.data.SaveOperation);
+            bool nextRunKeptAudio = string.IsNullOrEmpty(SaveProbe.Last.Metadata.KeybdSoundFileName)
+                && completion.AudioPath != null && File.Exists(completion.AudioPath);
+            ResetProbe();
             Settings.SavePath = Path.Combine(directory, "next-run");
             audio.PumpCleanup();
+            Drain(operation);
+            var saved = SaveProbe.Last;
+            string hash = sealedWav.Length > 44 ? Convert.ToHexString(SHA256.HashData(sealedWav.Skip(44).ToArray())).ToLowerInvariant() : null;
             Check(bounded && waits && callerLinked, "BD07 写盘持锁时停止限时返回，调用方保留音频完成凭据");
-            Check(audio.WorkerHealthy && ReplayManager.ValidWav && ReplayManager.Pcm.SequenceEqual(new byte[] {1,2,3,4,9,10})
-                && completion.IsCompleted && completion.Hash == ReplayManager.Hash,
+            Check(audio.WorkerHealthy && sealedWav.Length == 50 && BitConverter.ToInt32(sealedWav,4) == 42
+                && BitConverter.ToInt32(sealedWav,40) == 6 && sealedWav.Skip(44).SequenceEqual(new byte[] {1,2,3,4,9,10})
+                && completion.IsCompleted && completion.Hash == hash && saved.Metadata.KeybdSoundHash == hash && saved.KeybdAudio.HasData,
                 "BD08 后台封头包含初始化积压尾块，RIFF长度与PCM哈希匹配");
-            Check(accepted && prematureSaves == 0 && ReplayManager.Saves == 1 && ReplayManager.GateHeldAtSave,
-                "BD09 音频完整前不保存或移走tmp，重复请求去重且保存先于下一次起录");
-            Check(ReplayManager.SavedName == "first" && ReplayManager.SavedDirectory == directory
-                && ReplayManager.Keys == 1 && ReplayManager.Hits == 1 && ReplayManager.Cursors == 1
+            Check(accepted && prematureSaves == 0 && SaveProbe.Attempts == 1 && Saved.Count == 1 && SaveProbe.GateHeldAtQueue
+                && operation.WorkerThreadId != MainId && EventThreads.All(t => t == MainId),
+                "BD09 音频完整前不保存，重复请求去重，清理门内排队且后台保存/主线程发布");
+            Check(saved.Metadata.FileName == "first" && Path.GetDirectoryName(SaveProbe.LastPath) == directory
+                && saved.KeyEvents.Count == 1 && saved.KeyEvents[0].KeyCode == 65
+                && saved.HitSnapshots.Count == 1 && saved.HitSnapshots[0].CurrentFloorID == 1
+                && saved.CursorTrack.Count == 1 && saved.CursorTrack[0].X == 0.5f
                 && SpectreState.data.FileName == "next-run" && SpectreState.data.KeybdSoundStop == null,
-                "BD10 延迟保存保留三轨独立列表和原目录，Reset不串局");
-            Check(nextRunKeptAudio, "BD14 下一局尚未起录时不认领上一局待保存的临时WAV");
+                "BD10 延迟保存保留三轨独立列表/元素和原目录，Reset不串局");
+            Check(nextRunKeptAudio, "BD14 下一局尚未起录时不认领上一局待保存的独占WAV");
 
             var retryStop = new RecordingStop();
             SpectreState.data = NewData(retryStop);
             SpectreState.data.KeybdSoundFileName = null;
             Settings.SavePath = directory;
-            ReplayManager.Reset();
-            ReplayManager.FailFirst = true;
-            int messages = SpectreState.Messages.Count;
+            ResetProbe(); SaveProbe.FailuresRemaining = 1;
             SpectreState.SaveFile(notify: false);
+            var retry = SpectreState.data.SaveOperation;
             SpectreState.data = new ReplayData { FileName = "unrelated" };
             Settings.SavePath = Path.Combine(directory, "next-run");
             retryStop.Complete("hash");
-            Check(ReplayManager.Saves == 2 && ReplayManager.Keys == 1 && ReplayManager.SavedName == "safe"
-                && ReplayManager.SavedDirectory == directory && SpectreState.Messages.Count == messages,
+            Drain(retry);
+            Check(SaveProbe.Attempts == 2 && SaveProbe.Last.KeyEvents.Count == 1 && SaveProbe.Last.Metadata.FileName == "safe"
+                && Path.GetDirectoryName(SaveProbe.LastPath) == directory && SpectreState.Messages.Count == 0,
                 "BD13 延迟保存失败重试仍使用原快照/目录，并保留调用方的通知选择");
 
             audio = new AudioRecorder();
@@ -160,9 +207,11 @@ public static class BoundaryFixture
             failedStop.Complete(null);
             SpectreState.data = NewData(failedStop);
             Settings.SavePath = directory;
-            ReplayManager.Reset();
+            ResetProbe();
             SpectreState.SaveFile();
-            Check(ReplayManager.SavedAudioName == null && SpectreState.Messages.Any(m => m.Contains("note.keybdsoundfile_save_fail")),
+            Drain(SpectreState.data.SaveOperation);
+            Check(string.IsNullOrEmpty(SaveProbe.Last.Metadata.KeybdSoundFileName)
+                && SpectreState.Messages.Any(m => m.Contains("note.keybdsoundfile_save_fail")),
                 "BD12 音频封头失败时显式提示，不保存未完成WAV引用");
         }
         finally
@@ -171,19 +220,87 @@ public static class BoundaryFixture
             Directory.Delete(directory, true);
         }
     }
+    public static string[] RunNotifications()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), "SpectreReplay-toast-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(directory); Settings.SavePath = directory;
+        try
+        {
+            ResetProbe(); SaveProbe.FailuresRemaining = 1;
+            SaveProbe.Hold = new ManualResetEventSlim(); SaveProbe.Entered.Reset();
+            SpectreState.data = NewData(null); SpectreState.data.KeybdSoundFileName = null;
+            bool accepted = SpectreState.SaveFile(); var operation = SpectreState.data.SaveOperation;
+            if (!SaveProbe.Entered.Wait(5000)) throw new TimeoutException("save did not enter IO seam");
+            GameObject.TickAll(); bool silentWhilePending = SpectreState.Messages.Count == 0;
+            SaveProbe.Hold.Set(); Reenter = true; Drain(operation);
+            Check(accepted && silentWhilePending && SpectreState.Messages.Count == 1
+                && SpectreState.Messages[0].Contains("note.save_success") && SaveProbe.Attempts == 2 && Saved.Count == 1,
+                "ST01 默认notify只在安全名称重试成功后发一次最终结果，重入/后续帧不重复");
+            Check(operation.WorkerThreadId != MainId && EventThreads.All(t => t == MainId)
+                && SpectreState.MessageThreads.All(t => t == MainId), "ST02 保存结果与通知只由主线程完成出口发布");
+
+            ResetProbe(); SaveProbe.FailuresRemaining = 2;
+            SpectreState.data = NewData(null); SpectreState.data.KeybdSoundFileName = null;
+            SpectreState.SaveFile(notify: true); Drain(SpectreState.data.SaveOperation);
+            Check(SaveProbe.Attempts == 2 && Saved.Count == 0 && SpectreState.Messages.Count == 1
+                && SpectreState.Messages[0].Contains("note.save_fail"), "ST03 两次写盘均失败只通知一次最终失败");
+
+            ResetProbe(); SaveProbe.FailuresRemaining = 1;
+            var stop = new RecordingStop(); SpectreState.data = NewData(stop); SpectreState.data.KeybdSoundFileName = null;
+            SpectreState.SaveFile(notify: false); operation = SpectreState.data.SaveOperation;
+            SpectreState.data.Reset(); stop.Complete("hash"); Drain(operation);
+            Check(SaveProbe.Attempts == 2 && Saved.Count == 1 && SpectreState.Messages.Count == 0,
+                "ST04 调用方notify=false穿过音频等待/Reset/安全重试和完成观察器，不产生通知");
+
+            ResetProbe(); ManualSaveHotkey.Reset(); UnityEngine.Time.frameCount = 10;
+            SpectreState.PendingSave = true; SpectreState.LateSaveMode = true;
+            SpectreState.data = NewData(null); SpectreState.data.KeybdSoundFileName = null;
+            Patch_ConductorUpdate.Postfix(); operation = SpectreState.data.SaveOperation; Drain(operation);
+            SpectreState.PendingSave = true; SpectreState.data = NewData(null); SpectreState.data.KeybdSoundFileName = null;
+            Patch_ConductorUpdate.Postfix();
+            Check(SpectreState.StopCalls == 1 && !SpectreState.LateAtStop && SpectreState.data.SaveOperation == null
+                && Saved.Count == 1 && SpectreState.Messages.Count == 1,
+                "ST05 真实手动保存调用方同帧只消费一次，并先清LateSave防双存");
+            UnityEngine.Time.frameCount++; Patch_ConductorUpdate.Postfix(); Drain(SpectreState.data.SaveOperation);
+            Check(SpectreState.StopCalls == 2 && Saved.Count == 2 && SpectreState.Messages.Count == 2,
+                "ST06 热键守卫仅限一帧，下一帧仍可保存/通知");
+            return results.ToArray();
+        }
+        finally { SaveProbe.Hold?.Set(); Directory.Delete(directory, true); }
+    }
     static ReplayData NewData(RecordingStop stop)
     {
         var data = new ReplayData { FileName = "first", KeybdSoundFileName = "first.wav", KeybdSoundStop = stop, KeybdSoundStartTick = 0 };
-        data.KeyEvents.Add(new KeyEvent()); data.HitSnapshots.Add(new HitSnapshot()); data.CursorTrack.Add(new CursorSample());
-        return data;
+        data.KeyEvents.Add(new KeyEvent { KeyCode = 65 }); data.HitSnapshots.Add(new HitSnapshot { CurrentFloorID = 1 });
+        data.CursorTrack.Add(new CursorSample { X = 0.5f }); return data;
     }
 }
 
 class MonoBehaviour { public object gameObject; }
 class AudioClip { }
-static class Object { public static void Destroy(object value) { } public static void DontDestroyOnLoad(object value) { } }
-static class UnityEngine { public static class Object { public static void Destroy(object value) { } } }
-class GameObject { public GameObject(string name) { } public T AddComponent<T>() where T : new() => new T(); }
+static class Object
+{
+    public static void Destroy(object value) { GameObject.Remove(value); }
+    public static void DontDestroyOnLoad(object value) { }
+}
+class GameObject
+{
+    static readonly List<MonoBehaviour> components = new List<MonoBehaviour>();
+    public GameObject(string name) { }
+    public T AddComponent<T>() where T : MonoBehaviour
+    {
+        var component = (T)Activator.CreateInstance(typeof(T), true); component.gameObject = this;
+        lock (components) components.Add(component);
+        if (typeof(T).Name == "SaveCompletion") SaveProbe.GateHeldAtQueue |= AudioRecorder.Current?.IsCleanupPending == true;
+        return component;
+    }
+    public static void Remove(object go) { lock (components) components.RemoveAll(c => ReferenceEquals(c.gameObject, go)); }
+    public static void TickAll()
+    {
+        MonoBehaviour[] copy; lock (components) copy = components.ToArray();
+        foreach (var c in copy) c.GetType().GetMethod("Update", BindingFlags.Instance | BindingFlags.NonPublic)?.Invoke(c, null);
+    }
+}
 static class Microphone { public static void End(string device) { } }
 static class Debug { public static void Log(object value) { } public static void LogWarning(object value) { } public static void LogError(object value) { } }
 class AudioRecorder : MonoBehaviour
@@ -242,10 +359,7 @@ class AudioRecorder : MonoBehaviour
     }
     public void PumpCleanup() { new PendingCleanup { Owner = this }.UpdateForTest(); }
 }
-static class ReplayStopCaller
-{
-    internal static void Stop() { var data = SpectreState.data; __STOP_CALLER__ }
-}
+
 class SlowStream : FileStream
 {
     ManualResetEventSlim release;
@@ -253,58 +367,74 @@ class SlowStream : FileStream
     public SlowStream(string path, ManualResetEventSlim signal) : base(path, FileMode.Create, FileAccess.Write, FileShare.Read) { release = signal; }
     public override void Flush() { FlushThread = Thread.CurrentThread.ManagedThreadId; release?.Wait(); base.Flush(); }
 }
-__STOP__
-__DATA__
-public class KeyEvent { }
-public class HitSnapshot { }
-public class CursorSample { }
-public struct KeybdAudioBlob { public bool HasData; }
-public struct KeybdPrefs { }
-static class Settings { public static string SavePath; public static bool Backup; public static bool KeybdSoundRecordActive = true; }
+static class ReplayStopCaller
+{
+    internal static void Stop() { var data = SpectreState.data; __STOP_CALLER__ }
+}
+static class Settings { public static string SavePath; public static bool Backup, KeybdSoundCompact; public static bool KeybdSoundRecordActive = true; }
 static class SpectreState
 {
     public static ReplayData data;
     static bool EmptySaveBlocked, debug_no_encryption;
-    public static bool DebugMode;
+    public static bool DebugMode, PendingSave, LateSaveMode, LateAtStop;
+    public static int save_button, StopCalls;
     public static readonly List<string> Messages = new List<string>();
-    static void TriggerMessage(string message) { Messages.Add(message); }
+    public static readonly List<int> MessageThreads = new List<int>();
+    static void TriggerMessage(string message) { Messages.Add(message); MessageThreads.Add(Thread.CurrentThread.ManagedThreadId); }
     static void NotifySaveSkipped(string message, string reason) { }
     static string CreateFileName(bool safe_mode = false) => "safe";
+    public static class PlayActions { public static void StopRecording() { StopCalls++; LateAtStop = LateSaveMode; } }
     __SAVE__
 }
 static class LocalizationManager { public static string GetLocalizedText(string key) => key; }
 class Patch_Hit { } class Patch_UpdateInputConsumeAsync { } class Patch_PlayerControlUpdate { } class Patch_Won_Update { }
 static class SpectrePatchHub { public static void EnsureApplied(string reason, params Type[] types) { } public static void ForceRebuild(Type type) { } }
 static class Main { public static Mod mod = new Mod(); public class Mod { public string Path = ""; } }
-static class SpectreAPI { public static void RaiseReplaySaved(string path) { } }
-static class CloudReplay { public static bool OnReplaySaved(string path, string audio) => false; }
-static class Ui { public static class Loc { public static string T(string key) => key; } }
-static class ReplayConstants { public const string Extension = ".sprp", ExtensionNoEncrypt = ".sprpj"; }
-static class ReplayManager
+static class SpectreAPI
 {
-    public static int Saves, Keys, Hits, Cursors;
-    public static bool ValidWav, GateHeldAtSave, FailFirst;
-    public static string SavedName, SavedAudioName, SavedDirectory, Hash;
-    public static byte[] Pcm;
-    public static void Reset() { Saves = 0; ValidWav = false; FailFirst = false; Pcm = Array.Empty<byte>(); }
-    public static bool SaveReplay(ReplayData data, string path, bool plain, bool embedKeybdSound)
+    public static void RaiseReplaySaved(string path)
     {
-        Saves++; SavedName = data.FileName; SavedAudioName = data.KeybdSoundFileName;
-        SavedDirectory = Path.GetDirectoryName(path); Keys = data.KeyEvents.Count; Hits = data.HitSnapshots.Count; Cursors = data.CursorTrack.Count;
-        GateHeldAtSave = AudioRecorder.Current.IsCleanupPending;
-        string tmp = Path.Combine(SavedDirectory, "tmp.wav");
-        if (data.KeybdSoundFileName != null && File.Exists(tmp))
-        {
-            byte[] bytes;
-            try { bytes = File.ReadAllBytes(tmp); }
-            catch (IOException) { return true; } // 与产品TryEmbed一致：占用中只拒绝音频嵌入。
-            Pcm = bytes.Skip(44).ToArray();
-            Hash = Convert.ToHexString(SHA256.HashData(Pcm)).ToLowerInvariant();
-            ValidWav = BitConverter.ToInt32(bytes,4) == bytes.Length - 8 && BitConverter.ToInt32(bytes,40) == Pcm.Length && Hash == data.KeybdSoundHash;
-            if (ValidWav) data.KeybdAudio = new KeybdAudioBlob { HasData = true };
-        }
-        return !FailFirst || Saves > 1;
+        BoundaryFixture.Saved.Add(path); BoundaryFixture.EventThreads.Add(Thread.CurrentThread.ManagedThreadId);
+        if (BoundaryFixture.Reenter) { BoundaryFixture.Reenter = false; GameObject.TickAll(); }
     }
 }
+static class CloudReplay { public static bool OnReplaySaved(string path, string audio) => false; }
+static class Ui { public static class Loc { public static string T(string key) => key; } }
+// 故障注入止于 IO 边界；快照、重试、音频嵌入、加密、通知均由上面的真实源码完成。
+static class SaveProbe
+{
+    public static int Attempts, FailuresRemaining;
+    public static bool GateHeldAtQueue;
+    public static string LastPath;
+    public static Replay Last;
+    public static ManualResetEventSlim Hold;
+    public static readonly ManualResetEventSlim Entered = new ManualResetEventSlim();
+    public static void Reset()
+    {
+        Attempts = 0; FailuresRemaining = 0; GateHeldAtQueue = false; Last = null; LastPath = null; Hold = null;
+        SpectreState.MessageThreads.Clear();
+    }
+    public static void Write(string path, byte[] bytes)
+    {
+        Entered.Set(); Hold?.Wait(); Attempts++;
+        if (FailuresRemaining-- > 0) throw new IOException("injected write failure");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)); File.WriteAllBytes(path, bytes);
+        LastPath = path;
+        Last = ReplayDecoder.Decode(path.EndsWith(ReplayConstants.Extension, StringComparison.Ordinal) ? ReplayCrypto.Decrypt(bytes) : bytes);
+    }
+}
+namespace SpectreReplay { static class AtomicFile { public static void WriteAllBytes(string path, byte[] bytes) => SaveProbe.Write(path, bytes); } }
+namespace UnityEngine
+{
+    static class Time { public static int frameCount; }
+    static class Debug { public static void Log(object value) { } }
+    static class Object { public static void Destroy(object value) => global::Object.Destroy(value); }
+}
+__HOTKEY__
+static class Patch_ConductorUpdate { __MANUAL__ }
+static class Input { public static bool GetKeyDown(int key) => true; }
+enum States { Won = 7 }
+class scrController { public static scrController instance = new scrController(); public Machine stateMachine = new Machine(); }
+class Machine { public object GetState() => States.Won; }
 """;
 }

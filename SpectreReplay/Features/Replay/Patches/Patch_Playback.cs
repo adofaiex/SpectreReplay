@@ -58,6 +58,7 @@ internal class Patch_PlayerControlUpdate
     // 起录持续失败的计时与「本段失败已提示」位（见 NoteKeybdStartFailure）
     private static System.Diagnostics.Stopwatch keybdStartFailClock;
     private static bool keybdStartFailNotified;
+    private static int? keybdAppliedOffsetMs;
 
     // 起录持续失败满 2 秒才提示一次，同一段失败只提示一次。线程刚退出、清理未完这类
     // 瞬时失败通常下一次重试就自愈，不该吓到玩家；线程卡住或设备缺失则会持续下去，
@@ -179,7 +180,12 @@ internal class Patch_PlayerControlUpdate
         }
 
         if (is_recording && Application.isFocused) Record_kbdstate();
-        if (!is_playing) return;
+        if (!is_playing)
+        {
+            keybdAppliedOffsetMs = null;
+            WavLoader.Stop_keybdsound();
+            return;
+        }
 
         if (PlayIndex < 0) { KeyEventIndex = 0; PlayIndex = 0; }
 
@@ -301,6 +307,8 @@ internal class Patch_PlayerControlUpdate
             KeyEventIndex = 0;
             PlayIndex = 0;
             PlayActions.StopPlaying();
+            WavLoader.Stop_keybdsound();
+            keybdAppliedOffsetMs = null;
             TriggerMessage(LocalizationManager.GetLocalizedText("note.stop_playing"));
             return;
         }
@@ -316,12 +324,10 @@ internal class Patch_PlayerControlUpdate
         // 输入更新。判空用 Unity 语义（==，能识别已销毁）并顺手清标志。
         if (WavLoader.loaded_clip == null || WavLoader.musicSource == null)
         {
-            // clip 被销毁、source 还活着时，必须把它停掉：否则它会把上一份音频
-            // 一直播下去。导出走的是 AudioListener 实时混音（VideoRenderJob:498），
-            // 这种残留会被原样录进视频，而游戏内未必听得出来——"导出有声、回放
-            // 没声"的另一类来源。source 已销毁时 isPlaying 也无从判断，直接清标志。
-            if (WavLoader.musicSource != null && WavLoader.musicSource.isPlaying)
-                WavLoader.Stop_keybdsound();
+            // clip 被销毁、source 还活着时，必须把它停掉；source 缺失时也经统一入口
+            // 清掉静态 clip，避免旧动态对象悬挂到下一次导出/回放。
+            WavLoader.ClearLoadedClip();
+            keybdAppliedOffsetMs = null;
             HasKeybdSound = false;
             return;
         }
@@ -345,6 +351,7 @@ internal class Patch_PlayerControlUpdate
         {
             if (WavLoader.musicSource.isPlaying)
                 WavLoader.Stop_keybdsound();
+            keybdAppliedOffsetMs = null;
             return;
         }
 
@@ -354,6 +361,8 @@ internal class Patch_PlayerControlUpdate
         scrConductor conductor = ADOBase.conductor;
         if (conductor == null || conductor.song == null)
         {
+            // 时间暂不可算时清 offset 快照；重新可算的第一帧会强制重新定位。
+            keybdAppliedOffsetMs = null;
             // 这里**不清** HasKeybdSound：导体为空也可能只是切状态/结算重开的瞬时态，
             // 清掉就再也回不来了，整局剩下的键盘声全没（且没有任何提示）。clips/source
             // 真正被销毁的情况上面已经判过，本分支只是"这帧算不了时间"。
@@ -378,22 +387,31 @@ internal class Patch_PlayerControlUpdate
         {
             if (WavLoader.musicSource.isPlaying)
                 WavLoader.Stop_keybdsound();
+            keybdAppliedOffsetMs = null;
             return;
         }
 
+        long totalOffset = (long)offsetMs + scrConductor.currentPreset.inputOffset;
+        int effectiveOffsetMs = (int)Math.Max(int.MinValue, Math.Min(int.MaxValue, totalOffset));
         float rate = Mathf.Max(0.05f, Mathf.Abs(conductor.song.pitch));
         float num = ((float)(conductor.songposition_minusi
             - keybdStartTick) / rate
-            + (float)scrConductor.currentPreset.inputOffset / 1000f
-            + (float)offsetMs / 1000f);
+            + (float)effectiveOffsetMs / 1000f);
 
+        float effectiveVolume = volumeStep / 10f;
+        // volume 是实时设置：播放已经开始时也必须更新，不能只在 Play 时写一次。
+        if (Math.Abs(WavLoader.musicSource.volume - effectiveVolume) > 0.0001f)
+            WavLoader.musicSource.volume = effectiveVolume;
         if (num >= 0f && (double)num < WavLoader.loaded_clip.length - 0.1)
         {
-            if (Math.Abs(WavLoader.musicSource.time - num) > 0.02f)
+            bool offsetChanged = !keybdAppliedOffsetMs.HasValue
+                || keybdAppliedOffsetMs.Value != effectiveOffsetMs;
+            if (offsetChanged || Math.Abs(WavLoader.musicSource.time - num) > 0.02f)
                 WavLoader.musicSource.time = num;
+            keybdAppliedOffsetMs = effectiveOffsetMs;
             WavLoader.musicSource.pitch = 1f;
             if (!WavLoader.musicSource.isPlaying)
-                WavLoader.Play_keybdsound(WavLoader.loaded_clip, volumeStep / 10f);
+                WavLoader.Play_keybdsound(WavLoader.loaded_clip, effectiveVolume);
         }
         else if (WavLoader.musicSource.isPlaying)
             WavLoader.Stop_keybdsound();

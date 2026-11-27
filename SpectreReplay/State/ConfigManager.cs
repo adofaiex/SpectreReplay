@@ -341,14 +341,138 @@ public static class ConfigManager
         return true;
     }
 
+    // 验证与迁移严格分开：云端字节尚未落盘，不能试载 Settings 或借 configPath 触发迁移写盘。
+    private static readonly Dictionary<string, Type> LegacyConfigTypes = new Dictionary<string, Type>
+    {
+        ["RecordingOn"] = typeof(bool), ["RenderOn"] = typeof(bool),
+        ["AsyncInput"] = typeof(bool), ["AutoSave"] = typeof(bool),
+        ["SaveKey"] = typeof(int), ["CancelSaveKey"] = typeof(int),
+        ["Surface"] = typeof(int), ["Width"] = typeof(int), ["Height"] = typeof(int),
+        ["Fps"] = typeof(int), ["Encoder"] = typeof(int), ["Quality"] = typeof(int),
+        ["Container"] = typeof(int), ["TailSeconds"] = typeof(float), ["OutputDir"] = typeof(string),
+        // 旧文件确实保存过这两个键；不迁移其语义，但仍检查已知字段的类型。
+        ["Mode"] = typeof(int), ["DuplicateWhenLate"] = typeof(bool)
+    };
+
+    private static bool HasConfigSections(JObject json)
+        => json["Sets"] != null || json["Ints"] != null || json["Strings"] != null
+            || json["StringLists"] != null || json["Colors"] != null;
+
+    private static bool HasLegacyConfig(JObject json)
+        => LegacyConfigTypes.Keys.Any(key => json[key] != null);
+
+    private static JObject ParseConfigData(byte[] data)
+    {
+        if (data == null || data.Length == 0)
+            throw new JsonException("config_empty");
+        // 使用与文件读取相同的 BOM 检测，但对无 BOM 的损坏 UTF-8 不作替换字符容错。
+        using var reader = new StreamReader(new MemoryStream(data), new System.Text.UTF8Encoding(false, true), true);
+        var json = JsonConvert.DeserializeObject<JObject>(reader.ReadToEnd(), new JsonSerializerSettings
+        {
+            DateParseHandling = DateParseHandling.None,
+            CheckAdditionalContent = true
+        });
+        return json ?? throw new JsonException("config_root_not_object");
+    }
+
+    private static void ValidateConfigValue(JToken value, Type type, string name)
+    {
+        // 旧序列化器允许引用字段为 null，读取侧也以 ?? 保留当前值；值类型的 null 不是有效值。
+        if (value.Type == JTokenType.Null && !type.IsValueType)
+            return;
+        bool valid;
+        if (type == typeof(bool))
+            valid = value.Type == JTokenType.Boolean;
+        else if (type == typeof(int) || type == typeof(float))
+        {
+            valid = value.Type == JTokenType.Integer || value.Type == JTokenType.Float;
+            if (valid)
+            {
+                // 与实际 Value<T> 相同的转换，溢出/非有限值不能通过云恢复预检。
+                if (type == typeof(int)) value.Value<int>();
+                else
+                {
+                    float number = value.Value<float>();
+                    valid = !float.IsNaN(number) && !float.IsInfinity(number);
+                }
+            }
+        }
+        else if (type == typeof(string))
+            valid = value.Type == JTokenType.String;
+        else
+            valid = value is JArray array && array.All(item => item.Type == JTokenType.String);
+        if (!valid)
+            throw new JsonException(name + "_invalid_type_" + value.Type);
+    }
+
+    private static void ValidateConfigSection(JToken token, string name, Type schema)
+    {
+        if (token == null) return; // 缺区/缺键合法，保留本次会话的当前值。
+        if (!(token is JObject section))
+            throw new JsonException(name + "_section_not_object");
+        if (schema == null) return; // 已停用的历史分区只校验对象形状。
+        foreach (var property in section.Properties())
+        {
+            var type = schema.GetProperty(property.Name)?.PropertyType;
+            // 已分区旧配置里迁错位置的开关，不在现在的序列化 DTO 里。
+            if (name == "Sets" && property.Name == "RenderOn") type = typeof(bool);
+            if (type != null) ValidateConfigValue(property.Value, type, name + "." + property.Name);
+        }
+    }
+
+    private static void ValidateConfigObject(JObject json)
+    {
+        if (HasConfigSections(json))
+        {
+            ValidateConfigSection(json["Sets"], "Sets", typeof(SetsData));
+            ValidateConfigSection(json["Ints"], "Ints", typeof(IntsData));
+            ValidateConfigSection(json["Strings"], "Strings", typeof(StringsData));
+            ValidateConfigSection(json["StringLists"], "StringLists", typeof(StringListsData));
+            // Colors 是已停用的历史分区；保留其对象结构与未知键，不重新解释旧颜色数据。
+            ValidateConfigSection(json["Colors"], "Colors", null);
+            return;
+        }
+        if (!HasLegacyConfig(json))
+            throw new JsonException("config_shape_unknown");
+        foreach (var field in LegacyConfigTypes)
+            if (json[field.Key] is JToken value)
+                ValidateConfigValue(value, field.Value, field.Key);
+    }
+
+    internal static bool ValidateConfigData(byte[] data, out string error)
+    {
+        error = null;
+        try
+        {
+            ValidateConfigObject(ParseConfigData(data));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private static void MigrateLegacyConfig(JObject json)
     {
-        // 新版分区任一存在即视为新文件，不做任何事
-        if (json["Sets"] != null || json["Ints"] != null || json["Strings"] != null)
+        // 已分区的文件不重跑旧映射，只补救曾被迁错分区的渲染开关。
+        if (HasConfigSections(json))
+        {
+            // 早期迁移误把渲染开关留在 Sets；只补缺失的正确键，不能覆盖玩家后来保存的新值。
+            if (json["Sets"] is JObject legacySets
+                && legacySets["RenderOn"]?.Type == JTokenType.Boolean
+                && (json["Ints"] == null || json["Ints"] is JObject)
+                && json["Ints"]?["render_on"] == null)
+            {
+                var renderInts = json["Ints"] as JObject ?? new JObject();
+                renderInts["render_on"] = legacySets["RenderOn"].DeepClone();
+                json["Ints"] = renderInts;
+            }
             return;
-        // 旧版识别键：Surface / Fps / Encoder 三者是自研引擎独有的命名
-        bool legacy = json["Surface"] != null || json["Fps"] != null
-                || json["Encoder"] != null || json["RecordingOn"] != null;
+        }
+        // 旧文件也可能只保留 OutputDir 等少数键，不能要求另一组旧键同时存在。
+        bool legacy = HasLegacyConfig(json);
         if (!legacy)
             return;
 
@@ -361,7 +485,7 @@ public static class ConfigManager
         // ── 布尔开关 ──
         // ReplayOn ← RecordingOn（同一个总开关，旧名叫 RecordingOn）
         MigrateBool(json, sets, "RecordingOn", "ReplayOn", Settings.ReplayOn);
-        MigrateBool(json, sets, "RenderOn", "RenderOn", Settings.RenderOn);
+        MigrateBool(json, ints, "RenderOn", "render_on", Settings.RenderOn);
         MigrateBool(json, sets, "AsyncInput", "GetDataFromAsyncInput", Settings.GetDataFromAsyncInput);
         // AutoSave 新旧同名，只是从顶层搬进 Sets 分区
         MigrateBool(json, sets, "AutoSave", "AutoSave", Settings.AutoSave);
@@ -397,17 +521,6 @@ public static class ConfigManager
         // 旧键留着不删：它在新结构里不被读取，删掉反而让"回退到旧版"不可能。
         // 新结构的 ?? 语义保证旧键永远不影响新字段。
 
-        try
-        {
-            AtomicFile.WriteAllText(configPath, json.ToString(Formatting.Indented));
-            Debug.Log("[SpectreReplay] 旧配置已迁移并落盘");
-        }
-        catch (Exception ex)
-        {
-            // 迁移失败不阻断启动：内存里已改好，本次会话照新值跑；
-            // 下次启动会再迁移一次（幂等）。
-            Debug.LogWarning("[SpectreReplay] 旧配置迁移后落盘失败（本次会话仍按新值运行）: " + ex.Message);
-        }
     }
 
     private static void MigrateBool(JObject json, JObject target, string oldKey, string newKey, bool current)
@@ -447,25 +560,39 @@ public static class ConfigManager
         }
     }
 
-    public static void LoadConfigs(string filePath)
+    // 启动入口仍不抛异常，坏分区不会阻挡其它分区；云恢复必须拿到真实结果。
+    public static void LoadConfigs(string filePath) => LoadConfigsCore(filePath, false, out _);
+
+    // 云恢复的磁盘事务归调用方所有；此入口只验证/应用内存，不改保存路径或迁移落盘。
+    internal static bool TryLoadConfigs(string path, out string error)
+        => LoadConfigsCore(path, true, out error);
+
+    private static bool LoadConfigsCore(string filePath, bool strict, out string error)
     {
+        error = null;
         // 与 SaveConfigs 对称：路径为空时直接返回，别把 configPath 污染成 null
         // （之后 SaveSettings 会读到它）。File.Exists(null) 本身不抛，但状态不该被写坏。
         if (string.IsNullOrEmpty(filePath))
         {
-            Debug.LogWarning("[SpectreReplay] 配置载入被跳过：未指定配置路径");
-            return;
+            error = "config_path_missing";
+            Debug.LogWarning("[SpectreReplay] 配置载入被跳过：" + error);
+            return false;
         }
-        configPath = filePath;
+        // 启动时缺文件仍需记住将来的保存位置；严格恢复则在预检通过前不改变它。
+        if (!strict) configPath = filePath;
         if (!File.Exists(filePath))
         {
+            error = "config_file_missing: " + filePath;
             Debug.Log("[SpectreReplay] 配置文件不存在（用默认设置启动）: " + filePath);
-            return;
+            return false;
         }
         try
         {
-            var json = JObject.Parse(File.ReadAllText(filePath));
+            var json = ParseConfigData(File.ReadAllBytes(filePath));
+            if (strict) ValidateConfigObject(json);
+            bool migrated = !HasConfigSections(json) && HasLegacyConfig(json);
             MigrateLegacyConfig(json);
+            var failures = new List<string>();
             // 分区隔离：Configs.json 是用户会手工编辑的文件，某个值写成别的类型
             // （把 true 写成 "是"、把数字写成带引号的字符串）会让该分区的 Value<T> 抛
             // JsonReaderException。若整个 LoadConfigs 共用一个 try，这一个坏值会连带
@@ -474,6 +601,7 @@ public static class ConfigManager
             try
             {
                 var sets = json["Sets"];
+                ValidateConfigSection(sets, "Sets", typeof(SetsData));
                 if (sets != null)
                 {
                     Settings.ReplayOn = sets.Value<bool?>("ReplayOn") ?? Settings.ReplayOn;
@@ -532,11 +660,13 @@ public static class ConfigManager
             }
             catch (Exception ex)
             {
+                failures.Add("Sets: " + ex.Message);
                 Debug.Log("[SpectreReplay] 配置分区 \"Sets\" 载入失败（其余分区不受影响）: " + ex.Message);
             }
             try
             {
                 var ints = json["Ints"];
+                ValidateConfigSection(ints, "Ints", typeof(IntsData));
                 if (ints != null)
                 {
                     // 记住上次停留的页签（越界时回首页，防页签数量变化后指错）
@@ -602,7 +732,8 @@ public static class ConfigManager
                     Settings.RenderCursorOn = ints.Value<bool?>("render_cursor_on") ?? Settings.RenderCursorOn;
                     Settings.Render10Bit = ints.Value<bool?>("render_10bit") ?? Settings.Render10Bit;
                     Settings.RenderHdr10 = ints.Value<bool?>("render_hdr10") ?? Settings.RenderHdr10;
-                    Settings.RenderOverlayExcludeTypes = ParseOverlayTypes(ints["render_overlay_exclude_types"]);
+                    if (ints["render_overlay_exclude_types"] != null)
+                        Settings.RenderOverlayExcludeTypes = ParseOverlayTypes(ints["render_overlay_exclude_types"]);
                     Settings.RenderStopOn = ints.Value<bool?>("render_stop_on") ?? Settings.RenderStopOn;
                     // 键值不 Clamp：它是 KeyCode 数值域，合法集合由 Enum.IsDefined
                     // 在轮询处把关（见 VideoRenderJob.StopRequestedByHotkey）。
@@ -618,11 +749,13 @@ public static class ConfigManager
             }
             catch (Exception ex)
             {
+                failures.Add("Ints: " + ex.Message);
                 Debug.Log("[SpectreReplay] 配置分区 \"Ints\" 载入失败（其余分区不受影响）: " + ex.Message);
             }
             try
             {
                 var strs = json["Strings"];
+                ValidateConfigSection(strs, "Strings", typeof(StringsData));
                 if (strs != null)
                 {
                     Settings.SavePath = strs.Value<string>("savepath") ?? Settings.SavePath;
@@ -635,11 +768,13 @@ public static class ConfigManager
             }
             catch (Exception ex)
             {
+                failures.Add("Strings: " + ex.Message);
                 Debug.Log("[SpectreReplay] 配置分区 \"Strings\" 载入失败（其余分区不受影响）: " + ex.Message);
             }
             try
             {
                 var strLists = json["StringLists"];
+                ValidateConfigSection(strLists, "StringLists", typeof(StringListsData));
                 if (strLists != null)
                 {
                     var kbKeys = strLists["allowed_keyboard_special_keys"]?.ToObject<HashSet<string>>();
@@ -652,17 +787,41 @@ public static class ConfigManager
             }
             catch (Exception ex)
             {
+                failures.Add("StringLists: " + ex.Message);
                 Debug.Log("[SpectreReplay] 配置分区 \"StringLists\" 载入失败（其余分区不受影响）: " + ex.Message);
             }
+            // 迁移只在实际载入后落盘，不再让预验证暗中写到上一次的 configPath。
+            if (!strict && migrated && failures.Count == 0)
+            {
+                try
+                {
+                    AtomicFile.WriteAllText(configPath, json.ToString(Formatting.Indented));
+                    Debug.Log("[SpectreReplay] legacy config migrated atomically");
+                }
+                catch (Exception ex)
+                {
+                    // 启动继续使用已载入的值；严格调用方仍需知道迁移未能持久化。
+                    failures.Add("migration_write: " + ex.Message);
+                    Debug.LogWarning("[SpectreReplay] legacy config migration write failed; using loaded values: " + ex.Message);
+                }
+            }
+            if (failures.Count != 0)
+            {
+                error = string.Join("; ", failures);
+                return false;
+            }
             Debug.Log("[SpectreReplay] 配置载入成功");
+            return true;
         }
         catch (JsonException ex)
         {
+            error = ex.Message;
             Debug.Log("[SpectreReplay] 配置文件 JSON 解析失败（已回退默认设置）: " + ex.Message);
         }
         catch (IOException ex)
         {
             // 文件被占用/读取失败不该炸穿 mod 加载，落默认值即可
+            error = ex.Message;
             Debug.Log("[SpectreReplay] 配置文件读取失败（已回退默认设置）: " + ex.Message);
         }
         catch (UnauthorizedAccessException ex)
@@ -671,14 +830,17 @@ public static class ConfigManager
             // （权限/ACL 受限的配置文件、从别的机器拷来的只读文件都会走这里）。
             // Main.Load 没有全局 try/catch，异常穿透就等于整个 mod 加载失败 ——
             // 比"用默认设置启动"严重得多，故必须单独兜住。
+            error = ex.Message;
             Debug.Log("[SpectreReplay] 配置文件访问被拒（权限不足）: " + ex.Message);
         }
         catch (System.Exception ex)
         {
             // 兜底：路径非法（ArgumentException）、反序列化器内部的其他异常等。
             // 配置文件损坏/不可读时降级为默认设置，绝不让 mod 起不来。
+            error = ex.Message;
             Debug.Log("[SpectreReplay] 配置载入失败（已回退默认设置）: " + ex);
         }
+        return false;
     }
 
 }

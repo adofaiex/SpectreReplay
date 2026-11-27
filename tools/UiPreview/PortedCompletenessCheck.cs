@@ -31,8 +31,8 @@ namespace UiPreview
                 new[] { "Pages\\Pages.cs" },
                 new[] { "Analyze(" });
             fail += Check(projectRoot, "④ 编码器降级要说出来",
-                new[] { "Pages\\Pages.cs" },
-                new[] { "DescribeEncoder" });
+                new[] { "Pages\\RenderPage.cs" },
+                new[] { "VideoRender.Job?.ActualEncoder", "probe.Encoder" });
             fail += Check(projectRoot, "⑤ 装弹后状态要说清楚（playback.ready 不能再当摆设）",
                 new[] { "Pages\\Pages.cs" },
                 new[] { "playback.ready", "status.pending_replay" });

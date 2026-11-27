@@ -157,7 +157,7 @@ namespace UiPreview
 
             // ⑧ 按下/抬起按帧戳判定。
             //    靠清集合的写法在「无待办事件」时走不到清空，按下会一直挂着。
-            Expect(input.Contains("PressedFrame[vk] = frame") && input.Contains("ReleasedFrame[vk] = frame"),
+            Expect(input.Contains("PressedFrame[aggregateVk] = frame") && input.Contains("ReleasedFrame[aggregateVk] = frame"),
                 "⑧ 按下/抬起没有记帧戳 —— mainPressCount 会一直为真");
             Expect(input.Contains("PressedFrame[vk] == frame"),
                 "⑧ WentDown 判据不是帧戳相等 —— 历史按键会被当成本帧按下");

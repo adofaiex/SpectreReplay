@@ -53,8 +53,8 @@ namespace UiPreview
             // ③ 边沿必须从 PumpInput 喂（与 Quartz 实时桥同点、同一过滤块内：
             //    0/热键/Esc 已在块外被排掉），漏了就是回放全程不亮。
             int b3 = fail;
-            int qEdgeAt = player.IndexOf("QuartzLiveBridge.Edge(num, ev.IsPressed);", StringComparison.Ordinal);
-            int riEdgeAt = player.IndexOf("ReplayInputBridge.Edge(num, ev.IsPressed);", StringComparison.Ordinal);
+            int qEdgeAt = player.IndexOf("QuartzLiveBridge.Edge(aggregateVk, ev.IsPressed);", StringComparison.Ordinal);
+            int riEdgeAt = player.IndexOf("ReplayInputBridge.Edge(aggregateVk, ev.IsPressed);", StringComparison.Ordinal);
             Expect(riEdgeAt >= 0,
                 "③ PumpInput 不再调 ReplayInputBridge.Edge——回放期间键位显示一颗都不亮（MUT-RI1 的形状）");
             Expect(qEdgeAt < 0 || riEdgeAt > qEdgeAt,

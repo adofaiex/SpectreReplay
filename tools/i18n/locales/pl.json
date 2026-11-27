@@ -1,6 +1,14 @@
 {
   "lang": "pl",
   "entries": {
+    "render.video.rate_unsupported": "Ta platforma nie może zachować prędkości filmu w tle {0:0.######}×. Renderowanie zatrzymano, aby uniknąć błędnej prędkości.",
+    "render.video.speed_control_unavailable": "Ta platforma nie obsługuje sterowania prędkością filmu w tle. Renderowanie zatrzymano, aby uniknąć błędnej prędkości.",
+    "status.loaded_disabled": "Wczytano {0}, ale główny przełącznik jest wyłączony. Włącz go na stronie Nagrywanie i uruchom poziom ponownie, aby odtworzyć powtórkę.",
+    "status.loaded_disabled_nosound": "Wczytano {0}, ale główny przełącznik jest wyłączony i brakuje dźwięku klawiatury. Włącz go na stronie Nagrywanie i uruchom poziom ponownie.",
+    "playback.cloud.partial": "Operacja w chmurze częściowo ukończona: {0}",
+    "playback.cloud.partial.detail": "Udane: {0}; nieudane: {1}; {2}",
+    "render.ffmpeg.probing": "Sprawdzanie kodera w tle. Spróbuj ponownie za chwilę.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Nagrywanie",
     "page.playback": "Odtwarzanie",
     "page.render": "Renderowanie wideo",

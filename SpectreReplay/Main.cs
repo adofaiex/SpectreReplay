@@ -23,8 +23,14 @@ namespace SpectreReplay
             try
             {
                 mod = modEntry;
-                ConfigManager.LoadConfigs(Path.Combine(modEntry.Path, "Configs.json"));
-                Settings.check(modEntry.Path);
+                // 必须早于载入/归一化：Settings.check 可能先把默认配置写出来。
+                Features.Cloud.CloudReplay.CaptureStartupConfigState(Path.Combine(modEntry.Path, "Configs.json"));
+                try
+                {
+                    ConfigManager.LoadConfigs(Path.Combine(modEntry.Path, "Configs.json"));
+                    Settings.check(modEntry.Path);
+                }
+                finally { Features.Cloud.CloudReplay.CompleteStartupConfigInitialization(); }
                 WavLoader.reset();
                 Ui.Timeline.TimelineOverlay.Ensure();
 
@@ -35,6 +41,8 @@ namespace SpectreReplay
                 modEntry.OnSaveGUI = Ui.OnGui.OnSave;
                 // 退出时补上拖动滑条期间被推迟的落盘（见 Pages.Commit）。
                 // 少了这一步，拖完滑条直接退游戏会丢掉这次改动。
+                Application.wantsToQuit -= ReplaySaveShutdown.WantsToQuit;
+                Application.wantsToQuit += ReplaySaveShutdown.WantsToQuit;
                 Application.quitting -= OnQuitting;
                 Application.quitting += OnQuitting;
                 modEntry.OnToggle = OnToggle;
@@ -76,6 +84,7 @@ namespace SpectreReplay
         /// </summary>
         private static bool Teardown()
         {
+            Features.Cloud.CloudReplay.CancelStartupRestore();
             // 关模组等于设置页没了：把拖动期间攒下的改动先写掉
             try { Ui.OnGui.FlushConfig(); }
             catch (Exception ex) { UnityEngine.Debug.LogWarning("[SpectreReplay] 收尾时落盘失败：" + ex.Message); }

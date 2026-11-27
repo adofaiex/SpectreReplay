@@ -1,6 +1,14 @@
 {
   "lang": "cs",
   "entries": {
+    "render.video.rate_unsupported": "Tato platforma nedokáže zachovat rychlost videa na pozadí {0:0.######}×. Vykreslování bylo zastaveno, aby se předešlo nesprávné rychlosti.",
+    "render.video.speed_control_unavailable": "Tato platforma nedokáže řídit rychlost videa na pozadí. Vykreslování bylo zastaveno, aby se předešlo nesprávné rychlosti.",
+    "status.loaded_disabled": "Načteno {0}, ale hlavní přepínač je vypnutý. Zapněte jej na stránce Nahrávání a spusťte úroveň znovu pro přehrání.",
+    "status.loaded_disabled_nosound": "Načteno {0}, ale hlavní přepínač je vypnutý a chybí zvuk klávesnice. Zapněte jej na stránce Nahrávání a spusťte úroveň znovu.",
+    "playback.cloud.partial": "Operace v cloudu byla dokončena jen částečně: {0}",
+    "playback.cloud.partial.detail": "Úspěšné: {0}; neúspěšné: {1}; {2}",
+    "render.ffmpeg.probing": "Kodér se kontroluje na pozadí. Zkuste to prosím za chvíli znovu.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Nahrávání",
     "page.playback": "Přehrávání",
     "page.render": "Vykreslování videa",

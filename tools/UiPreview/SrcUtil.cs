@@ -109,7 +109,7 @@ namespace UiPreview
                 // 如 "the game's UpdateHoldKeys"）若在 inStr 期间也切换 inChar，
                 // 会让之后整个文件的注释都因 `!inChar` 守卫而剥不掉，
                 // 于是"不许出现 X"那类判据把注释里的说明文字当成缺陷（常红）。
-                if (c == '"') { inStr = !inStr; sb.Append(c); continue; }
+                if (!inChar && c == '"') { inStr = !inStr; sb.Append(c); continue; }
                 if (inStr) { sb.Append(c); continue; }
                 if (c == '\'') inChar = !inChar;
                 sb.Append(c);

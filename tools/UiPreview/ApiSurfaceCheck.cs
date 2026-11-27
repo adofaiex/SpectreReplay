@@ -62,7 +62,7 @@ namespace UiPreview
             // ③ 接线：Note 里必须发事件，且必须在状态写入**之后**——订阅方回调里
             //    调 GetHeldReplayKeys/IsReplayKeyHeld 读到的必须是本次事件对应的状态。
             int b3 = fail;
-            int noteAt = managed.IndexOf("internal static void Note(ushort vk, bool pressed)", StringComparison.Ordinal);
+            int noteAt = managed.IndexOf("internal static bool Note(ushort vk, bool pressed, ushort source,", StringComparison.Ordinal);
             Expect(noteAt >= 0, "③ ManagedInput.Note 被挪走/改名——回放按键的记账入口没了");
             if (noteAt >= 0)
             {
@@ -70,10 +70,10 @@ namespace UiPreview
                 string body = noteEnd > noteAt
                     ? managed.Substring(noteAt, noteEnd - noteAt)
                     : managed.Substring(noteAt);
-                Expect(body.Contains("API.SpectreAPI.RaiseReplayKeyChanged(vk, pressed);", StringComparison.Ordinal),
+                Expect(body.Contains("API.SpectreAPI.RaiseReplayKeyChanged(aggregateVk, aggregatePressed);", StringComparison.Ordinal),
                     "③ Note 不再发 ReplayKeyChanged——订阅方从此收不到任何按键信号（MUT-API1 的形状）");
-                int heldAt = body.IndexOf("Held[vk] = pressed;", StringComparison.Ordinal);
-                int raiseAt = body.IndexOf("RaiseReplayKeyChanged(vk, pressed)", StringComparison.Ordinal);
+                int heldAt = body.IndexOf("Held[aggregateVk] = aggregatePressed;", StringComparison.Ordinal);
+                int raiseAt = body.IndexOf("RaiseReplayKeyChanged(aggregateVk, aggregatePressed)", StringComparison.Ordinal);
                 Expect(heldAt >= 0 && raiseAt > heldAt,
                     "③ 事件在状态写入之前发出——订阅方读快照会看到上一拍的旧状态");
             }

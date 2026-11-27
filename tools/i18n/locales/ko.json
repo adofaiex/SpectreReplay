@@ -1,6 +1,14 @@
 {
   "lang": "ko",
   "entries": {
+    "render.video.rate_unsupported": "이 플랫폼은 배경 동영상 속도 {0:0.######}×를 유지할 수 없어 잘못된 속도를 피하기 위해 렌더링을 중지했습니다.",
+    "render.video.speed_control_unavailable": "이 플랫폼은 배경 동영상 속도를 제어할 수 없어 잘못된 속도를 피하기 위해 렌더링을 중지했습니다.",
+    "status.loaded_disabled": "{0}을(를) 불러왔지만 전체 스위치가 꺼져 있습니다. 녹화 페이지에서 켠 뒤 레벨을 다시 시작하세요.",
+    "status.loaded_disabled_nosound": "{0}을(를) 불러왔지만 전체 스위치가 꺼져 있고 키보드 소리도 없습니다. 녹화 페이지에서 켠 뒤 레벨을 다시 시작하세요.",
+    "playback.cloud.partial": "클라우드 작업 일부 완료: {0}",
+    "playback.cloud.partial.detail": "성공 {0}, 실패 {1}; {2}",
+    "render.ffmpeg.probing": "백그라운드에서 인코더를 확인 중입니다. 잠시 후 다시 시도하세요.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "녹화",
     "page.playback": "재생",
     "page.render": "동영상 렌더링",

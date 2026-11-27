@@ -1,6 +1,14 @@
 {
   "lang": "de",
   "entries": {
+    "render.video.rate_unsupported": "Diese Plattform kann die Hintergrundvideogeschwindigkeit {0:0.######}× nicht beibehalten. Das Rendern wurde wegen der falschen Geschwindigkeit beendet.",
+    "render.video.speed_control_unavailable": "Diese Plattform kann die Geschwindigkeit des Hintergrundvideos nicht steuern. Das Rendern wurde beendet, um eine falsche Geschwindigkeit zu vermeiden.",
+    "status.loaded_disabled": "{0} geladen, aber der Hauptschalter ist aus. Aktiviere ihn unter Aufnahme und starte das Level zur Wiedergabe neu.",
+    "status.loaded_disabled_nosound": "{0} geladen, aber der Hauptschalter ist aus und der Tastaturton fehlt. Aktiviere ihn unter Aufnahme und starte das Level neu.",
+    "playback.cloud.partial": "Cloud-Vorgang teilweise abgeschlossen: {0}",
+    "playback.cloud.partial.detail": "Erfolgreich: {0}; fehlgeschlagen: {1}; {2}",
+    "render.ffmpeg.probing": "Encoder wird im Hintergrund geprüft. Bitte versuche es gleich erneut.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Aufnahme",
     "page.playback": "Wiedergabe",
     "page.render": "Videorender",

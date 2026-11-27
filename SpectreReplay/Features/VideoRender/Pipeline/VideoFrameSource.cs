@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using SpectreReplay.Features.Replay;
 using Unity.Collections;
@@ -49,13 +48,8 @@ internal sealed class VideoFrameSource
     private readonly VideoSurface surface;
     private readonly RenderTexture texture;
     private readonly Queue<Flight> flights = new Queue<Flight>();
-    // 帧缓冲池必须线程安全：Recycle 由编码器泵线程回调（写完 stdin 后），
-    // Rent 在主线程取用。普通 Queue 跨线程 Enqueue/Dequeue 会破坏内部环形结构，
-    // 长渲染收尾阶段可能 Dequeue 出 null（曾致 CopyTo ArgumentNullException 崩溃）
-    private readonly ConcurrentQueue<byte[]> spares = new ConcurrentQueue<byte[]>();
-    // 池上限：默认 8（轻负载够用），渲染作业在 Begin 后按 队列容量+MaxInFlight
-    // 抬高——满载时在飞 buffer 远超 8 个，池太小会每帧把几十 MB 大数组丢进 LOH
-    private int spareLimit = 8;
+    // 所有权状态与池共用一个锁。大数组复制在 FrameBufferOwnership 返回后进行。
+    private readonly FrameBufferOwnership buffers = new FrameBufferOwnership(8);
     private readonly int frameBytes;
     private readonly int bytesPerPixel;
     private readonly bool hdr10;
@@ -313,13 +307,10 @@ internal sealed class VideoFrameSource
         NativeArray<byte> data = head.Request.GetData<byte>();
         if (data.Length != frameBytes)
             return SubstituteLastGood(out pixels, out failed);
-        // 上一份保留帧先归队（顶替职责已由本帧接棒）。归队后 Rent 可能取回
-        // 同一个缓冲，CopyTo 覆盖没有问题——本帧成功即不再需要它的内容。
-        RetireHeld();
-        pixels = Rent();
+        // 在同一临界区退役旧帧、租借并登记新保留帧。编码回调不能在
+        // 退役与登记之间复用数组；大像素复制仍在锁外。
+        pixels = buffers.RentForFrame(frameBytes);
         data.CopyTo(pixels);
-        heldFrame = pixels;
-        heldWritten = false;
         // 指针最后画：此时像素已拷进托管数组，且位置是 Grab 那一帧记下的。
         // rowsBottomUp 照 NeedsRowFlip——编码器只对 CleanCamera 做 vflip。
         if (head.CursorDrawn)
@@ -350,11 +341,6 @@ internal sealed class VideoFrameSource
     // RecycleOrHold（编码器写完才回调）保证，无数据竞争。失败帧复制一份租借
     // 缓冲提交——顶替帧画面滞后 ≤MaxInFlight 帧（240fps 下 ≤25ms），不可感知，
     // 行序/字节序与正常帧 100% 一致。上个成功帧缺位（开局连败）才回落黑帧。
-    private byte[] heldFrame;
-    // 曾是保留帧、泵尚未写完的缓冲：写完的回调会把它回池（pendingReturn 被
-    // 新值覆盖时，旧缓冲的回调走默认分支照常回池，无泄漏）。
-    private byte[] pendingReturn;
-    private bool heldWritten;
     // 顶替计数（供作业收尾写进完成日志）
     internal int SubstituteCount => substituteCount;
     internal int SubstituteMissing => substituteMissing;
@@ -366,39 +352,19 @@ internal sealed class VideoFrameSource
     // 保留帧若被提前复用，顶替读到的就是被覆盖后的新画面。
     internal void RecycleOrHold(byte[] pixels)
     {
-        if (pixels == null) return;
-        if (pixels == heldFrame)
-        {
-            heldWritten = true;
-            return;
-        }
-        if (pixels == pendingReturn)
-        {
-            spares.Enqueue(pixels);
-            pendingReturn = null;
-            return;
-        }
-        spares.Enqueue(pixels);
-    }
-
-    // 卸任当前保留帧：已写完直接回池；未写完挂滞留位，等写完的回调回池。
-    private void RetireHeld()
-    {
-        if (heldFrame == null) return;
-        if (heldWritten) spares.Enqueue(heldFrame);
-        else pendingReturn = heldFrame;
-        heldFrame = null;
-        heldWritten = false;
+        buffers.RecycleOrHold(pixels);
     }
 
     // 回读失败的顶替出口（hasError 与尺寸突变共用）：复制保留帧顶替，
     // 缺位（开局连败）才回落黑帧，由作业端 failedReadbacks 计数并提示。
     private bool SubstituteLastGood(out byte[] pixels, out bool failed)
     {
-        if (heldFrame != null)
+        // 只在 helper 锁内取得源引用和目的 buffer；整帧复制在锁外，
+        // 避免编码回调被大像素复制阻塞。
+        if (buffers.TryRentSubstitute(frameBytes, out byte[] source, out pixels))
         {
-            pixels = Rent();
-            Buffer.BlockCopy(heldFrame, 0, pixels, 0, frameBytes);
+            try { Buffer.BlockCopy(source, 0, pixels, 0, frameBytes); }
+            finally { buffers.ReleaseSubstituteSource(source); }
             failed = false;
             substituteCount++;
             return true;
@@ -411,13 +377,10 @@ internal sealed class VideoFrameSource
 
     // 由渲染作业在编码器启动后调用：上限只升不降，避免时序竞争下缩池
     internal void SetSparePoolLimit(int limit)
-        => spareLimit = Math.Max(spareLimit, limit);
+        => buffers.SetSparePoolLimit(limit);
 
     internal void Recycle(byte[] pixels)
-    {
-        if (pixels != null && spares.Count < spareLimit)
-            spares.Enqueue(pixels);
-    }
+        => buffers.Recycle(pixels);
     /// <summary>
     /// 建一台只负责「清屏 + 把当前捕获画面贴回屏幕」的相机。
     ///
@@ -512,7 +475,9 @@ internal sealed class VideoFrameSource
         RestoreTargets();
         VideoRender.CurrentSurface = null;   // 会话结束：飘字门随帧源一起撤
         flights.Clear();
-        while (spares.TryDequeue(out _)) { } // net47 的 ConcurrentQueue 没有 Clear()
+        // 后台泵回调可在 Dispose 后到达；标记后只丢弃回收，不会再把大数组
+        // 塞回已关闭的池。仍在使用的数组由提交队列/回调持有直至线程结束。
+        buffers.Dispose();
         if (texture != null)
         {
             texture.Release();
@@ -520,6 +485,4 @@ internal sealed class VideoFrameSource
         }
     }
 
-    private byte[] Rent()
-        => spares.TryDequeue(out byte[] buf) ? buf : new byte[frameBytes];
 }

@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Text;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -36,41 +37,6 @@ public static class WavLoader
     internal static AudioSource musicSource;
 
     internal static GameObject audioGO;
-
-    internal static AudioClip LoadFromFile(string filePath, string expectedHash = null, bool streamAudio = false)
-    {
-        if (!File.Exists(filePath))
-        {
-            Debug.LogError(("[WavLoader] 文件不存在: " + filePath));
-            return null;
-        }
-        if (!SpectreState.DebugMode || !SpectreState.debug_skip_Verification)
-        {
-            if (!string.IsNullOrEmpty(expectedHash))
-            {
-                if (!AudioRecorder.VerifyAudioFile(filePath, expectedHash))
-                {
-                    Debug.LogError(("[WavLoader] 文件哈希验证失败: " + filePath));
-                    return null;
-                }
-                Debug.Log(("[WavLoader] 文件哈希验证通过: " + filePath));
-            }
-        }
-        else
-        {
-            Debug.Log("Debug模式跳过音频校验");
-        }
-        try
-        {
-            byte[] wavData = File.ReadAllBytes(filePath);
-            return LoadFromMemory(wavData, Path.GetFileNameWithoutExtension(filePath), streamAudio);
-        }
-        catch (Exception ex)
-        {
-            Debug.LogError(("[WavLoader] 读取文件失败: " + ex.Message));
-            return null;
-        }
-    }
 
     internal static AudioClip LoadFromMemory(byte[] wavData, string clipName = "WAV_Audio", bool streamAudio = false)
     {
@@ -124,106 +90,176 @@ public static class WavLoader
     private static WavHeader ParseHeader(byte[] data)
     {
         WavHeader result = default(WavHeader);
-        using (MemoryStream memoryStream = new MemoryStream(data))
+        if (data == null || data.Length < 12 || !HasTag(data, 0, "RIFF") || !HasTag(data, 8, "WAVE"))
         {
-            using BinaryReader binaryReader = new BinaryReader(memoryStream);
-            string text = new string(binaryReader.ReadChars(4));
-            if (text != "RIFF")
+            Debug.LogError("[WavLoader] 不是带 WAVE 标识的 RIFF 数据");
+            return result;
+        }
+
+        uint riffSize = ReadUInt32(data, 4);
+        if (riffSize < 4 || riffSize > (uint)(data.Length - 8))
+        {
+            Debug.LogError($"[WavLoader] RIFF 范围无效: {riffSize}");
+            return result;
+        }
+        int riffEnd = checked(8 + (int)riffSize);
+        int cursor = 12;
+        bool haveFmt = false;
+        bool haveData = false;
+        while (cursor < riffEnd)
+        {
+            if (riffEnd - cursor < 8)
             {
-                Debug.LogError(("[WavLoader] 不是 RIFF 格式: " + text));
+                Debug.LogError("[WavLoader] RIFF 块头越界");
                 return result;
             }
-            binaryReader.ReadInt32();
-            string text2 = new string(binaryReader.ReadChars(4));
-            if (text2 != "WAVE")
+            string chunkId = Encoding.ASCII.GetString(data, cursor, 4);
+            uint chunkSize = ReadUInt32(data, cursor + 4);
+            if (chunkSize > int.MaxValue)
             {
-                Debug.LogError(("[WavLoader] 不是 WAVE 格式: " + text2));
+                Debug.LogError($"[WavLoader] 块大小超过可读范围: {chunkSize}");
                 return result;
             }
-            while (memoryStream.Position < memoryStream.Length - 8)
+            long payloadEnd = cursor + 8L + chunkSize;
+            long paddedEnd = payloadEnd + (chunkSize & 1);
+            if (payloadEnd > riffEnd || paddedEnd > riffEnd || paddedEnd > data.Length)
             {
-                string text3 = new string(binaryReader.ReadChars(4));
-                int num = binaryReader.ReadInt32();
-                if (num < 0 || memoryStream.Position + num > memoryStream.Length)
+                Debug.LogError($"[WavLoader] 块范围越界: {chunkId} / {chunkSize}");
+                return result;
+            }
+
+            int size = (int)chunkSize;
+            int payload = cursor + 8;
+            if (chunkId == "fmt ")
+            {
+                if (haveFmt || size < 16)
                 {
-                    Debug.LogError($"[WavLoader] 无效的块大小: {num}");
+                    Debug.LogError($"[WavLoader] fmt 块无效或重复: {size}");
                     return result;
                 }
-                if (text3 == "fmt ")
+                haveFmt = true;
+                int formatTag = ReadUInt16(data, payload);
+                if (formatTag == 0xFFFE)
                 {
-                    if (num < 16)
+                    // WAVEFORMATEXTENSIBLE 的 SubFormat GUID 从 fmt+24 开始；
+                    // GUID 前两个字节保留 PCM=1 / IEEE float=3，剩余 GUID 字节
+                    // 仍原样留在块中，不影响后续数据读取。
+                    if (size < 40)
                     {
-                        Debug.LogError($"[WavLoader] fmt 块太小: {num}");
+                        Debug.LogError($"[WavLoader] extensible fmt 块太小: {size}");
                         return result;
                     }
-                    int num2 = binaryReader.ReadInt16();
-                    result.FormatTag = num2;
-                    if (num2 != 1 && num2 != 3)
-                    {
-                        // 1=PCM、3=IEEE float；32 位浮点走 case 32 里的 FormatTag==3 分支。
-                        // 文案必须与实际支持范围一致，否则 3 能通过校验、其他值报"仅支持 PCM"，
-                        // 会让人误以为浮点 WAV 不被支持。
-                        Debug.LogError($"[WavLoader] 不支持的音频格式: {num2}（仅支持 PCM=1 与 IEEE float=3）");
-                        return result;
-                    }
-                    result.Channels = binaryReader.ReadInt16();
-                    result.SampleRate = binaryReader.ReadInt32();
-                    binaryReader.ReadInt32();
-                    binaryReader.ReadInt16();
-                    result.BitsPerSample = binaryReader.ReadInt16();
-                    // 声道数/位深先校验：data 块里要用它们做除法算样本数，
-                    // 0 声道或 <8 位深（内层 /8 得 0）会直接抛 DivideByZeroException，
-                    // 后续的 TotalSamples<=0 守卫根本来不及生效。
-                    if (result.Channels <= 0)
-                    {
-                        Debug.LogError($"[WavLoader] 声道数无效: {result.Channels}");
-                        return result;
-                    }
-                    if (result.BitsPerSample != 8 && result.BitsPerSample != 16
-                        && result.BitsPerSample != 24 && result.BitsPerSample != 32)
-                    {
-                        // 不在支持列表（如 12/20/64 位）时 ConvertWavToFloat 的 switch
-                        // 会落到 default 把每个样本写成 0 —— 整段静默且无任何提示。
-                        Debug.LogError($"[WavLoader] 不支持的位深: {result.BitsPerSample}（支持 8/16/24/32）");
-                        return result;
-                    }
-                    if (num > 16)
-                    {
-                        binaryReader.ReadBytes(num - 16);
-                    }
+                    formatTag = ReadUInt16(data, payload + 24);
                 }
-                else
+                result.FormatTag = formatTag;
+                if (formatTag != 1 && formatTag != 3)
                 {
-                    if (text3 == "data")
-                    {
-                        if (num <= 0)
-                        {
-                            Debug.LogError($"[WavLoader] data 块大小无效: {num}");
-                            return result;
-                        }
-                        result.DataSize = num;
-                        result.DataOffset = (int)memoryStream.Position;
-                        // data 块可能排在 fmt 之前（畸形文件），此时 Channels/
-                        // BitsPerSample 仍是 0，除法会炸——显式判一次
-                        if (result.Channels <= 0 || result.BitsPerSample < 8)
-                        {
-                            Debug.LogError("[WavLoader] data 块出现在 fmt 块之前，无法确定样本格式");
-                            return result;
-                        }
-                        result.TotalSamples = num / (result.Channels * (result.BitsPerSample / 8));
-                        if (result.TotalSamples <= 0)
-                        {
-                            Debug.LogError($"[WavLoader] data 块数据不足以构成任何样本: {num} 字节");
-                            return result;
-                        }
-                        break;
-                    }
-                    binaryReader.ReadBytes(num);
+                    Debug.LogError($"[WavLoader] 不支持的音频格式: {formatTag}（仅支持 PCM=1 与 IEEE float=3）");
+                    return result;
+                }
+                result.Channels = ReadUInt16(data, payload + 2);
+                uint sampleRate = ReadUInt32(data, payload + 4);
+                result.SampleRate = sampleRate > int.MaxValue ? 0 : (int)sampleRate;
+                result.BitsPerSample = ReadUInt16(data, payload + 14);
+                int blockAlign = ReadUInt16(data, payload + 12);
+                if (result.Channels <= 0 || result.SampleRate <= 0)
+                {
+                    Debug.LogError("[WavLoader] fmt 声道数或采样率无效");
+                    return result;
+                }
+                if (result.BitsPerSample != 8 && result.BitsPerSample != 16
+                    && result.BitsPerSample != 24 && result.BitsPerSample != 32)
+                {
+                    Debug.LogError($"[WavLoader] 不支持的位深: {result.BitsPerSample}（支持 8/16/24/32）");
+                    return result;
+                }
+                if (formatTag == 3 && result.BitsPerSample != 32)
+                {
+                    Debug.LogError("[WavLoader] IEEE float WAV 只支持 32 位");
+                    return result;
+                }
+                long expectedAlign = (long)result.Channels * (result.BitsPerSample / 8);
+                if (blockAlign <= 0 || expectedAlign != blockAlign)
+                {
+                    Debug.LogError($"[WavLoader] fmt blockAlign 无效: {blockAlign}");
+                    return result;
                 }
             }
+            else if (chunkId == "data")
+            {
+                if (haveData)
+                {
+                    Debug.LogError("[WavLoader] 不支持多个 data 块，避免静默丢弃后续 PCM");
+                    return result;
+                }
+                if (size <= 0)
+                {
+                    Debug.LogError($"[WavLoader] data 块大小无效: {size}");
+                    return result;
+                }
+                haveData = true;
+                result.DataSize = size;
+                result.DataOffset = payload;
+            }
+            // 未知块必须连同奇数大小的一个 padding 字节一起跳过；否则下一个
+            // chunk 的四字节 ID 会错位，合法 PCM 会被静默丢掉。
+            cursor = checked((int)paddedEnd);
         }
+
+        if (cursor != riffEnd || !haveFmt || !haveData)
+        {
+            Debug.LogError("[WavLoader] 缺少 fmt 或 data 块");
+            return default(WavHeader);
+        }
+        long frameBytes = (long)result.Channels * (result.BitsPerSample / 8);
+        if (frameBytes <= 0 || result.DataSize % frameBytes != 0)
+        {
+            Debug.LogError("[WavLoader] data 块不是完整 PCM 帧");
+            return default(WavHeader);
+        }
+        long frames = result.DataSize / frameBytes;
+        if (frames <= 0 || frames > int.MaxValue)
+        {
+            Debug.LogError($"[WavLoader] data 样本数无效: {frames}");
+            return default(WavHeader);
+        }
+        result.TotalSamples = (int)frames;
         return result;
     }
+
+    private static bool HasTag(byte[] data, int offset, string tag)
+        => offset >= 0 && offset + 4 <= data.Length
+           && data[offset] == tag[0] && data[offset + 1] == tag[1]
+           && data[offset + 2] == tag[2] && data[offset + 3] == tag[3];
+
+    private static ushort ReadUInt16(byte[] data, int offset)
+        => (ushort)(data[offset] | (data[offset + 1] << 8));
+
+    private static uint ReadUInt32(byte[] data, int offset)
+        => (uint)(data[offset] | (data[offset + 1] << 8)
+            | (data[offset + 2] << 16) | (data[offset + 3] << 24));
+
+    /// <summary>
+    /// 统一替换动态键盘音 clip。AudioSource 先停并脱离旧 clip，再释放旧原生对象；
+    /// 失败装载路径不会调用它，因此旧回放不会被半成品覆盖。
+    /// </summary>
+    internal static void ReplaceLoadedClip(AudioClip next)
+    {
+        AudioClip previous = loaded_clip;
+        if (musicSource != null)
+        {
+            if (musicSource.isPlaying)
+                musicSource.Stop();
+            musicSource.clip = null;
+        }
+        loaded_clip = null;
+        if (previous != null && previous != next)
+            Object.Destroy(previous);
+        loaded_clip = next;
+    }
+
+    internal static void ClearLoadedClip()
+        => ReplaceLoadedClip(null);
 
     private static float[] ConvertWavToFloat(byte[] wavData, WavHeader header)
     {
@@ -235,7 +271,8 @@ public static class WavLoader
         int frames = header.TotalSamples;
         if (num > 0 && frames > 0)
         {
-            int frameSamples = frames * header.Channels;
+            long frameSamplesLong = (long)frames * header.Channels;
+            int frameSamples = frameSamplesLong > int.MaxValue ? int.MaxValue : (int)frameSamplesLong;
             if (num2 > frameSamples) num2 = frameSamples;
         }
         float[] array = new float[num2];
@@ -289,19 +326,22 @@ public static class WavLoader
 
     internal static void Play_keybdsound(AudioClip snd, float volume)
     {
+        if (musicSource == null || snd == null) return;
         musicSource.clip = snd;
-        musicSource.volume = volume;
+        musicSource.volume = Mathf.Clamp01(volume);
         musicSource.Play();
         Debug.Log("开始播放！");
     }
 
     internal static void Stop_keybdsound()
     {
-        musicSource.Stop();
+        if (musicSource != null)
+            musicSource.Stop();
     }
 
     internal static void reset()
     {
+        ClearLoadedClip();
         if (musicSource == null)
         {
             audioGO = new GameObject("Spectre_AudioSource");

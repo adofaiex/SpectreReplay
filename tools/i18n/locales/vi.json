@@ -1,6 +1,14 @@
 {
   "lang": "vi",
   "entries": {
+    "render.video.rate_unsupported": "Nền tảng này không thể giữ tốc độ video nền {0:0.######}×. Đã dừng kết xuất để tránh tốc độ sai.",
+    "render.video.speed_control_unavailable": "Nền tảng này không hỗ trợ điều khiển tốc độ video nền. Đã dừng kết xuất để tránh tốc độ sai.",
+    "status.loaded_disabled": "Đã tải {0}, nhưng công tắc chính đang tắt. Bật công tắc ở trang Ghi hình rồi khởi động lại màn chơi để phát.",
+    "status.loaded_disabled_nosound": "Đã tải {0}, nhưng công tắc chính đang tắt và thiếu âm thanh bàn phím. Bật công tắc ở trang Ghi hình rồi khởi động lại màn chơi.",
+    "playback.cloud.partial": "Thao tác đám mây hoàn tất một phần: {0}",
+    "playback.cloud.partial.detail": "Thành công: {0}; thất bại: {1}; {2}",
+    "render.ffmpeg.probing": "Đang kiểm tra bộ mã hóa ở nền. Vui lòng thử lại sau giây lát.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Ghi lại",
     "page.playback": "Phát lại",
     "page.render": "Kết xuất video",

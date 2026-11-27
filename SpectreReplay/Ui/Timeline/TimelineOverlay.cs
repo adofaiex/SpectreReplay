@@ -321,6 +321,7 @@ internal sealed class TimelineOverlay : MonoBehaviour
     {
         var state = TimelineController.State;
         bool shouldShow = Settings.TimelineOn
+            && !ModernSettingsWindow.IsOpen && !ModernSettingsWindow.IsClosing
             && !SpectreReplay.Features.VideoRender.VideoRender.Active
             && state.Source != null
             && state.Duration > 0.0
@@ -330,6 +331,13 @@ internal sealed class TimelineOverlay : MonoBehaviour
         if (!shouldShow)
         {
             if (_canvas.enabled) _canvas.enabled = false;
+            // 隐藏分支早于 HandleInput，须在这里终结旧拖拽，避免关窗后续拖。
+            _dragResize = false;
+            _dragPanel = false;
+            _dragMode = 0;
+            _overTrack = false;
+            _overTitleBar = false;
+            _floorFieldFocused = false;
             _inputCaptured = false;
             TimelineController.SetInputCaptured(false);
             return;
@@ -346,7 +354,18 @@ internal sealed class TimelineOverlay : MonoBehaviour
             || _selEndField != null && _selEndField.isFocused;
         _floorFieldFocused = fieldFocused;
 
-        HandleInput(state);
+        if (_floorFieldFocused)
+        {
+            _dragResize = false;
+            _dragPanel = false;
+            _dragMode = 0;
+            _inputCaptured = true;
+            TimelineController.SetInputCaptured(true);
+        }
+        else
+        {
+            HandleInput(state);
+        }
         UpdateVisuals(state);
     }
 
@@ -354,6 +373,17 @@ internal sealed class TimelineOverlay : MonoBehaviour
 
     private void HandleInput(ReplayTimelineState state)
     {
+        // uGUI 挡板只阻止 EventSystem 射线，不阻止全局 Input.GetMouseButton*。
+        // 窗口打开或关闭动画期间必须隔离时间轴原始输入，并清理旧拖拽态。
+        if (ModernSettingsWindow.IsOpen || ModernSettingsWindow.IsClosing)
+        {
+            _dragResize = false;
+            _dragPanel = false;
+            _dragMode = 0;
+            _inputCaptured = false;
+            TimelineController.SetInputCaptured(false);
+            return;
+        }
         Vector2 mouse = Input.mousePosition;
         _overTitleBar = ContainsPoint(_titleBar, mouse);
         _overTrack = ContainsPoint(_track, mouse);

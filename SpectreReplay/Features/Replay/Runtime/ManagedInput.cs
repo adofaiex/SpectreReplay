@@ -34,8 +34,14 @@ namespace SpectreReplay.Features.Replay;
 internal static class ManagedInput
 {
     private static readonly bool[] Held = new bool[256];
+    // 回放文件存的是来源键码；多个来源可能被映射到同一个目标 VK。
+    // 来源状态用于在来源键仍有任一持有者时维持目标 VK 按住。
+    private static readonly bool[] SourceHeld = new bool[256];
+    private static readonly ushort[] SourceVk = new ushort[256];
+    private static readonly int[] HeldSourceCount = new int[256];
     // 帧戳：值为「事件发生在哪一帧」。int.MaxValue = 从未发生。
     private static readonly int[] PressedFrame = new int[256];
+    private static readonly int[] PressCountFrame = new int[256];
     private static readonly int[] ReleasedFrame = new int[256];
 
     private static int _heldCount;
@@ -99,31 +105,91 @@ internal static class ManagedInput
     /// </summary>
     /// <param name="vk">已转换的虚拟键码（<see cref="Settings.key_code_convert"/> 之后）。</param>
     /// <param name="pressed">true 为按下。</param>
-    internal static void Note(ushort vk, bool pressed)
+    internal static bool Note(ushort vk, bool pressed, ushort source,
+        out bool aggregateChanged, out ushort aggregateVk)
     {
-        if (vk >= Held.Length) return;
-        if (Held[vk] == pressed) return;
-        Held[vk] = pressed;
-        _heldCount += pressed ? 1 : -1;
-        // 兜底：理论上不会为负，但一旦为负，AnyHeld 会永远为假且再也修不回来
-        if (_heldCount < 0) _heldCount = 0;
+        aggregateChanged = false;
+        aggregateVk = vk;
+        if (vk >= Held.Length || !TrackSource(vk, pressed, source,
+                out bool sourceChanged, out aggregateChanged, out aggregateVk, out bool aggregatePressed))
+            return false;
+        if (!sourceChanged) return false;
+
+        if (aggregateChanged)
+        {
+            Held[aggregateVk] = aggregatePressed;
+            _heldCount += aggregatePressed ? 1 : -1;
+        }
 
         int frame = Time.frameCount;
-        if (pressed) PressedFrame[vk] = frame;
-        else ReleasedFrame[vk] = frame;
+        if (pressed)
+        {
+            if (PressedFrame[aggregateVk] != frame) PressCountFrame[aggregateVk] = 0;
+            PressedFrame[aggregateVk] = frame;
+            // Count every distinct source press, even if another source currently holds
+            // the same mapped VK; this is the synchronous mainPressCount equivalent.
+            PressCountFrame[aggregateVk]++;
+        }
+        else if (aggregateChanged)
+        {
+            ReleasedFrame[aggregateVk] = frame;
+        }
 
-        // 一次性确认日志：区分「补丁没挂上 / 没走到注入」与「注入了但游戏没反应」。
-        // 玩家报「回放不动」时，这一行是唯一能一眼定性的线索。
         if (!_loggedFirstInjection)
         {
             _loggedFirstInjection = true;
-            Debug.Log($"[SpectreReplay] 托管输入已接管回放按键（首个键 vk={vk} "
+            Debug.Log($"[SpectreReplay] 托管输入已接管回放按键（首个键 vk={aggregateVk} "
                 + (pressed ? "按下" : "抬起") + $"，帧 {frame}）");
         }
 
-        // 通知外部订阅者（KeyViewer 等拉取接口的消费者）。只在状态真正翻转时触发，
-        // 幂等重放（连续的 down/down 或 up/up）已在上面被过滤，不会重复发。
-        API.SpectreAPI.RaiseReplayKeyChanged(vk, pressed);
+        if (aggregateChanged)
+            API.SpectreAPI.RaiseReplayKeyChanged(aggregateVk, aggregatePressed);
+        return true;
+    }
+
+    // Track one source edge and report only a 0↔1 transition for its mapped VK.
+    private static bool TrackSource(ushort requestedVk, bool pressed, ushort source,
+        out bool sourceChanged, out bool aggregateChanged, out ushort aggregateVk,
+        out bool aggregatePressed)
+    {
+        sourceChanged = false;
+        aggregateChanged = false;
+        aggregateVk = requestedVk;
+        aggregatePressed = false;
+        if (source >= SourceHeld.Length) return false;
+
+        bool wasSourceHeld = SourceHeld[source];
+        if (wasSourceHeld == pressed)
+        {
+            if (wasSourceHeld)
+            {
+                aggregateVk = SourceVk[source];
+                aggregatePressed = true;
+            }
+            return true;
+        }
+
+        sourceChanged = true;
+        if (pressed)
+        {
+            aggregateVk = requestedVk;
+            bool wasAggregateHeld = HeldSourceCount[aggregateVk] > 0;
+            SourceHeld[source] = true;
+            SourceVk[source] = aggregateVk;
+            HeldSourceCount[aggregateVk]++;
+            aggregatePressed = true;
+            aggregateChanged = !wasAggregateHeld;
+        }
+        else
+        {
+            aggregateVk = SourceVk[source];
+            bool wasAggregateHeld = HeldSourceCount[aggregateVk] > 0;
+            SourceHeld[source] = false;
+            if (HeldSourceCount[aggregateVk] > 0) HeldSourceCount[aggregateVk]--;
+            aggregatePressed = HeldSourceCount[aggregateVk] > 0;
+            aggregateChanged = wasAggregateHeld != aggregatePressed;
+        }
+        return true;
     }
 
     /// <summary>
@@ -133,13 +199,15 @@ internal static class ManagedInput
     /// 不能复用 <see cref="Note"/>——它会写 PressedFrame，导致所有重建的键在跳转
     /// 那一帧同时被判成 "WentDown"，凭空多出一次按下沿。
     /// </summary>
-    internal static void Restore(ushort vk, bool pressed)
+    internal static void Restore(ushort vk, bool pressed, ushort source)
     {
-        if (vk >= Held.Length) return;
-        if (Held[vk] == pressed) return;
-        Held[vk] = pressed;
-        _heldCount += pressed ? 1 : -1;
-        if (_heldCount < 0) _heldCount = 0;
+        if (vk >= Held.Length || !TrackSource(vk, pressed, source,
+                out bool sourceChanged, out bool aggregateChanged, out ushort aggregateVk,
+                out bool aggregatePressed) || !sourceChanged)
+            return;
+        if (!aggregateChanged) return;
+        Held[aggregateVk] = aggregatePressed;
+        _heldCount += aggregatePressed ? 1 : -1;
     }
 
     // ── 本模组热键的回放隔离 ─────────────────────────────────────────
@@ -200,16 +268,31 @@ internal static class ManagedInput
     /// <summary>清空状态。开始 / 停止 / 快进（跳转）时调用，避免上一段的按住状态残留。</summary>
     internal static void Clear()
     {
+        List<ushort> released = SnapshotHeld();
         _takeoverFrame = -1;
         _takeover = false;
         Array.Clear(Held, 0, Held.Length);
+        Array.Clear(SourceHeld, 0, SourceHeld.Length);
+        Array.Clear(SourceVk, 0, SourceVk.Length);
+        Array.Clear(HeldSourceCount, 0, HeldSourceCount.Length);
         for (int i = 0; i < PressedFrame.Length; i++)
         {
             PressedFrame[i] = int.MaxValue;
+            PressCountFrame[i] = 0;
             ReleasedFrame[i] = int.MaxValue;
         }
         _heldCount = 0;
         _loggedFirstInjection = false;
+        // Reset/seek/stop is also an external edge: subscribers must not keep a key
+        // highlighted after the managed state has been cleared.
+        foreach (ushort vk in released)
+            API.SpectreAPI.RaiseReplayKeyChanged(vk, false);
+    }
+
+    internal static void BroadcastHeld()
+    {
+        for (ushort vk = 0; vk < Held.Length; vk++)
+            if (Held[vk]) API.SpectreAPI.RaiseReplayKeyChanged(vk, true);
     }
 
     /// <summary>把本帧满足 <paramref name="state"/> 的回放键追加进 <paramref name="keys"/>，返回追加数。</summary>
@@ -222,7 +305,10 @@ internal static class ManagedInput
         int added = 0;
         for (int vk = 0; vk < Held.Length; vk++)
         {
-            if (!Matches(state, vk, frame)) continue;
+            int repetitions = state == ButtonState.WentDown && PressedFrame[vk] == frame
+                ? PressCountFrame[vk] : Matches(state, vk, frame) ? 1 : 0;
+            for (int repeat = 0; repeat < repetitions; repeat++)
+            {
             // **必须是 AsyncKeyCode，不能是 KeyCode。**
             // scrPlayer.ValidInputWasReleased 清理 holdKeys 时按类型分岔
             // （scrPlayer.cs:888-905）：非 AsyncKeyCode 项走
@@ -234,6 +320,7 @@ internal static class ManagedInput
             // 只要 holdKeys 与 GetMainHeldKeys 产出同一种值就能存活。
             keys.Add(new AnyKeyCode(new AsyncKeyCode((ushort)vk)));
             added++;
+            }
         }
         return added;
     }
@@ -248,7 +335,12 @@ internal static class ManagedInput
         int frame = Time.frameCount;
         int count = 0;
         for (int vk = 0; vk < Held.Length; vk++)
-            if (Matches(state, vk, frame)) count++;
+        {
+            if (state == ButtonState.WentDown && PressedFrame[vk] == frame)
+                count += PressCountFrame[vk];
+            else if (Matches(state, vk, frame))
+                count++;
+        }
         return count;
     }
 

@@ -53,7 +53,7 @@ namespace UiPreview
             //    收尾在工作线程跑（StartFinalizeOnWorker），构造点有两处
             //    （预启动线程 / resize 重建），穿参数才能保证「主线程快照、
             //    线程只读」这条纪律有落点。
-            Expect(Has(enc, @"void MuxWith\(string wavPath,\s*double audioOffsetSec\)"),
+            Expect(Has(enc, @"void MuxWith\(string wavPath,\s*double audioOffsetSec,\s*Func<bool> canceled = null"),
                 "① MuxWith 没有偏移参数 —— 收尾线程只能自己读游戏状态，跨线程纪律破功");
 
             // ② 正负两条注入分支都存在，且**都由偏移参数驱动**：
@@ -91,7 +91,7 @@ namespace UiPreview
             // ⑤c 调用点把快照带进 MuxWith，且本地快照来自字段（主线程先取、线程里用）。
             Expect(Has(job, @"double audioOffset = muxAudioOffsetSec;"),
                 "⑤c 收尾没有先在主线程落一份偏移局部快照 —— 线程里直接读字段");
-            Expect(job.Contains("enc.MuxWith(wav, audioOffset);"),
+            Expect(job.Contains("enc.MuxWith(wav, audioOffset, () => cancelRequested);"),
                 "⑤c MuxWith 调用点没传偏移 —— 编译能过但偏移永远不生效");
             Expect(!job.Contains("MuxWith(wav);"),
                 "⑤c 还留着单参调用 MuxWith(wav) —— 改签名漏改调用点");

@@ -104,18 +104,19 @@ internal static class VideoConverter
             state.Messages.Add(baseName + targetExt + " ← " + ext + ": exists");
             return;
         }
+        // 每次尝试都写唯一 partial 文件，成功后才移动到目标；失败不会留下一个
+        // 下次被 exists 误判的半成品，也不会覆盖用户已有目标。
+        string partialPath = Path.Combine(dir, baseName + ".partial." + Guid.NewGuid().ToString("N") + targetExt);
 
         string videoArgs;
         string audioArgs;
         switch (target)
         {
             case VideoEncoder.OutContainer.WebM:
-                // VP9 重编码：-crf 30 -b:v 0 = 纯质量模式；row-mt 多线程，不开慢数倍
                 videoArgs = "-c:v libvpx-vp9 -deadline good -cpu-used 4 -row-mt 1 -crf 30 -b:v 0 -pix_fmt yuv420p";
                 audioArgs = "-c:a libopus -b:a 192k -ar 48000";
                 break;
             case VideoEncoder.OutContainer.Mkv:
-                // mkv 对编解码几乎不设限：整流 copy
                 videoArgs = "-c:v copy";
                 audioArgs = "-c:a copy";
                 break;
@@ -123,22 +124,18 @@ internal static class VideoConverter
             case VideoEncoder.OutContainer.Mov:
                 if (ext == ".mp4" || ext == ".mov")
                 {
-                    // movenc 族内互换：通常整流 copy
                     videoArgs = "-c:v copy";
                     audioArgs = "-c:a copy";
                 }
+                else if (target == VideoEncoder.OutContainer.Mov)
+                {
+                    videoArgs = "-c:v libx264 -preset veryfast -crf 23";
+                    audioArgs = "-c:a aac -b:a 320k";
+                }
                 else
                 {
-                    if (target == VideoEncoder.OutContainer.Mov)
-                    {
-                        videoArgs = "-c:v libx264 -preset veryfast -crf 23";
-                        audioArgs = "-c:a aac -b:a 320k";
-                    }
-                    else
-                    {
-                        videoArgs = "-c:v copy";
-                        audioArgs = "-c:a aac -b:a 320k";
-                    }
+                    videoArgs = "-c:v copy";
+                    audioArgs = "-c:a aac -b:a 320k";
                 }
                 break;
             default:
@@ -147,44 +144,49 @@ internal static class VideoConverter
                 break;
         }
 
-        // 与渲染收尾（VideoEncoder.MuxWith）同策略：**不带 -movflags +faststart**。
-        // faststart 要求 moov 前置，而编码时它在文件末尾——ffmpeg 只能把整个成片
-        // 重写一遍搬过去。对本地文件它毫无收益（那是「边下边播」的 HTTP 场景的
-        // 优化），代价是几百 MB 的成片多一趟全量读写。mkv/webm 本就无此旗标。
         string args = "-y -i " + Quote(path) + " " + videoArgs + " " + audioArgs
-            + " " + Quote(targetPath);
-        bool ok = TryRun(exePath, args);
-        // 二次尝试仅用于同族 copy 被个别流卡住的情形（如 PCM 音频）；非同族分支已是 AAC，无需重试
-        if (!ok && audioArgs == "-c:a copy")
-        {
-            string retryArgs = "-y -i " + Quote(path) + " " + videoArgs + " -c:a aac -b:a 320k"
-                + " " + Quote(targetPath);
-            ok = TryRun(exePath, retryArgs);
-        }
+            + " " + Quote(partialPath);
+        string retryArgs = audioArgs == "-c:a copy"
+            ? "-y -i " + Quote(path) + " " + videoArgs + " -c:a aac -b:a 320k " + Quote(partialPath)
+            : null;
+        string fallbackArgs = target == VideoEncoder.OutContainer.Mov && (ext == ".mp4" || ext == ".mov")
+            ? MovConversionFallback.BuildH264MovArguments(path, partialPath)
+            : null;
+        Exception error;
+        bool ok = MovConversionFallback.TryConvert(
+            attempt => TryRun(exePath, attempt), args, retryArgs, fallbackArgs,
+            () => state.Messages.Add(Path.GetFileName(path) + ": AV1 video re-encoded to H.264 for MOV"),
+            out error, out _);
         if (!ok)
         {
-            // 失败清理：半截目标文件会被下次 File.Exists 判 “exists” 永久跳过。
-            // 注意所有失败路径（含无重试资格的 webm/AAC 分支）都必须落到这里，
-            // 否则会误计 Converted 并残留半截文件
-            try { File.Delete(targetPath); } catch { }
-            state.Failed++;
-            state.Messages.Add(Path.GetFileName(path));
-            return;
+            try { File.Delete(partialPath); } catch { }
+            throw error ?? new InvalidOperationException("conversion failed without an error");
+        }
+        try
+        {
+            // Move without overwrite is deliberate: a concurrent/newer output wins rather
+            // than being silently replaced by this background conversion.
+            File.Move(partialPath, targetPath);
+        }
+        catch
+        {
+            try { File.Delete(partialPath); } catch { }
+            throw;
         }
         state.Converted++;
     }
 
-    private static bool TryRun(string exePath, string arguments)
+    private static Exception TryRun(string exePath, string arguments)
     {
         try
         {
             VideoEncoder.RunAndWait(exePath, arguments);
-            return true;
+            return null;
         }
         catch (Exception ex)
         {
             Debug.Log("[SpectreReplay] video convert attempt failed: " + ex.Message);
-            return false;
+            return ex;
         }
     }
 

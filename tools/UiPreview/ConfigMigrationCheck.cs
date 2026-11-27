@@ -24,7 +24,7 @@ namespace UiPreview
         private static readonly (string oldKey, string newKey, JTokenType kind)[] Map =
         {
             ("RecordingOn",   "ReplayOn",             JTokenType.Boolean),
-            ("RenderOn",      "RenderOn",             JTokenType.Boolean),
+            ("RenderOn",      "render_on",            JTokenType.Boolean),
             ("AsyncInput",    "GetDataFromAsyncInput",JTokenType.Boolean),
             ("AutoSave",      "AutoSave",             JTokenType.Boolean),
             ("SaveKey",       "save_button",          JTokenType.Integer),
@@ -211,7 +211,7 @@ namespace UiPreview
                 {
                     if (!before.ContainsKey(oldKey)) continue;
                     JToken got = null;
-                    if (kind == JTokenType.Boolean) got = work["Sets"]?[newKey];
+                    if (kind == JTokenType.Boolean && newKey != "render_on") got = work["Sets"]?[newKey];
                     else got = work["Ints"]?[newKey];
                     if (got == null)
                     {
@@ -250,7 +250,11 @@ namespace UiPreview
             {
                 var t = json[oldKey];
                 if (t == null) continue;
-                if (kind == JTokenType.Boolean) sets[newKey] = t.Type == JTokenType.Boolean ? t : (JToken)false;
+                if (kind == JTokenType.Boolean)
+                {
+                    JObject target = newKey == "render_on" ? ints : sets;
+                    target[newKey] = t.Type == JTokenType.Boolean ? t : (JToken)false;
+                }
                 else ints[newKey] = t;
             }
             var od = json[OutputDirOldKey];

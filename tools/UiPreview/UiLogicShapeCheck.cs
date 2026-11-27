@@ -73,7 +73,7 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "④ 阻塞式目录选择框不许画在控件方法体里（必须 Defer 到 OnGUI 之外）",
                 "Pages\\Pages.cs",
-                s => s.Contains("MainThread.Defer(PickSaveDirDeferred)", StringComparison.Ordinal)
+                s => DefersPicker(s, "PickSaveDirDeferred")
                     && PickFolderNotInDrawingMethod(s, "DrawSaveDirRow"));
             // ④b 同一形态的第二个调用点（渲染输出目录的选择框在 OnGui 里）。
             //    一条判据只查一个文件就会漏掉后加的那处——所以每加一个
@@ -82,7 +82,7 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "④b 输出目录的选择框同样必须 Defer（不许出现在 RowInput 里）",
                 "Ui\\OnGui.cs",
-                s => s.Contains("MainThread.Defer(PickOutDirDeferred)", StringComparison.Ordinal)
+                s => DefersPicker(s, "PickOutDirDeferred")
                     && PickFolderNotInDrawingMethod(s, "RowInput"));
             // ⑤ 自绘输入框的底色必须**比承载它的卡片更亮**。
             //    2026-10-12 真事：我把 FieldBg 定成 (0.07,0.08,0.11)，而 CardBg 是
@@ -773,14 +773,14 @@ namespace UiPreview
                     && (MethodBody(s, "Switch") ?? "").Contains(
                         "14 * SwitchTexScale, 14 * SwitchTexScale", StringComparison.Ordinal));
             // 去特效预设（2026-11-08 用户要求「多配置」）：白名单必须恰好覆盖
-            // 25 个可预设开关（24 个 bool + 缩放值）。少一个 = 导入静默漏项，
+            // 26 个可预设项（25 个 bool + 缩放值）。少一个 = 导入静默漏项，
             // 多一个 = 有人把授权类开关（总开关/允许覆盖存盘）混了进来。
             // 另外钉住：应用按 settings 节走、文件名拒绝带路径、缩放值夹在
             // 滑条范围内、保存写 UTF-8 无 BOM（与 Configs.json 同口径）。
             fail += Check(projectRoot,
-                "去特效预设：白名单必须恰好覆盖 25 个开关，云同步/重命名/防路径必须接线",
+                "去特效预设：白名单必须恰好覆盖 26 个预设项，云同步/重命名/防路径必须接线",
                 "Features\\EffectRemover\\EffectPresets.cs",
-                s => CountOccurrences(s, "case \"EffectRemover") == 25
+                s => CountOccurrences(s, "case \"EffectRemover") == 26
                     && s.Contains("root[\"settings\"] as JObject", StringComparison.Ordinal)
                     && s.Contains("fileName == Path.GetFileName(fileName)", StringComparison.Ordinal)
                     && s.Contains("Mathf.Clamp((float)zoom.Value, 100f, 1000f)", StringComparison.Ordinal)
@@ -877,7 +877,7 @@ namespace UiPreview
                     // PumpInput 有无参包装与真泵两个重载，MethodBody 只认第一个，
                     // 所以这里按调用计数而不是按方法体收窄。Edge 恰好一处（泵）；
                     // 重建走 SeedHeld 播种净态——历史边沿会变成开局假雨。
-                    return CountOccurrences(s, "QuartzLiveBridge.Edge(num, ev.IsPressed);") == 1
+                    return CountOccurrences(s, "QuartzLiveBridge.Edge(aggregateVk, ev.IsPressed);") == 1
                         && CountOccurrences(s, "QuartzLiveBridge.SeedHeld();") == 1
                         && CountOccurrences(s, "QuartzLiveBridge.TryInstall();") == 1
                         && CountOccurrences(s, "QuartzLiveBridge.Shutdown();") == 1;
@@ -1287,12 +1287,12 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "㊴d 回放按键与跳转重建必须同步喂给 Quartz KeyViewer（它不读 ManagedInput/SkyHook）",
                 "Features\\Replay\\Runtime\\ReplayPlayer.cs",
-                s => s.Contains("RenderOverlayCapture.QuartzKey(num, ev.IsPressed)", StringComparison.Ordinal)
+                s => s.Contains("RenderOverlayCapture.QuartzKey(aggregateVk, ev.IsPressed)", StringComparison.Ordinal)
                     && s.Contains("RenderOverlayCapture.ResetQuartzKeys()", StringComparison.Ordinal)
                     && HasMethodSpan(s, "private static void RebuildHeldInputs(int restoreFrom = 0)",
                         "internal static void SyncQuartzHeld()", out string rebuildBody)
                     && rebuildBody.Contains("RenderOverlayCapture.ResetQuartzKeys()", StringComparison.Ordinal)
-                    && rebuildBody.Contains("RenderOverlayCapture.QuartzKey(num, ev.IsPressed)", StringComparison.Ordinal));
+                    && rebuildBody.Contains("RenderOverlayCapture.QuartzKey(vk, true)", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "㊴e SeekToTime 必须复用同一份按键重建（跳转中途按下/抬起不能只改一端）",
                 "Features\\Replay\\Runtime\\ReplayPlayer.cs",
@@ -1304,7 +1304,7 @@ namespace UiPreview
                 s => HasMethodSpan(s, "private static void PumpInput(double songPosition",
                     "internal static bool ReplayHitOld",
                     out string pumpBody)
-                    && pumpBody.Contains("RenderOverlayCapture.QuartzKey(num, ev.IsPressed)", StringComparison.Ordinal));
+                    && pumpBody.Contains("RenderOverlayCapture.QuartzKey(aggregateVk, ev.IsPressed)", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "㊴g 首帧必须在 Quartz 丢弃初始化队列后重新补按住键，且先于 Grab",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
@@ -1488,10 +1488,11 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "回读失败必须引用保留上一帧顶替而非黑帧（零每帧拷贝）",
                 "Features\\VideoRender\\Pipeline\\VideoFrameSource.cs",
-                s => IndexBefore(s, "data.CopyTo(pixels);", "heldFrame = pixels;")
-                    && IndexBefore(s, "RetireHeld();", "pixels = Rent();")
-                    && s.Contains("if (pixels == heldFrame)", StringComparison.Ordinal)
-                    && s.Contains("Buffer.BlockCopy(heldFrame, 0, pixels, 0, frameBytes);", StringComparison.Ordinal));
+                s => IndexBefore(s, "pixels = buffers.RentForFrame(frameBytes);", "data.CopyTo(pixels);")
+                    && s.Contains("buffers.RecycleOrHold(pixels);", StringComparison.Ordinal)
+                    && s.Contains("buffers.TryRentSubstitute(frameBytes, out byte[] source, out pixels)", StringComparison.Ordinal)
+                    && s.Contains("Buffer.BlockCopy(source, 0, pixels, 0, frameBytes);", StringComparison.Ordinal)
+                    && s.Contains("finally { buffers.ReleaseSubstituteSource(source); }", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "回读顶替统计必须进完成日志",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
@@ -1503,7 +1504,8 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "成功帧回收必须走 RecycleOrHold（保留帧不提前回池）",
                 "Features\\VideoRender\\Pipeline\\VideoRenderJob.cs",
-                s => s.Contains("encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold,", StringComparison.Ordinal)
+                s => s.Contains("pendingRecycle = frames.RecycleOrHold", StringComparison.Ordinal)
+                    && s.Contains("encoder.TrySubmit(pendingPixels, pendingPixels.Length, 1, pendingRecycle", StringComparison.Ordinal)
                     && !s.Contains("frames.Recycle,", StringComparison.Ordinal));
             // 渲染期歌曲排程推迟（2026-11-08 用户实测：画面源冷启动 1.3s 实时
             // 烧掉剩余倒计时，成片从歌曲 0 拍开始，倒计时整段丢失）。三条硬序：
@@ -1827,10 +1829,10 @@ namespace UiPreview
                 s => IndexBefore(s, "probe.BeginErrorReadLine();", "probe.WaitForExit(15000)"));
             fail += Check(projectRoot,
                 "52b RunAndWait 的 stderr 必须有锁和 8KB 上限，退出后无参 WaitForExit 排尾",
-                "Features\\VideoRender\\Pipeline\\VideoEncoder.cs",
+                "Features\\VideoRender\\Pipeline\\CancellableProcessRunner.cs",
                 s => s.Contains("if (stderr.Length > 8192)", StringComparison.Ordinal)
-                    && s.Contains("lock (stderrLock) { tail = stderr.ToString(); }", StringComparison.Ordinal)
-                    && s.Contains("mux.WaitForExit();", StringComparison.Ordinal));
+                    && s.Contains("lock (stderrLock) stderrText = stderr.ToString();", StringComparison.Ordinal)
+                    && s.Contains("process.WaitForExit();", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "52c ffmpeg 必须启动前验能力——Locate 过滤坏候选，渲染/转换/ UI 三门统一 VerifyEncoder",
                 "Features\\VideoRender\\Pipeline\\VideoEncoder.cs",
@@ -1838,12 +1840,13 @@ namespace UiPreview
                 + Check(projectRoot,
                 "52c 渲染启动门必须 VerifyEncoder",
                 "Features\\VideoRender\\Pipeline\\VideoRender.cs",
-                s => s.Contains("if (!VideoEncoder.VerifyEncoder(encoderPath))", StringComparison.Ordinal))
+                s => s.Contains("probe.State != VideoEncoder.ProbeState.Ready", StringComparison.Ordinal)
+                    && s.Contains("string encoderPath = probe.Path", StringComparison.Ordinal))
                 + Check(projectRoot,
                 "52c UI 的就绪显示与转换门必须 VerifyEncoder",
-                "Pages\\Pages.cs",
-                s => s.Contains("bool ready = VideoEncoder.VerifyEncoder(exe);", StringComparison.Ordinal)
-                    && s.Contains("if (!VideoEncoder.VerifyEncoder(ff))", StringComparison.Ordinal));
+                "Pages\\RenderPage.cs",
+                s => s.Contains("bool ready = probe.State == VideoEncoder.ProbeState.Ready", StringComparison.Ordinal)
+                    && s.Contains("probe.State == VideoEncoder.ProbeState.Pending", StringComparison.Ordinal));
 
             // 录制中补丁看门狗（2026-11-07 空回放事故）：「录制前核对」与首个
             // 命中之间存在被 JAPatcher 重写的窗口，泵前缀必须低频复核并在缺失
@@ -1883,7 +1886,7 @@ namespace UiPreview
             fail += Check(projectRoot,
                 "回放载入与卸载必须接通时间轴状态",
                 "Features\\Replay\\Runtime\\ReplayManager.cs",
-                s => s.Contains("TimelineController.Load(replayData, null);", StringComparison.Ordinal)
+                s => s.Contains("TimelineController.Load(loaded, null);", StringComparison.Ordinal)
                     && s.Contains("TimelineController.Clear();", StringComparison.Ordinal));
             fail += Check(projectRoot,
                 "回放必须支持任意歌曲时间 seek",
@@ -2972,6 +2975,15 @@ namespace UiPreview
         /// 不信（与"不许出现 X"那几条相反，这里是"必须出现在 Y 里"，找不到
         /// 就是接线断了，而不是"没问题"）。
         /// </summary>
+        // 同时接受旧的方法组和捕获版本戳的延迟调用；不能只搜 picker 名称，
+        // 否则直接在 OnGUI 同步调用它也会被误认为已延后。
+        private static bool DefersPicker(string code, string picker)
+        {
+            string name = System.Text.RegularExpressions.Regex.Escape(picker);
+            return System.Text.RegularExpressions.Regex.IsMatch(code,
+                @"MainThread\.Defer\(\s*(?:" + name + @"\s*|\(\s*\)\s*=>\s*" + name + @"\(\s*\w+\s*\))\s*\)");
+        }
+
         private static bool PickFolderNotInDrawingMethod(string code, string drawingMethod)
         {
             string[] lines = code.Replace("\r\n", "\n").Split('\n');
@@ -3064,13 +3076,25 @@ namespace UiPreview
         /// </summary>
         private static bool SliderValueIsEditable(string code)
         {
-            string body = MethodBody(code, "RowSlider");
-            if (body == null) return false;
-            return body.Contains(".Draw(", StringComparison.Ordinal)
-                && body.Contains("GetField(", StringComparison.Ordinal)
-                && body.Contains("NumberOf(", StringComparison.Ordinal)
-                // 不许退回内建输入框（它会沿用 ADOFAI 深色皮肤，同判据 ②）
-                && !body.Contains("GUILayout.TextField", StringComparison.Ordinal);
+            string row = MethodBody(code, "RowSlider");
+            string modern = MethodBody(code, "ModernSlider");
+            string draw = MethodBody(code, "DrawSliderField");
+            string register = MethodBody(code, "RegisterSliderField");
+            string commit = MethodBody(code, "Commit");
+            if (row == null || modern == null || draw == null || register == null || commit == null) return false;
+            // 两种布局必须接到同一真实提交链，不能靠别处一个闲置 Draw/GetField 蒙混过关。
+            const string Call = "DrawSliderField(labelKey, field, value, now, min, max, fmt, onChange)";
+            return row.Contains(Call, StringComparison.Ordinal) && modern.Contains(Call, StringComparison.Ordinal)
+                && draw.Contains("RegisterSliderField(key, value, min, max, format, changed)", StringComparison.Ordinal)
+                && draw.Contains("TextField field = draft.Field;", StringComparison.Ordinal)
+                && draw.Contains("field.Draw(", StringComparison.Ordinal)
+                && draw.Contains("draft.Commit(field.Text)", StringComparison.Ordinal)
+                && register.Contains("Field = GetField(key)", StringComparison.Ordinal)
+                // 无论解析成功与否都归一化显示；失败不调用 Apply，保留当前值。
+                && commit.Contains("if (TryParse(text, out float typed)) Apply(Mathf.Clamp(typed, Min, Max));", StringComparison.Ordinal)
+                && commit.Contains("Field.Text = NumberOf(Format(Value));", StringComparison.Ordinal)
+                && !row.Contains("GUILayout.TextField", StringComparison.Ordinal)
+                && !draw.Contains("GUILayout.TextField", StringComparison.Ordinal);
         }
 
         /// <summary>

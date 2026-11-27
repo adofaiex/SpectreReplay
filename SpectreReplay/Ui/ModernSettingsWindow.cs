@@ -103,6 +103,7 @@ namespace SpectreReplay.Ui
             _instance = null;
             _open = false;
             _closing = false;
+            OnGui.CancelPendingInteraction();
             Gui.ViewportOverride = null;
             UiInputBlock.Clear();
             UiInputBlock.Destroy();
@@ -132,7 +133,7 @@ namespace SpectreReplay.Ui
                 // 关闭请求已发出后，挡板必须持续撤除，不能等动画结束。
                 UiInputBlock.Clear();
             }
-            if (Input.GetKeyDown(KeyCode.Escape) && OnGui.CapturingTarget == 0)
+            if (Input.GetKeyDown(KeyCode.Escape) && !OnGui.HandleEscape())
             {
                 SetOpen(false);
             }
@@ -239,6 +240,8 @@ namespace SpectreReplay.Ui
                 // DrawWindow 仍会重新 Place，状态和实际鼠标行为会短暂分叉。
                 _open = false;
                 _closing = true;
+                OnGui.CommitText();
+                OnGui.CancelPendingInteraction();
                 UiInputBlock.Clear();
             }
         }
@@ -682,9 +685,11 @@ namespace SpectreReplay.Ui
             // 固定不动，只有下面的内容滑入）。条本身仍占一行高度，内容区
             // 从它下面开始。
             float subTop = HeaderH + TabH + 4f;
-            DrawSubTabs(new Rect(18f, subTop, area.width - 36f, Gui.SegmentTabsH));
+            int failures = OnGui.PatchFailuresPublic;
+            float subHeight = Gui.SegmentTabsH + (failures > 0 ? 32f : 0f);
+            DrawSubTabs(new Rect(18f, subTop, area.width - 36f, subHeight), failures);
 
-            float top = subTop + Gui.SegmentTabsH + 8f;
+            float top = subTop + subHeight + 8f;
             float bottom = area.height - FooterH;
             float pageEase = EaseOut(_pageT);
             float subEase = EaseOut(_subPageT);
@@ -732,12 +737,12 @@ namespace SpectreReplay.Ui
         }
 
         /// <summary>二级页签条：窗口层画，固定不动。交互复用 Gui.SegmentTabs。</summary>
-        private void DrawSubTabs(Rect area)
+        private void DrawSubTabs(Rect area, int failures)
         {
             GUILayout.BeginArea(area);
             try
             {
-                DrawPatchWarningIfAny();
+                DrawPatchWarningIfAny(failures);
                 int sub = Gui.SegmentTabs(
                     OnGui.SubTabLabelsFor(OnGui.CurrentTab), OnGui.CurrentSubTab, "subtab");
                 // 点击帧：SegmentTabs 返回的 sub 与当前不同时，把二级动画拉回
@@ -759,18 +764,18 @@ namespace SpectreReplay.Ui
             }
         }
 
-        private void DrawPatchWarningIfAny()
+        private void DrawPatchWarningIfAny(int failures)
         {
             // PatchWarning 是稀有的（补丁挂载失败才出现），为了不把 OnGui 的
             // 私有方法一个个翻成 internal，这里用同样式的本地副本。
             // 正常情况下（PatchFailures=0）它什么都不画，不占布局。
-            if (OnGui.PatchFailuresPublic <= 0) return;
+            if (failures <= 0) return;
             GUILayout.Space(4f);
             Rect r = GUILayoutUtility.GetRect(1f, 24f, GUILayout.ExpandWidth(true));
             Gui.Fill(r, new Color(Gui.BadCol.r, Gui.BadCol.g, Gui.BadCol.b, 0.18f));
             Gui.Frame(r, new Color(Gui.BadCol.r, Gui.BadCol.g, Gui.BadCol.b, 0.6f));
             Gui.Text(new Rect(r.x + 10f, r.y, r.width - 16f, r.height),
-                Loc.T("ui.patchfailed") + "  (" + OnGui.PatchFailuresPublic + ")",
+                Loc.T("ui.patchfailed") + "  (" + failures + ")",
                 Gui.BadCol, Gui.BoldStyle);
             GUILayout.Space(4f);
         }

@@ -1,6 +1,14 @@
 {
   "lang": "zh-t",
   "entries": {
+    "render.video.rate_unsupported": "当前平台无法保持背景视频速度 {0:0.######}×，已停止渲染以避免错速。",
+    "render.video.speed_control_unavailable": "当前平台不支持背景视频调速，已停止渲染以避免错速。",
+    "status.loaded_disabled": "已裝載 {0}，但總開關未啟用；請先在錄製頁啟用，重新開始關卡才會播放。",
+    "status.loaded_disabled_nosound": "已裝載 {0}，但總開關未啟用且缺少鍵盤音；請先在錄製頁啟用，重新開始關卡才會播放。",
+    "playback.cloud.partial": "雲端操作部分完成：{0}",
+    "playback.cloud.partial.detail": "成功 {0}，失敗 {1}；{2}",
+    "render.ffmpeg.probing": "正在背景檢查編碼器，請稍後再試。",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "錄製",
     "page.playback": "回放",
     "page.render": "影片渲染",

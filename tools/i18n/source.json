@@ -2609,6 +2609,46 @@
   "en": "Upload failed (the cloud may be full or temporarily unwritable)."
  },
  {
+  "key": "status.loaded_disabled",
+  "zh": "已装载 {0}，但总开关未启用；请先在录制页启用，重开关卡才会播放。",
+  "en": "Loaded {0}, but the master switch is off. Enable it on the Record page before restarting the level to play."
+ },
+ {
+  "key": "status.loaded_disabled_nosound",
+  "zh": "已装载 {0}，但总开关未启用且键盘音缺失；请先在录制页启用，重开关卡才会播放。",
+  "en": "Loaded {0}, but the master switch is off and keyboard audio is missing. Enable it on the Record page before restarting the level to play."
+ },
+ {
+  "key": "playback.cloud.partial",
+  "zh": "云端操作部分完成：{0}",
+  "en": "Cloud operation partially completed: {0}"
+ },
+ {
+  "key": "playback.cloud.partial.detail",
+  "zh": "成功 {0}，失败 {1}；{2}",
+  "en": "Succeeded: {0}; failed: {1}; {2}"
+ },
+ {
+  "key": "render.ffmpeg.probing",
+  "zh": "正在后台检查编码器，请稍后再试。",
+  "en": "Checking the encoder in the background. Please try again shortly."
+ },
+ {
+  "key": "render.video.rate_unsupported",
+  "zh": "当前平台无法保持背景视频速度 {0:0.######}×，已停止渲染以避免错速。",
+  "en": "This platform cannot preserve the background-video speed of {0:0.######}×. Rendering stopped to avoid an incorrect speed."
+ },
+ {
+  "key": "render.video.speed_control_unavailable",
+  "zh": "当前平台不支持背景视频调速，已停止渲染以避免错速。",
+  "en": "This platform cannot control background-video speed. Rendering stopped to avoid an incorrect speed."
+ },
+ {
+  "key": "playback.judge.perfect",
+  "zh": "完美 {0}",
+  "en": "Perfect {0}"
+ },
+ {
   "key": "playback.cloud.cfg.err.other",
   "zh": "出了点问题，细节见日志。",
   "en": "Something went wrong; see the log for details."

@@ -112,12 +112,14 @@ internal static class KeyboardSimulation
                 _dllMissing = true;
             }
         }
-        for (int i = 0; i < pbKeyState.Length; i++)
+        Array.Clear(pbKeyState, 0, pbKeyState.Length);
+        foreach (KeyCode key in Enum.GetValues(typeof(KeyCode)))
         {
-            bool down;
-            try { down = Input.GetKey((KeyCode)i); }
-            catch { down = false; }
-            pbKeyState[i] = (byte)(down ? 0x80 : 0x00);
+            // Unity 的字母/方向键/修饰键不在 VK 编码域；与 API/热键桥共用同源转换。
+            ushort vk = KeyViewerBridge.ToNativeVk(key);
+            if (vk == 0 || vk >= pbKeyState.Length) continue;
+            try { if (Input.GetKey(key)) pbKeyState[vk] = 0x80; }
+            catch { /* 未支持的 Unity 键不影响其它键的采样。 */ }
         }
     }
 

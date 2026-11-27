@@ -42,6 +42,10 @@
          ReplayData.cs 上有 KeybdAudioBlob 属性，漏链就是把“编译失败”留给下游。 -->
     <Compile Include="..\..\SpectreReplay\Features\Replay\Data\KeybdAudioBlob.cs" Link="Real\KeybdAudioBlob.cs" />
     <Compile Include="..\..\SpectreReplay\Features\Replay\Codec\KeybdAudioCodec.cs" Link="Real\KeybdAudioCodec.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\Replay\Codec\WavAudioTransform.cs" Link="Real\WavAudioTransform.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\Replay\Codec\MicrophoneDevicePolicy.cs" Link="Real\MicrophoneDevicePolicy.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\VideoRender\Pipeline\CancellableProcessRunner.cs" Link="Real\CancellableProcessRunner.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\VideoRender\Pipeline\CancellableWait.cs" Link="Real\CancellableWait.cs" />
     <!-- 逐份回放的键盘音覆盖值。Replay.cs / ReplayData.cs / 编解码器都引用它，
          漏链就是编译错误（正是要的失败方式）——它同时被 KeybdPrefsCheck 拿去做往返。 -->
     <Compile Include="..\..\SpectreReplay\Features\Replay\Data\KeybdPrefs.cs" Link="Real\KeybdPrefs.cs" />
@@ -59,6 +63,7 @@
     <Compile Include="..\..\SpectreReplay\Features\Replay\Codec\ReplayCrypto.cs" Link="Real\ReplayCrypto.cs" />
     <Compile Include="..\..\SpectreReplay\Features\Replay\Data\ReplayData.cs" Link="Real\ReplayData.cs" />
     <Compile Include="..\..\SpectreReplay\State\RecordingStop.cs" Link="Real\RecordingStop.cs" />
+    <Compile Include="..\..\SpectreReplay\Features\Replay\Runtime\ReplaySaveOperation.cs" Link="Real\ReplaySaveOperation.cs" />
     <Compile Include="..\..\SpectreReplay\Features\Replay\Timeline\ReplayTimeline.cs" Link="Real\ReplayTimeline.cs" />
     <!-- 回放命中推进兜底（重判窗口比录制时窄时把角度收进窗口边缘）：纯算术、不碰
          UnityEngine，所以闸门能链接真源码跑断言（HitAdvanceGuardCheck），而不是

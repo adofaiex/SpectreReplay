@@ -292,13 +292,8 @@ namespace SpectreReplay.Pages
             try
             {
                 var container = (VideoEncoder.OutContainer)Mathf.Clamp(RenderOutputFormat, 0, 3);
-                bool hdr10 = RenderOutputPolicy.Hdr10Enabled(
-                    RenderHdr10, RenderCaptureMode, RenderVideoCodec, RenderOutputFormat);
-                string name = Features.VideoRender.VideoRender.Job?.ActualEncoder ?? VideoEncoder.DescribeEncoder(
-                    container,
-                    (VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 2),
-                    (VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4),
-                    Render10Bit || hdr10, hdr10);
+                VideoEncoder.ProbeSnapshot probe = VideoEncoder.ReadProbeSnapshot();
+                string name = Features.VideoRender.VideoRender.Job?.ActualEncoder ?? probe.Encoder;
                 Gui.KeyValue("render.codec.current", name, Gui.DimCol);
                 if (name.Contains("amf", StringComparison.Ordinal) && RenderRateControl == 1)
                     Gui.KeyValue("render.rate_control", "CRF → CQP", Gui.DimCol);
@@ -317,13 +312,11 @@ namespace SpectreReplay.Pages
                         RenderHardware == 2 ? "QSV" : "AMF"));
                 }
 
-                string exe = VideoEncoder.LocateEncoder();
-                // 统一走能力校验（-version，缓存）：本地坏 ffmpeg.exe 不再被
-                // File.Exists 误报成「就绪」。
-                bool ready = VideoEncoder.VerifyEncoder(exe);
+                bool ready = probe.State == VideoEncoder.ProbeState.Ready;
+                bool pending = probe.State == VideoEncoder.ProbeState.Pending;
                 Gui.KeyValue("render.ffmpeg",
-                    Loc.T(ready ? "render.ffmpeg.ready" : "render.ffmpeg.missing"),
-                    ready ? Gui.OkCol : Gui.BadCol);
+                    Loc.T(pending ? "render.ffmpeg.probing" : ready ? "render.ffmpeg.ready" : "render.ffmpeg.missing"),
+                    pending ? Gui.DimCol : ready ? Gui.OkCol : Gui.BadCol);
             }
             catch (Exception ex)
             {
@@ -394,14 +387,16 @@ namespace SpectreReplay.Pages
                     Status.Warn("convert.err.no_dir");
                     return;
                 }
-                string ff = VideoEncoder.LocateEncoder();
-                if (!VideoEncoder.VerifyEncoder(ff))
+                VideoEncoder.WarmUp(forConversion: true);
+                VideoEncoder.ProbeSnapshot probe = VideoEncoder.ReadProbeSnapshot();
+                if (probe.State != VideoEncoder.ProbeState.Ready)
                 {
-                    Status.Warn("convert.err.no_ffmpeg");
+                    Status.Warn(probe.State == VideoEncoder.ProbeState.Pending
+                        ? "render.ffmpeg.probing" : "convert.err.no_ffmpeg");
                     return;
                 }
                 _convertState = VideoConverter.Start(dir,
-                    (VideoEncoder.OutContainer)Mathf.Clamp(ConvertTarget, 0, 3), ff);
+                    (VideoEncoder.OutContainer)Mathf.Clamp(ConvertTarget, 0, 3), probe.Path);
             }
             catch (Exception ex)
             {

@@ -63,53 +63,52 @@ internal static class ReplayCrypto
 
     internal static byte[] Encrypt(byte[] plainText)
     {
-        if (plainText == null)
-        {
-            Debug.Log("Encrypt Error: null input");
-            return null;
-        }
-        try
-        {
-            byte[] salt = new byte[SaltLen];
-            byte[] iv = new byte[IVLen];
-            using (var rng = RandomNumberGenerator.Create())
-            {
-                // 每文件都重新取：盐与 IV 一旦复用，确定性缺陷立刻回来。
-                rng.GetBytes(salt);
-                rng.GetBytes(iv);
-            }
-
-            Derive(salt, IterationsV3, out byte[] encKey, out byte[] macKey);
-
-            byte[] cipherText;
-            using (Aes aes = Aes.Create())
-            {
-                aes.Key = encKey;
-                aes.IV = iv;
-                using MemoryStream ms = new MemoryStream();
-                using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
-                    cs.Write(plainText, 0, plainText.Length);
-                cipherText = ms.ToArray();
-            }
-
-            byte[] mac = ComputeMac(macKey, VersionV3, IterationsV3, salt, iv, cipherText);
-
-            byte[] output = new byte[HeaderLenV3 + cipherText.Length];
-            int p = 0;
-            Buffer.BlockCopy(Magic, 0, output, p, Magic.Length); p += Magic.Length;
-            output[p++] = VersionV3;
-            WriteInt32(output, p, IterationsV3); p += 4;
-            Buffer.BlockCopy(salt, 0, output, p, SaltLen); p += SaltLen;
-            Buffer.BlockCopy(iv, 0, output, p, IVLen); p += IVLen;
-            Buffer.BlockCopy(mac, 0, output, p, MacLen); p += MacLen;
-            Buffer.BlockCopy(cipherText, 0, output, p, cipherText.Length);
-            return output;
-        }
+        try { return EncryptCore(plainText); }
         catch (Exception ex)
         {
             Debug.Log("Encrypt Error: " + ex.Message);
             return null;
         }
+    }
+
+    // 后台保存只走纯核心：异常交回完成观察器在主线程记录，不能在工作线程调用 Unity 日志。
+    internal static byte[] EncryptCore(byte[] plainText)
+    {
+        if (plainText == null) throw new ArgumentNullException(nameof(plainText));
+        byte[] salt = new byte[SaltLen];
+        byte[] iv = new byte[IVLen];
+        using (var rng = RandomNumberGenerator.Create())
+        {
+            // 每文件都重新取：盐与 IV 一旦复用，确定性缺陷立刻回来。
+            rng.GetBytes(salt);
+            rng.GetBytes(iv);
+        }
+
+        Derive(salt, IterationsV3, out byte[] encKey, out byte[] macKey);
+
+        byte[] cipherText;
+        using (Aes aes = Aes.Create())
+        {
+            aes.Key = encKey;
+            aes.IV = iv;
+            using MemoryStream ms = new MemoryStream();
+            using (CryptoStream cs = new CryptoStream(ms, aes.CreateEncryptor(), CryptoStreamMode.Write))
+                cs.Write(plainText, 0, plainText.Length);
+            cipherText = ms.ToArray();
+        }
+
+        byte[] mac = ComputeMac(macKey, VersionV3, IterationsV3, salt, iv, cipherText);
+
+        byte[] output = new byte[HeaderLenV3 + cipherText.Length];
+        int p = 0;
+        Buffer.BlockCopy(Magic, 0, output, p, Magic.Length); p += Magic.Length;
+        output[p++] = VersionV3;
+        WriteInt32(output, p, IterationsV3); p += 4;
+        Buffer.BlockCopy(salt, 0, output, p, SaltLen); p += SaltLen;
+        Buffer.BlockCopy(iv, 0, output, p, IVLen); p += IVLen;
+        Buffer.BlockCopy(mac, 0, output, p, MacLen); p += MacLen;
+        Buffer.BlockCopy(cipherText, 0, output, p, cipherText.Length);
+        return output;
     }
 
     internal static byte[] Decrypt(byte[] cipherText)

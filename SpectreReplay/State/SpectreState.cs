@@ -217,10 +217,12 @@ public static class SpectreState
     {
         internal static void SwitchToPlayMode()
         {
+            // Do not clear the flags directly: Stop owns the restoration, key releases,
+            // recording save, and public stop events for the old session.
+            StopPlaying();
+            StopRecording();
             PlayMode = true;
             RecordMode = false;
-            is_playing = false;
-            is_recording = false;
             HitLocked = false;
             PendingSave = false;
             LateSaveMode = false;
@@ -231,11 +233,11 @@ public static class SpectreState
 
         internal static void SwitchToRecordMode()
         {
+            StopPlaying();
+            StopRecording();
             HitLocked = false;
             PlayMode = false;
             RecordMode = true;
-            is_playing = false;
-            is_recording = false;
             PendingSave = false;
             LateSaveMode = false;
             PlayIndex = 0;
@@ -287,25 +289,21 @@ public static class SpectreState
         internal static void StartPlaying()
         {
             bool wasPlay = is_playing;
-            bool wasRec = is_recording;
+            // A mode flag is not a substitute for the recorder's Stop path: it owns
+            // the pending save and must finish before playback takes the session.
+            StopRecording();
             ReplayPlayer.Start();
             if (!wasPlay && is_playing)
-            {
-                if (wasRec) SpectreAPI.RaiseRecordingStopped();
                 SpectreAPI.RaisePlaybackStarted();
-            }
         }
 
         internal static void StartRecording()
         {
             bool wasRec = is_recording;
-            bool wasPlay = is_playing;
+            StopPlaying();
             ReplayRecorder.Start();
             if (!wasRec && is_recording)
-            {
-                if (wasPlay) SpectreAPI.RaisePlaybackStopped();
                 SpectreAPI.RaiseRecordingStarted();
-            }
         }
 
         internal static void StopRecording()
@@ -530,196 +528,118 @@ public static class SpectreState
             }
             return false;
         }
-        var audioStop = data.KeybdSoundStop;
-        if (!without_sound && audioStop != null && !audioStop.IsCompleted)
+        if (data.SaveOperation != null) return true;
+        var owner = data;
+        var snapshot = data.SnapshotForSave();
+        snapshot.FileName ??= CreateFileName();
+        string safeName = retry ? snapshot.FileName : CreateFileName(safe_mode: true);
+        bool noEncryption = debug_no_encryption;
+        bool compact = Settings.KeybdSoundCompact;
+        string backupDirectory = Settings.Backup ? Path.Combine(Main.mod.Path, "backup") : null;
+        var audioStop = snapshot.KeybdSoundStop;
+        if (audioStop != null && audioStop.SaveQueued) return true;
+        var operation = new ReplaySaveOperation(snapshot, saveDirectory, safeName,
+            noEncryption, !without_sound, compact, backupDirectory);
+        // 等封头期间就占好本局令牌；回调晚于 Reset 时不能覆盖下一局的作业标记。
+        owner.SaveOperation = operation;
+        operation.Accept(); // 等待录音封头也属于已接受的保存，退出门不能漏掉。
+        bool queued = false;
+        bool queueFailed = false;
+        Action<string> queue = hash =>
         {
-            if (!audioStop.SaveQueued)
+            if (queued) return;
+            queued = true;
+            bool audioMissing = !without_sound && audioStop != null && string.IsNullOrEmpty(hash);
+            if (audioStop != null)
             {
-                var snapshot = data.SnapshotForSave();
-                snapshot.FileName ??= CreateFileName();
-                audioStop.SaveQueued = true;
-                audioStop.WhenCompleted(_ => SaveFile(without_sound, retry, notify, snapshot, saveDirectory));
-                Debug.Log("[SpectreReplay] 已排队保存回放，等待录音封头完成: " + snapshot.FileName);
+                snapshot.KeybdSoundHash = hash;
+                if (audioMissing) snapshot.KeybdSoundFileName = null;
             }
-            // 已接收保存请求；下一局可以 Reset 当前数据，独立快照负责这次保存。
-            return true;
-        }
-        string message = "";
-        if (audioStop != null && audioStop.IsCompleted)
-        {
-            data.KeybdSoundHash = audioStop.Hash;
-            if (string.IsNullOrEmpty(audioStop.Hash))
-            {
-                data.KeybdSoundFileName = null;
-                message += LocalizationManager.GetLocalizedText("note.keybdsoundfile_save_fail") + "\n";
-            }
-        }
-        bool success = true;
-        string savedPath = null;
-        if (retry)
-        {
-            data.FileName = CreateFileName(safe_mode: true);
-            if (data.KeybdSoundFileName != null)
-                data.KeybdSoundFileName = data.FileName + ".wav";
-        }
-        // 旧字典版用 ContainsKey 判存在：空串算“有值”。这里必须是 == null，不能换成 IsNullOrEmpty。
-        string fileName = data.FileName == null ? CreateFileName() : data.FileName;
-        string savePath = Path.Combine(saveDirectory, fileName);
-        if (ReplayManager.SaveReplay(data, savePath, debug_no_encryption, embedKeybdSound: !without_sound))
-        {
-            message += LocalizationManager.GetLocalizedText("note.save_success") + "\n";
-            savedPath = savePath;
-        }
-        else
-        {
-            message += LocalizationManager.GetLocalizedText("note.save_fail") + savePath + "\n";
-            success = false;
-        }
-        // 音频已经压进回放本体时，**不再保留旁挂 wav**：两份内容完全相同，
-        // 留一份会让磁盘与云端体积直接翻倍，而这正是「彻底融入」要消灭的东西。
-        // 代价是老版本模组读新回放会没有声音（画面照常），这是可接受的单向升级。
-        bool soundEmbedded = data.KeybdAudio.HasData;
-        string tmpPath = Path.Combine(saveDirectory, "tmp.wav");
-        // 只在主文件真的写成功后才清理：写失败会走 retry 重存一次，
-        // 那时还指望 tmp.wav 里的音频，先删了就等于把声音弄丢。
-        if (soundEmbedded && savedPath != null)
-        {
+            // 独立于可卸载 MainThread 泵，已接受保存不会因关闭模组丢失完成观察。
+            GameObject go = null;
             try
             {
-                if (File.Exists(tmpPath)) File.Delete(tmpPath);
+                go = new GameObject("SpectreReplay.SaveCompletion");
+                Object.DontDestroyOnLoad(go);
+                var observer = go.AddComponent<SaveCompletion>();
+                observer.Operation = operation;
+                observer.Owner = owner;
+                observer.Notify = notify;
+                observer.AudioMissing = audioMissing;
+                operation.Start();
             }
             catch (Exception ex)
             {
-                // 删不掉只是多占一份磁盘，不该让保存提示变成失败
-                Debug.Log("[SpectreReplay] 清理 tmp.wav 失败（音频已嵌入回放）: " + ex.Message);
+                queueFailed = true;
+                operation.Release();
+                if (ReferenceEquals(owner.SaveOperation, operation)) owner.SaveOperation = null;
+                if (audioStop != null) audioStop.SaveQueued = false;
+                if (go != null) Object.Destroy(go);
+                Debug.LogWarning("[SpectreReplay] 无法排队保存（录音仍保留）: " + ex);
+                if (notify) TriggerMessage(LocalizationManager.GetLocalizedText("note.save_fail"));
             }
-        }
-        else if (!without_sound && data.KeybdSoundFileName != null)
+        };
+        if (audioStop != null)
         {
-            string keybdName = data.KeybdSoundFileName;
-            // 键存在但值为空串时（解码自外部/损坏的回放文件），Path.Combine 会退化成
-            // "目录\tmp.wav" 这样的路径：要么 File.Move 抛异常，要么把 tmp.wav 移到目录上。
-            // ReplayManager.TryLoadKeybdSound 已对同源问题做了这道判断，这里对齐。
-            if (string.IsNullOrEmpty(keybdName))
-            {
-                message += LocalizationManager.GetLocalizedText("note.keybdsoundfile_save_fail") + " (empty name)" + "\n";
-            }
-            else
-            {
-                string wavPath = Path.Combine(saveDirectory, keybdName);
-                try
-                {
-                    if (File.Exists(tmpPath))
-                    {
-                        if (File.Exists(wavPath))
-                        {
-                            File.Delete(wavPath);
-                        }
-                        File.Move(tmpPath, wavPath);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.Log(ex);
-                }
-                if (!File.Exists(wavPath))
-                {
-                    message += LocalizationManager.GetLocalizedText("note.keybdsoundfile_save_fail") + wavPath + "\n";
-                }
-            }
+            audioStop.SaveQueued = true;
+            audioStop.WhenCompleted(queue);
         }
-        // **备份放在 wav 处理之后**：回放的键盘音是按「与回放同目录的
-        // KeybdSoundFileName」找的（见 ReplayManager.TryLoadKeybdSound），
-        // 所以备份目录里也必须有一份同名 wav，否则备份出来的回放**静默没有键盘音**
-        // ——文件能开、能播，只是少了声音，玩家会以为原始录制就没录上。
-        // **主保存失败时不能走备份。** savedPath 只在 SaveReplay 成功时才赋值
-        // （上面声明为 null），失败时它仍是 null，而 `savedPath + mainExt` 在
-        // C# 里是**字符串拼接**、不是空引用异常——得到裸串 "sprp"。于是
-        // File.Copy 去开一个叫 sprp 的文件、抛 FileNotFoundException，被下面的
-        // catch 吞掉后再追加一条「备份失败」：用户看到主保存失败 + 备份失败
-        // 两条，真正的原因反而被噪声盖住。
-        // 备份的对象是「刚写好的主文件」，主文件不存在时它本就无从谈起。
-        if (Settings.Backup && savedPath != null)
-        {
-            string mainExt = debug_no_encryption
-                ? ReplayConstants.ExtensionNoEncrypt : ReplayConstants.Extension;
-            string backupDir = Path.Combine(Main.mod.Path, "backup");
-            string backupPath = Path.Combine(backupDir, fileName) + mainExt;
-            bool backupOk = false;
-            try
-            {
-                Directory.CreateDirectory(backupDir);
-                File.Copy(savedPath + mainExt, backupPath, true);
-                backupOk = true;
-            }
-            catch (Exception ex)
-            {
-                Debug.Log("[SpectreReplay] 备份回放失败：" + ex.Message);
-            }
-            if (!backupOk)
-            {
-                message += LocalizationManager.GetLocalizedText("note.save_fail") + "backup\n";
-            }
-            else if (!without_sound && !soundEmbedded
-                     && data.KeybdSoundFileName is string backupWav
-                     && !string.IsNullOrEmpty(backupWav))
-            {
-                // 同名 wav 复制过去。失败只提示、不算整局保存失败。
-                try
-                {
-                    string srcWav = Path.Combine(saveDirectory, backupWav);
-                    if (File.Exists(srcWav))
-                    {
-                        Directory.CreateDirectory(backupDir);
-                        string dstWav = Path.Combine(backupDir, backupWav);
-                        File.Copy(srcWav, dstWav, true);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.Log("[SpectreReplay] 备份键盘音失败：" + ex.Message);
-                }
-            }
-        }
-        // 事件放在伴生 wav 改名/备份之后：订阅者此刻能拿到完整的成套文件
-        if (savedPath != null)
-            SpectreAPI.RaiseReplaySaved(savedPath);
+        else queue(null);
+        // 与已有录音封头延迟保存一样：true 表示请求已接受；结果由主线程事件/通知发布。
+        return !queueFailed;
+    }
 
-        // Steam 云同步放在**事件之后**：外部订阅者不该被云这步挡住；
-        // 而云同步失败也只写一行日志，绝不能让玩家看到"保存失败"
-        // （本地文件这时已经写好了）。上传的是这一局最终的成套产物。
-        if (savedPath != null)
+    private sealed class SaveCompletion : MonoBehaviour
+    {
+        internal ReplaySaveOperation Operation;
+        internal ReplayData Owner;
+        internal bool Notify;
+        internal bool AudioMissing;
+
+        private void Update()
         {
+            var operation = Operation;
+            if (operation == null || !operation.IsCompleted) return;
+            Operation = null; // 事件回调重入也只能完成一次。
+            if (ReferenceEquals(Owner.SaveOperation, operation))
+            {
+                Owner.SaveOperation = null;
+                // 接受请求不等于写盘成功；旧作业也不能清掉新一局的待保存状态。
+                if (operation.Success && ReferenceEquals(data, Owner)) PendingSave = false;
+            }
+            operation.AllowRetry();
+            try { CompleteSave(operation, Notify, AudioMissing); }
+            finally
+            {
+                // 通知/云同步也必须在 Steam 退出前完成，不能在工作线程刚写完时放行退出。
+                operation.Release();
+                Object.Destroy(gameObject);
+            }
+        }
+    }
+
+    private static void CompleteSave(ReplaySaveOperation operation, bool notify, bool audioMissing)
+    {
+        if (operation.Error != null) Debug.LogWarning("[SpectreReplay] 保存收尾: " + operation.Error);
+        string message = (operation.Success
+            ? LocalizationManager.GetLocalizedText("note.save_success")
+            : LocalizationManager.GetLocalizedText("note.save_fail")) + "\n";
+        if (audioMissing || operation.AudioFailed)
+            message += LocalizationManager.GetLocalizedText("note.keybdsoundfile_save_fail") + "\n";
+        if (operation.BackupFailed)
+            message += LocalizationManager.GetLocalizedText("note.save_fail") + "backup\n";
+        if (operation.Success)
+        {
+            // 作业返回的是实际写出的完整路径，已包含格式后缀及安全名称重试结果。
+            SpectreAPI.RaiseReplaySaved(operation.SavedPath);
             try
             {
-                string cloudExt = debug_no_encryption
-                    ? ReplayConstants.ExtensionNoEncrypt : ReplayConstants.Extension;
-                string cloudWav = null;
-                if (!without_sound && !soundEmbedded
-                    && data.KeybdSoundFileName is string cloudWavName
-                    && !string.IsNullOrEmpty(cloudWavName))
-                {
-                    cloudWav = Path.Combine(saveDirectory, cloudWavName);
-                }
-                if (CloudReplay.OnReplaySaved(savedPath + cloudExt, cloudWav))
-                {
+                if (CloudReplay.OnReplaySaved(operation.SavedPath, operation.WavPath))
                     message += Ui.Loc.T("playback.cloud.saved") + "\n";
-                }
             }
-            catch (Exception ex)
-            {
-                Debug.LogWarning("[SpectreReplay] 云同步入口异常（不影响本地保存）：" + ex.Message);
-            }
+            catch (Exception ex) { Debug.LogWarning("[SpectreReplay] 云同步入口异常（不影响本地保存）：" + ex.Message); }
         }
-
-        // The first failure is not final: SaveFile immediately retries with a safe name.
-        // Hold that warning until the retry resolves so one operation yields one toast.
-        if (notify && (success || retry)) TriggerMessage(message);
-        if (!success && !retry)
-        {
-            return SaveFile(without_sound, retry: true, notify: notify, savedData: data, saveDirectory: saveDirectory);
-        }
-        return success;
+        if (notify) TriggerMessage(message);
     }
 
     internal enum NotifType { Info, Warning }
@@ -780,18 +700,58 @@ public static class SpectreState
     public static void SetGetKeyAsyncEnabled(bool enabled)
     {
         if (enabled == UseAsyncInput)
+        {
+            if (!enabled)
+            {
+                AsyncKeyRecorder.PauseListener();
+                if (is_recording) AsyncKeyRecorder.FlushFrame(force: true);
+                else AsyncKeyRecorder.DiscardPending();
+            }
             return;
-        UseAsyncInput = enabled;
+        }
+
         if (enabled)
         {
-            if (_asyncKeyListener == null)
-                _asyncKeyListener = AsyncKeyRecorder.OnKeyUpdated;
+            // Start the listener before sampling. Events arriving during the handoff
+            // stay queued; the recorder reconciles late edges with the handoff snapshot
+            // instead of discarding the first DOWN against the final sampled state.
+            // 同局关闭时可能因缺少歌曲时钟留下了尾部事件；再次开启仍须保留。
+            // 新局由 BeginRecording 清理，局外切换才可直接丢弃。
+            if (!is_recording) AsyncKeyRecorder.DiscardPending();
+            _asyncKeyListener = AsyncKeyRecorder.CreateListener();
             SkyHook.SkyHookManager.KeyUpdated.AddListener(_asyncKeyListener);
+            bool asyncSyncStateRecorded = !is_recording;
+            if (is_recording)
+                asyncSyncStateRecorded = ReplayRecorder.RecordKeyboardState(forceSync: true, reconcileAsyncHandoff: true);
+            else
+                KeyboardSimulation.SampleKeyState(CurrKeyState);
+            // On a missing clock, CurrKeyState is only an uncommitted observation. Seed
+            // async de-duplication from PrevKeyState so queued edges remain recordable.
+            AsyncKeyRecorder.SeedHeldState(asyncSyncStateRecorded ? CurrKeyState : PrevKeyState);
+            UseAsyncInput = true;
+            return;
         }
-        else if (_asyncKeyListener != null)
-        {
+
+        // 与事件线程同锁关门，已在途的旧订阅回调即使稍后恢复也不能再次入队。
+        // 排空后做一次同步记账，补上关门与采样之间发生的真实边沿，不能只改基线。
+        AsyncKeyRecorder.PauseListener();
+        if (_asyncKeyListener != null)
             SkyHook.SkyHookManager.KeyUpdated.RemoveListener(_asyncKeyListener);
-        }
+        if (is_recording)
+            AsyncKeyRecorder.FlushFrame(force: true);
+        else
+            AsyncKeyRecorder.DiscardPending();
+        bool syncStateRecorded = !is_recording;
+        if (is_recording)
+            syncStateRecorded = ReplayRecorder.RecordKeyboardState(forceSync: true);
+        else
+            KeyboardSimulation.SampleKeyState(CurrKeyState);
+        // If the conductor is temporarily unavailable, RecordKeyboardState deliberately
+        // leaves PrevKeyState untouched. Keep that unrecorded edge visible to the next
+        // synchronous poll instead of promoting the sample to a false baseline.
+        if (syncStateRecorded)
+            Array.Copy(CurrKeyState, PrevKeyState, CurrKeyState.Length);
+        UseAsyncInput = false;
     }
 
     internal static void StopAll()

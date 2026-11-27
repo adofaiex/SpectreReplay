@@ -89,7 +89,9 @@ function Backup([string]$rel) {
         if ($already) { continue }
         # 临时名要剥掉 repo: 前缀——冒号不是合法路径字符
         $tag = ((Split-Path -Leaf $p) -replace '[\\/]', '__')
-        $saved = Join-Path $env:TEMP ('mut_' + $Which + '_' + $tag)
+        $backupRoot = Join-Path $root '.tmp_ship_20261126\mutation-backups'
+        if (-not (Test-Path $backupRoot)) { New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null }
+        $saved = Join-Path $backupRoot ('mut_' + $Which + '_' + $tag)
         Copy-Item $p $saved -Force
         [void]$touched.Add(@{ Rel = $rel; Full = $p; Saved = $saved })
     }
@@ -136,6 +138,19 @@ function ReplaceExact([string]$rel, [string]$old, [string]$new) {
         throw ($rel + '：ReplaceExact 多出 ' + $args.Count + ' 个实参')
     }
     $lines = Lines $rel
+    # 多行锚点先统一行尾，再对整段做唯一匹配；单行仍走原有逐行路径。
+    if ($old.Contains("`n")) {
+        $text = $lines -join "`n"
+        $old = $old.Replace("`r`n", "`n")
+        $new = $new.Replace("`r`n", "`n")
+        $at = $text.IndexOf($old, [StringComparison]::Ordinal)
+        if ($at -lt 0 -or $text.IndexOf($old, $at + 1, [StringComparison]::Ordinal) -ge 0) {
+            throw "$rel 的多行锚点必须恰好命中 1 次"
+        }
+        $updated = $text.Substring(0, $at) + $new + $text.Substring($at + $old.Length)
+        SetLines $rel ($updated -split "`n")
+        return
+    }
     $hit = 0
     for ($i = 0; $i -lt $lines.Count; $i++) {
         if ($lines[$i].Contains($old)) {
@@ -236,8 +251,8 @@ switch ($Which) {
     # 流程本身不会"无论如何都红"——如果连它都红，说明闸门或变异器件坏了，
     # 那 P1~P4 的红也不能当作证据。
     'MUT-P0' {
-        Backup $LOC
-        ReplaceExact $LOC '    /// 界面文案。中文/英文两套，按游戏语言自动选。' '    /// 界面文案。中文/英文两套，随游戏语言走。'
+        Backup 'Ui/Loc.cs'
+        ReplaceExact 'Ui/Loc.cs' '    /// 界面文案。14 种语言，按游戏语言自动选。' '    /// 界面文案。14 种语言，随游戏语言自动选择。'
     }
     # Loc.cs / LocalizationManager.cs 在主检查里整文件豁免，所以藏在这两个文件里的
     # 界面中文必须有独立判据。这条变异把修复退回旧样子：Hint 从文案表键改回中文常量。
@@ -509,33 +524,10 @@ switch ($Which) {
         SetLines 'Ui\OnGui.cs' $out2.ToArray()
     }
     'MUT-U33' {
-        # (6) ⑬f：只删掉**一个**行助手里的行距(其余五处仍在)。
-        #      整文件搜 RowGap(); 的假判据会绿——这正是这条变异要证明的事。
-        #      锚在 RowHotkey 的 GUILayout.EndHorizontal(); 之后那一段：
-        #      该处 RowGap(); 紧跟着一个空行与 if (Event.current == null，
-        #      三行合起来在文件里唯一。
+        # ⑬f：仅删 RowHotkey 经典布局的行距，其余行助手仍保留。
+        # 捕获逻辑已拆到 CaptureKey，不能再依赖它紧邻 RowGap 的旧双锚。
         Backup 'Ui\OnGui.cs'
-        $ls = Lines 'Ui\OnGui.cs'
-        $n = 0
-        $out2 = New-Object 'Collections.Generic.List[string]'
-        # 锚定 RowHotkey 那一处：它的 RowGap(); 紧跟在 EndHorizontal(); 后面，
-        # 而**紧跟其后的非空行**是 if (Event.current == null || _capturing。
-        # 用"前一行 + 后一行"双锚，避免依赖行号(行号会随无关改动漂移)。
-        for ($i = 0; $i -lt $ls.Count; $i++) {
-            $ln = $ls[$i]
-            $hit = $false
-            if ($ln.Trim() -eq 'RowGap();' -and $i -gt 0 -and $ls[$i - 1].Trim() -eq 'GUILayout.EndHorizontal();') {
-                $j = $i + 1
-                while ($j -lt $ls.Count -and $ls[$j].Trim() -eq '') { $j++ }
-                if ($j -lt $ls.Count -and $ls[$j].Contains('if (Event.current == null || _capturing != GetCaptureId')) {
-                    $hit = $true
-                }
-            }
-            if ($hit) { $n++; continue }
-            $out2.Add($ln)
-        }
-        if ($n -ne 1) { throw ('MUT-U33 unexpected count=' + $n) }
-        SetLines 'Ui\OnGui.cs' $out2.ToArray()
+        ReplaceAfter 'Ui\OnGui.cs' 'internal static void RowHotkey(' 'RowGap();' ''
     }
     'MUT-U34' {
         # ⑯：去特效总开关退回上游的默认开。
@@ -897,8 +889,8 @@ switch ($Which) {
     }
     'MUT-U80' {
         # 52b：stderr 上限被拆——失控进程刷屏变成无界内存。
-        Backup 'Features\VideoRender\Pipeline\VideoEncoder.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoEncoder.cs' ('                    if (stderr.Length > 8192)') ('                    if (false)')
+        Backup 'Features\VideoRender\Pipeline\CancellableProcessRunner.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\CancellableProcessRunner.cs' ('                    if (stderr.Length > 8192)') ('                    if (false)')
     }
     'MUT-U81' {
         # 52c：渲染启动门不再验能力——坏 ffmpeg 到劫持相机后才暴露。
@@ -1057,20 +1049,20 @@ switch ($Which) {
         # 回读顶替回归（2026-11-12 他人日志的根因形态）：TryTake 不再把成功帧
         # 交接给保留位（heldFrame 恒 null）——顶替永久走黑帧，成片回到「每隔
         # 几十帧一个黑帧」的一闪一闪。UiLogicShapeCheck「引用保留上一帧」钉的形状。
-        Backup 'Features\VideoRender\Pipeline\VideoFrameSource.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoFrameSource.cs' ('        heldFrame = pixels;') ('        _ = pixels;')
+        Backup 'Features\VideoRender\Pipeline\FrameBufferOwnership.cs'
+        ReplaceExact 'Features\VideoRender\Pipeline\FrameBufferOwnership.cs' ('            heldFrame = pixels;') ('            heldFrame = null;')
     }
     'MUT-U110' {
         # 回读顶替回归：泵写完保留帧后照常回池——保留帧被 Rent 复用覆盖，
         # 顶替读到的已是新画面（顶替语义静默破坏，玩家看到画面跳变）。
         Backup 'Features\VideoRender\Pipeline\VideoFrameSource.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoFrameSource.cs' ('        if (pixels == heldFrame)') ('        if (false)')
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoFrameSource.cs' ('        buffers.RecycleOrHold(pixels);') ('        buffers.Recycle(pixels);')
     }
     'MUT-U111' {
         # 性能回归：成功帧回收退回裸 Recycle——保留帧被提前回池复用覆盖，
         # 与 U110 同害，但缺陷位置在作业端的提交口（改动时漏改的第二处）。
         Backup 'Features\VideoRender\Pipeline\VideoRenderJob.cs'
-        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold,' 'encoder.Submit(pixels, pixels.Length, 1, frames.Recycle,'
+        ReplaceExact 'Features\VideoRender\Pipeline\VideoRenderJob.cs' 'pendingRecycle = frames.RecycleOrHold;' 'pendingRecycle = frames.Recycle;'
     }
     'MUT-U112' {
         # 性能回归：混音静音日志退回逐条打（孤立静音不限流）——240fps 下
@@ -2624,7 +2616,7 @@ switch ($Which) {
         if ($end -lt 0) { throw 'MUT-CI14 方法收尾未找到' }
         $hit = 0
         for ($i = $start + 1; $i -lt $end; $i++) {
-            if ($lines[$i].Contains('Features.VideoRender.RenderOverlayCapture.QuartzKey(num, ev.IsPressed);')) {
+            if ($lines[$i].Contains('Features.VideoRender.RenderOverlayCapture.QuartzKey(aggregateVk, ev.IsPressed);')) {
                 $lines[$i] = '// mutated'
                 $hit++
             }
@@ -3084,7 +3076,7 @@ switch ($Which) {
         # 订阅方唯一的推信号，删一行就断，而判定链毫无异常——典型的
         # 「无异常失效」。ApiSurfaceCheck ③ 钉的形态。
         Backup 'Features\Replay\Runtime\ManagedInput.cs'
-        ReplaceExact 'Features\Replay\Runtime\ManagedInput.cs' 'API.SpectreAPI.RaiseReplayKeyChanged(vk, pressed);' ''
+        ReplaceExact 'Features\Replay\Runtime\ManagedInput.cs' 'API.SpectreAPI.RaiseReplayKeyChanged(aggregateVk, aggregatePressed);' '{ }'
     }
     'MUT-API2' {
         # 回放按键 API 回归：GetHeldReplayKeys 无回放分支返回 null。XML 注释
@@ -3105,7 +3097,7 @@ switch ($Which) {
         # 显式 ReplayInput 调用（RainingKeys 0.5.0 反编译实证），断喂=回放期间
         # 键位显示全程不亮，判定链毫无异常。ReplayInputBridgeCheck ③ 钉的形态。
         Backup 'Features\Replay\Runtime\ReplayPlayer.cs'
-        ReplaceExact 'Features\Replay\Runtime\ReplayPlayer.cs' 'ReplayInputBridge.Edge(num, ev.IsPressed);' ''
+        ReplaceExact 'Features\Replay\Runtime\ReplayPlayer.cs' 'ReplayInputBridge.Edge(aggregateVk, ev.IsPressed);' ''
     }
     'MUT-RI2' {
         # ReplayInput 推桥回归：Stop 不再发 OnEndInputs。回放结束后这类 KV
@@ -3799,6 +3791,11 @@ switch ($Which) {
         Backup 'Features/Cloud/CloudReplay.cs'
         ReplaceAfter 'Features/Cloud/CloudReplay.cs' 'internal static bool OnConfigSaved(string localPath)' 'ScheduleStartupRestore();' '// mutated'
     }
+    'MUT-QC15' {
+        # R40：云端恢复超时后错误地解锁自动上传，覆盖尚未读取的云端备份。
+        Backup 'Features/Cloud/CloudReplay.cs'
+        ReplaceExact 'Features/Cloud/CloudReplay.cs' '                Debug.LogWarning("[SpectreReplay] 云端配置恢复超时，自动上传继续关闭，需手动上传确认本地配置");' '                _configRestoreSettled = true; Debug.LogWarning("[SpectreReplay] 云端配置恢复超时，自动上传继续关闭，需手动上传确认本地配置");'
+    }
     'MUT-SF1' {
         # KBD：移除绝对样本上限后，短小静音块可在解码时申请数百 MB 音频数组。
         Backup 'Features/Replay/Codec/KeybdAudioCodec.cs'
@@ -3981,6 +3978,1006 @@ switch ($Which) {
         Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
         ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' 'if (Settings.KeybdSoundRecordActive && data.KeybdSoundStartTick.HasValue)' 'if (Settings.KeybdSoundRecordActive)'
     }
+    'MUT-UIR1' {
+        # UI01：数值提交恢复早退并跳过 IMGUI 布局收尾。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' 'else if (commit && TryParse(st.Text, out float typed))
+                        onChange?.Invoke(Mathf.Clamp(typed, min, max));' 'else if (commit && TryParse(st.Text, out float typed))
+                    {
+                        onChange?.Invoke(Mathf.Clamp(typed, min, max));
+                        return;
+                    }'
+        ReplaceExact 'Ui/OnGui.cs' '                finally
+                {
+                    try
+                    {
+                        if (horizontalOpen) GUILayout.EndHorizontal();
+                    }
+                    finally
+                    {
+                        if (rowOpen) Gui.EndModernRow();
+                    }
+                }' '                catch { }'
+    }
+    'MUT-UIR2' {
+        # UI02：移除凹槽贴图缓存，模拟每次滑条重绘创建新 Texture2D。
+        Backup 'Ui/RoundedTex.cs'
+        ReplaceExact 'Ui/RoundedTex.cs' '            if (WellCache.TryGetValue(key, out Texture2D hit) && hit != null)
+                return hit;' ''
+        ReplaceExact 'Ui/RoundedTex.cs' '            WellCache[key] = t;' ''
+    }
+    'MUT-UIR3' {
+        # UI03：预设保存/应用均漏掉相机缩放开关。
+        Backup 'Features/EffectRemover/EffectPresets.cs'
+        ReplaceExact 'Features/EffectRemover/EffectPresets.cs' '                        case "EffectRemoverSetCameraZoom": Settings.EffectRemoverSetCameraZoom = (bool)prop.Value; applied++; break;
+' ''
+        ReplaceExact 'Features/EffectRemover/EffectPresets.cs' '                ["EffectRemoverSetCameraZoom"] = Settings.EffectRemoverSetCameraZoom,
+' ''
+    }
+    'MUT-UIR4' {
+        # UI04：独立窗口遮挡时重新允许时间轴读取全局鼠标并吃点击。
+        Backup 'Ui/Timeline/TimelineOverlay.cs'
+        ReplaceExact 'Ui/Timeline/TimelineOverlay.cs' '            && !ModernSettingsWindow.IsOpen && !ModernSettingsWindow.IsClosing
+' ''
+        ReplaceExact 'Ui/Timeline/TimelineOverlay.cs' '        // uGUI 挡板只阻止 EventSystem 射线，不阻止全局 Input.GetMouseButton*。
+        // 窗口打开或关闭动画期间必须隔离时间轴原始输入，并清理旧拖拽态。
+        if (ModernSettingsWindow.IsOpen || ModernSettingsWindow.IsClosing)
+        {
+            _dragResize = false;
+            _dragPanel = false;
+            _dragMode = 0;
+            _inputCaptured = false;
+            TimelineController.SetInputCaptured(false);
+            return;
+        }
+' ''
+    }
+    'MUT-UIR5' {
+        # UI05：双引号字符常量再次错误地切换到字符串态。
+        Backup 'repo:tools/UiPreview/SrcUtil.cs'
+        ReplaceExact 'repo:tools/UiPreview/SrcUtil.cs' 'if (!inChar && c == ''"'') { inStr = !inStr; sb.Append(c); continue; }' 'if (c == ''"'') { inStr = !inStr; sb.Append(c); continue; }'
+    }
+    'MUT-UIR6' {
+        # UI06：注册正则拒绝含连字符的 AV1/HDR10 变异标签。
+        Backup 'repo:tools/mutate-regression.ps1'
+        ReplaceExact 'repo:tools/mutate-regression.ps1' 'MUT-[A-Za-z0-9-]+' 'MUT-[A-Za-z0-9]+'
+    }
+    'MUT-SRR1' {
+        # SR01 切播放模式绕过旧回放停止。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            StopPlaying();
+            StopRecording();
+            PlayMode = true;' '            StopRecording();
+            PlayMode = true;'
+    }
+    'MUT-SRR2' {
+        # SR02 切录制模式丢弃旧录制停止收尾。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            StopRecording();
+            HitLocked = false;
+            PlayMode = false;' '            HitLocked = false;
+            PlayMode = false;'
+    }
+    'MUT-SRR3' {
+        # SR03 已装载判定错误接受非播放模式的数据。
+        Backup 'State/SpectreAPI.cs'
+        ReplaceExact 'State/SpectreAPI.cs' '        => SpectreState.PlayMode
+            && !SpectreState.is_recording' '        => !SpectreState.is_recording'
+    }
+    'MUT-SRR4' {
+        # SR04 已装载判定错误接受仍在录制中的数据。
+        Backup 'State/SpectreAPI.cs'
+        ReplaceExact 'State/SpectreAPI.cs' '            && !SpectreState.is_recording
+' ''
+    }
+    'MUT-SRR5' {
+        # SR06 空壳数据被判为有效已装载。
+        Backup 'State/SpectreAPI.cs'
+        ReplaceExact 'State/SpectreAPI.cs' '            && SpectreState.data.HasRequiredMetadata;' '            ;'
+    }
+    'MUT-SRR6' {
+        # SR07 第一个来源抬起即松开聚合目标。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '            aggregatePressed = HeldSourceCount[aggregateVk] > 0;' '            aggregatePressed = false;'
+    }
+    'MUT-SRR7' {
+        # SR07 同帧多个来源按下被折叠为一次。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '            PressCountFrame[aggregateVk]++;' '            PressCountFrame[aggregateVk] = 1;'
+    }
+    'MUT-SRR8' {
+        # SR08 关闭设置后监听器仍注册。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            SkyHook.SkyHookManager.KeyUpdated.RemoveListener(_asyncKeyListener);' '            { }'
+    }
+    'MUT-SRR9' {
+        # SR09 云配置恢复遗漏异步监听同步。
+        Backup 'Features/Cloud/CloudReplay.cs'
+        ReplaceExact 'Features/Cloud/CloudReplay.cs' '                SpectreState.SetGetKeyAsyncEnabled(Settings.ReplayOn && Settings.GetDataFromAsyncInput);' ''
+    }
+    'MUT-ARR1' {
+        # AR01-04 导出解析器漏跳奇数 RIFF 填充。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '            long paddedEnd = payloadEnd + (size & 1);' '            long paddedEnd = payloadEnd;'
+    }
+    'MUT-ARR2' {
+        # AR05-06 导出忽略音量缩放。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '        double gain = step / 10.0;' '        double gain = 1.0;'
+    }
+    'MUT-ARR3' {
+        # AR06 正偏移不裁头。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '        long sourceStart = offsetFrames > 0 ? Math.Min(offsetFrames, sourceFrames) : 0;' '        long sourceStart = 0;'
+    }
+    'MUT-ARR4' {
+        # AR08 负偏移不补静音。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '        long prependFrames = offsetFrames < 0 ? -offsetFrames : 0;' '        long prependFrames = 0;'
+    }
+    'MUT-ARR5' {
+        # AR09-10 导出无视回放静音。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '        bool silence = muted || step == 0;' '        bool silence = step == 0;'
+    }
+    'MUT-ARR6' {
+        # AR11-14 旧名失效时仍返回旧设备名。
+        Backup 'Features/Replay/Codec/MicrophoneDevicePolicy.cs'
+        ReplaceExact 'Features/Replay/Codec/MicrophoneDevicePolicy.cs' '                usedFallback = true;
+                return devices[i];' '                usedFallback = true;
+                return preferred;'
+    }
+    'MUT-ARR7' {
+        # AR15 无设备时谎报有可用设备。
+        Backup 'Features/Replay/Codec/MicrophoneDevicePolicy.cs'
+        ReplaceExact 'Features/Replay/Codec/MicrophoneDevicePolicy.cs' '        if (devices == null || devices.Length == 0)
+            return null;' '        if (devices == null || devices.Length == 0)
+            return "None";'
+    }
+    'MUT-ARR8' {
+        # AR16/21 动态 clip 卸载遗漏原生销毁。
+        Backup 'State/WavLoader.cs'
+        ReplaceExact 'State/WavLoader.cs' '            Object.Destroy(previous);' '            { }'
+    }
+    'MUT-ARR9' {
+        # AR17 播放中音量不再实时更新。
+        Backup 'Features/Replay/Patches/Patch_Playback.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_Playback.cs' '            WavLoader.musicSource.volume = effectiveVolume;' '            { }'
+    }
+    'MUT-ARR10' {
+        # AR18 Settings 校验不再解析失效麦克风名。
+        Backup 'State/Settings.cs'
+        ReplaceExact 'State/Settings.cs' '        string selectedMicrophone = AudioRecorder.ResolveConfiguredDevice(
+            MicrophoneDeviceName, microphones, persist: false);' '        string selectedMicrophone = MicrophoneDeviceName;'
+    }
+    'MUT-ARR11' {
+        # AR19 解码成功后不停止旧回放。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' '        SpectreState.PlayActions.StopPlaying();
+        SpectreState.PlayActions.StopRecording();
+        WavLoader.ClearLoadedClip();
+        TryLoadKeybdSound(filePath, loaded);' '        SpectreState.PlayActions.StopRecording();
+        WavLoader.ClearLoadedClip();
+        TryLoadKeybdSound(filePath, loaded);'
+    }
+    'MUT-ARR12' {
+        # AR20 只读详情解码污染会话。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' '    internal static bool ReadReplayData(out ReplayData replayData, byte[] raw,
+        string displayName, bool no_encryption = false)
+    {' '    internal static bool ReadReplayData(out ReplayData replayData, byte[] raw,
+        string displayName, bool no_encryption = false)
+    {
+        SpectreState.PlayActions.StopPlaying();'
+    }
+    'MUT-ARR13' {
+        # AR21 播放器解析器漏跳奇数 RIFF 填充。
+        Backup 'State/WavLoader.cs'
+        ReplaceExact 'State/WavLoader.cs' '            long paddedEnd = payloadEnd + (chunkSize & 1);' '            long paddedEnd = payloadEnd;'
+    }
+    'MUT-ARR14' {
+        # AR22 导出重新写原始 WAV，忽略已完成的覆盖变换。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' '        wav = adjustedWav;' '        _ = adjustedWav;'
+    }
+    'MUT-RRR1' {
+        # RR01 取消复制源 pin 导致退役源提前复用。
+        Backup 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs' '            substituteReaders[source] = readers + 1;' '            _ = readers;'
+    }
+    'MUT-RRR2' {
+        # RR02 复制结束后遗失延迟回收。
+        Backup 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs' '                ReturnLocked(source);' '                { }'
+    }
+    'MUT-RRR3' {
+        # RR04 后台等待不观察取消请求。
+        Backup 'Features/VideoRender/Pipeline/CancellableWait.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/CancellableWait.cs' '            if (canceled != null && canceled()) return CancellableWaitResult.Canceled;' ''
+    }
+    'MUT-RRR4' {
+        # RR05 mux 取消后不终止进程。
+        Backup 'Features/VideoRender/Pipeline/CancellableProcessRunner.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/CancellableProcessRunner.cs' '            if (!process.HasExited) process.Kill();' '            _ = process.HasExited;'
+    }
+    'MUT-RRR5' {
+        # RR06 AV1 MOV 不执行 H.264 回退。
+        Backup 'Features/VideoRender/Pipeline/MovConversionFallback.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/MovConversionFallback.cs' '        if (!string.IsNullOrEmpty(movH264FallbackArguments)
+            && IsKnownAv1MovMuxFailure(error.Message))' '        if (string.IsNullOrEmpty(movH264FallbackArguments)
+            && IsKnownAv1MovMuxFailure(error.Message))'
+    }
+    'MUT-RRR6' {
+        # RR07 普通权限错误误执行视频转码回退。
+        Backup 'Features/VideoRender/Pipeline/MovConversionFallback.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/MovConversionFallback.cs' '            && IsKnownAv1MovMuxFailure(error.Message))' '            )'
+    }
+    'MUT-ASR1' {
+        # AS01 导体暂失时强制收尾也不再使用缓存时钟。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        else if (!force || !_hasClock)' '        else if (conductor == null || conductor.song == null)'
+    }
+    'MUT-ASR2' {
+        # AS02 缺时钟时清空待记队列。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        else if (!force || !_hasClock)
+        {' '        else if (!force || !_hasClock)
+        {
+            DiscardPending();'
+    }
+    'MUT-ASR3' {
+        # AS03 新录制残留上一局来源状态。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        Array.Clear(HeldAtLastEdge, 0, HeldAtLastEdge.Length);
+        _hasClock = false;' '        _hasClock = false;'
+    }
+    'MUT-ASR4' {
+        # AS04 Stop翻标志前不排空异步尾部。
+        Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' '        AsyncKeyRecorder.FlushFrame(force: true, final: true);' ''
+    }
+    'MUT-ASR5' {
+        # AS05 新录制不重置异步状态。
+        Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' '            AsyncKeyRecorder.BeginRecording();' ''
+    }
+    'MUT-ASR6' {
+        # AS08 关监听只重设基线、不记同步边沿，回放会缺掉跨切换的按下。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '        bool syncStateRecorded = !is_recording;
+        if (is_recording)
+            syncStateRecorded = ReplayRecorder.RecordKeyboardState(forceSync: true);
+        else
+            KeyboardSimulation.SampleKeyState(CurrKeyState);
+        // If the conductor is temporarily unavailable, RecordKeyboardState deliberately
+        // leaves PrevKeyState untouched. Keep that unrecorded edge visible to the next
+        // synchronous poll instead of promoting the sample to a false baseline.
+        if (syncStateRecorded)
+            Array.Copy(CurrKeyState, PrevKeyState, CurrKeyState.Length);' '        KeyboardSimulation.SampleKeyState(CurrKeyState);
+        Array.Copy(CurrKeyState, PrevKeyState, CurrKeyState.Length);'
+    }
+    'MUT-ASR7' {
+        # SR09 云配置恢复先换设置，跳过旧会话收尾。
+        Backup 'Features/Cloud/CloudReplay.cs'
+        ReplaceExact 'Features/Cloud/CloudReplay.cs' '                SpectreState.PlayActions.StopPlaying();
+                SpectreState.PlayActions.StopRecording();
+                ConfigManager.LoadConfigs(localPath);' '                ConfigManager.LoadConfigs(localPath);'
+    }
+    'MUT-ARR15' {
+        # AR23 裁空音频仍成功输出零长度data。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '        if (outputFrames <= 0 || format.BlockAlign <= 0' '        if (outputFrames < 0 || format.BlockAlign <= 0'
+    }
+    'MUT-ARR16' {
+        # AR24 float WAV的fact沿用旧帧数。
+        Backup 'Features/Replay/Codec/WavAudioTransform.cs'
+        ReplaceExact 'Features/Replay/Codec/WavAudioTransform.cs' '                WriteUInt32(output, cursor + 8, (uint)outputFrames);' '                { }'
+    }
+    'MUT-RRR7' {
+        # Dispose晚回调重新把数组塞入已关闭池。
+        Backup 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs' '            if (disposed) return;
+            if (pixels == heldFrame)' '            if (pixels == heldFrame)'
+    }
+    'MUT-RRR8' {
+        # 原始A回调/B登记失去同锁串行化。
+        Backup 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/FrameBufferOwnership.cs' '        lock (gate)
+        {
+            if (disposed) return;
+            if (pixels == heldFrame)' '        {
+            if (disposed) return;
+            if (pixels == heldFrame)'
+    }
+    'MUT-RRR9' {
+        # MOV回退参数仍复制视频流。
+        Backup 'Features/VideoRender/Pipeline/MovConversionFallback.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/MovConversionFallback.cs' ' -c:v libx264 -preset veryfast' ' -c:v copy -preset veryfast'
+    }
+    'MUT-RRR10' {
+        # RR08 编码收尾不传取消请求。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '                enc.FinishVideo(() => cancelRequested);' '                enc.FinishVideo();'
+    }
+    'MUT-RRR11' {
+        # RR08 mux等待不传取消请求。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '                    enc.MuxWith(wav, audioOffset, () => cancelRequested);' '                    enc.MuxWith(wav, audioOffset);'
+    }
+    'MUT-RRR12' {
+        # RR08 主线程不销毁Unity帧源。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '        try { frames?.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }' ''
+    }
+    'MUT-UIR7' {
+        # UT09 隐藏分支遗漏交互清理，关窗后延续旧拖拽。
+        Backup 'Ui/Timeline/TimelineOverlay.cs'
+        ReplaceExact 'Ui/Timeline/TimelineOverlay.cs' '            _dragResize = false;
+            _dragPanel = false;
+            _dragMode = 0;
+            _overTrack = false;
+            _overTitleBar = false;
+            _floorFieldFocused = false;
+' ''
+    }
+    'MUT-ASR8' {
+        # AS06 最终Stop仍按临时失钟保留队列，翻标志后丢失。
+        Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' '        AsyncKeyRecorder.FlushFrame(force: true, final: true);' '        AsyncKeyRecorder.FlushFrame(force: true);'
+    }
+    'MUT-ASR9' {
+        # AS06 无时钟降级把所有尾部边沿压到同一时刻。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                ? fallbackPosition + ((long)ev.GetTimeInTicks() - firstTick) / 10000000.0' '                ? fallbackPosition'
+    }
+    'MUT-ASR10' {
+        # AS06 近似时间静默降级，玩家无法得知精度丢失。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                Debug.LogWarning("[SpectreReplay] 停止录制从未获得歌曲时钟：尾部按键按最后记录位置（无记录为0）及1x相对间隔保全，时间为近似值");' '                { }'
+    }
+    'MUT-ASR11' {
+        # AS06 尾部锚点忽略已有记录，导致时间倒退。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            : data.KeyEvents[data.KeyEvents.Count - 1].SongPosition;' '            : 0;'
+    }
+    'MUT-ASR12' {
+        # AS07 最终排空没有先关闭接纳，晚到回调滞留队列。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            lock (EventGate) _accepting = false;' ''
+    }
+    'MUT-ASR13' {
+        # AS07 回调绕过已关闭的录制接纳门。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            if (!_accepting) return;' ''
+    }
+    'MUT-ASR14' {
+        # AS07 下一局未重新开放事件接纳。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            DiscardPending();
+            _accepting = true;' '            DiscardPending();'
+    }
+    'MUT-RRR13' {
+        # 进程/泵状态退回重复字段访问且不处理释放异常的真实故障形状。
+        Backup 'Features/VideoRender/Pipeline/VideoEncoder.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoEncoder.cs' '    internal bool HasActiveWorker
+    {
+        get
+        {
+            Thread activePump = pump;
+            if (activePump != null)
+            {
+                try
+                {
+                    if (activePump.IsAlive) return true;
+                }
+                catch
+                {
+                    return true;
+                }
+            }
+
+            Process activePipe = pipe;
+            if (activePipe == null) return false;
+            try
+            {
+                return !activePipe.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+    }' '    internal bool HasActiveWorker => (pump != null && pump.IsAlive) || (pipe != null && !pipe.HasExited);'
+    }
+    'MUT-UIR8' {
+        # UT10 聚焦仍无条件交给鼠标处理，捕获态被清掉。
+        Backup 'Ui/Timeline/TimelineOverlay.cs'
+        ReplaceExact 'Ui/Timeline/TimelineOverlay.cs' '        if (_floorFieldFocused)
+        {
+            _dragResize = false;
+            _dragPanel = false;
+            _dragMode = 0;
+            _inputCaptured = true;
+            TimelineController.SetInputCaptured(true);
+        }
+        else
+        {
+            HandleInput(state);
+        }' '        HandleInput(state);'
+    }
+    'MUT-UIR9' {
+        # UT11 原生接管在捕获判断之前提前放行，输入框无法隔离玩法输入。
+        Backup 'Features/Replay/Patches/Patch_InputInjection.cs'
+        ReplaceAfter 'Features/Replay/Patches/Patch_InputInjection.cs' 'internal static void GetMain_Postfix(' '        if (!ManagedInput.Active) return;' '        if (!ManagedInput.Active || ManagedInput.NativeTakeover) return;'
+    }
+    'MUT-ASR15' {
+        # AS08 RemoveListener不关闭接纳门，已在途回调在同步采样后重复入队。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '        AsyncKeyRecorder.PauseListener();
+        if (_asyncKeyListener != null)' '        if (_asyncKeyListener != null)'
+    }
+    'MUT-ASR16' {
+        # AS08 旧订阅代际不校验，重新启用后旧回调复活。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                    if (generation != _listenerGeneration) return;' ''
+    }
+    'MUT-ASR17' {
+        # AS09 同步采样没导体时仍推进Prev，丢掉异步到同步交接的按下沿。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '        if (syncStateRecorded)' '        if (true)'
+    }
+    'MUT-ASR18' {
+        # AS10 同步转异步缺导体时用未提交 Curr 播种，抑制队列里的真实按下。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            AsyncKeyRecorder.SeedHeldState(asyncSyncStateRecorded ? CurrKeyState : PrevKeyState);' '            AsyncKeyRecorder.SeedHeldState(CurrKeyState);'
+    }
+    'MUT-SRR10' {
+        # SR10 关闭录放总开关时不取消正在捕获的视频，误判成自然播完。
+        Backup 'Pages/RecordPage.cs'
+        ReplaceExact 'Pages/RecordPage.cs' '                            if (VideoRender.CaptureInProgress)
+                                VideoRender.CancelRender();' ''
+    }
+    'MUT-SRR11' {
+        # SR11 云配置恢复停播却不取消捕获，可能生成截断视频并消费旧回放。
+        Backup 'Features/Cloud/CloudReplay.cs'
+        ReplaceExact 'Features/Cloud/CloudReplay.cs' '                if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+                    SpectreReplay.Features.VideoRender.VideoRender.CancelRender();' ''
+    }
+    'MUT-AR26' {
+        # AR26/28/29 成功加载后不缓存云端旧 WAV，导出失去声音。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' 'try { data.KeybdSoundMemory = (byte[])wavData.Clone(); }' 'try { data.KeybdSoundMemory = null; }'
+    }
+    'MUT-AR27' {
+        # AR27 缓存别名指向调用方数组，后续修改会污染已加载的回放。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' 'try { data.KeybdSoundMemory = (byte[])wavData.Clone(); }' 'try { data.KeybdSoundMemory = wavData; }'
+    }
+    'MUT-AR30' {
+        # AR30/31 加载失败时不清除复用对象的旧旁挂 WAV，可能导出上一局声音。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceAfter 'Features/Replay/Runtime/ReplayManager.cs' 'private static void TryLoadKeybdSoundFromMemory(ReplayData data, byte[] wavData)' 'data.KeybdSoundMemory = null;' '// Keep stale cache on failure.'
+    }
+    'MUT-AR32' {
+        # AR32 Reset 不清理会话缓存，下一局仍持有旧 WAV。
+        Backup 'Features/Replay/Data/ReplayData.cs'
+        ReplaceExact 'Features/Replay/Data/ReplayData.cs' '        KeybdSoundMemory = null;' '        KeybdSoundMemory = KeybdSoundMemory;'
+    }
+    'MUT-RRR14' {
+        # RR09 关闭后仍允许预启动线程发布 candidate。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '            if (closed || !ReferenceEquals(candidate, value)) return false;' '            if (!ReferenceEquals(candidate, value)) return false;'
+    }
+    'MUT-RRR15' {
+        # RR09 预启动线程未退出时也允许删除作业临时目录。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '        => preStartExited && finalizeExited && encoderIdle;' '        => finalizeExited && encoderIdle;'
+    }
+    'MUT-RRR16' {
+        # RR09 超时 candidate 未暂存给延迟清理，泵仍活跃时会丢失释放所有权。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '            deferredCandidate = value;' '            deferredCandidate = null;'
+    }
+    'MUT-RRR17' {
+        # RR09 主线程不领取已发布 encoder，捕获期后续逻辑会把它当作缺失。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '        encoderOwnership.ClaimPublished(value => encoder = value);' '        encoderOwnership.ClaimPublished(value => { });'
+    }
+    'MUT-RRR18' {
+        # RR09 candidate 超时后不转交延迟清理，安全收尾接线失效。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '                if (encoderOwnership.RetainForDeferredCleanup(candidate))' '                if (false)'
+    }
+    'MUT-RRR19' {
+        # RR09 后台清理不领取已暂存的预启动 candidate。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '                VideoEncoder preStartCandidate = encoderOwnership.TakeDeferredCleanupCandidate();' '                VideoEncoder preStartCandidate = null;'
+    }
+    'MUT-RRR20' {
+        # RR09 Begin 尚未退出就提前把候选交给后台，可能与 Begin 并发 Dispose。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '            if (preStartActive) return null;' ''
+    }
+    'MUT-RRR21' {
+        # RR09 收场快照忽略当时活跃的编码泵，后续探测可让目录提前删除。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '        => finalizeStillRunning || preStartStillRunning || candidatePending || encoderActiveAtSnapshot;' '        => finalizeStillRunning || preStartStillRunning || candidatePending;'
+    }
+    'MUT-RRR22' {
+        # RR09 删除编码泵空闲门，活跃泵也可能允许删除作业目录。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '        => preStartExited && finalizeExited && encoderIdle;' '        => preStartExited && finalizeExited && true;'
+    }
+    'MUT-RRR23' {
+        # RR09 回归第二次探测 HasActiveWorker，泵在两次探测间退出时跳过 Dispose。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '            !preStartCleanupPending && !workerStillRunning);' '            !preStartCleanupPending && (closingEncoder == null || !closingEncoder.HasActiveWorker));'
+    }
+    'MUT-RRR24' {
+        # RR09 尺寸重建在旧泵仍活跃时误认为已 Dispose，可能覆盖编码器并竞争 rawVideoPath。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '        try { return !hasActiveWorker(current); }' '        try { return true; }'
+    }
+    'MUT-RRR25' {
+        # RR09 尺寸重建移除生产调用门控，旧编码器仍活跃也会被替换。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '            if (!EncoderPreStartOwnership<VideoEncoder>.CanReplaceAfterDispose(
+                    encoder, current => current.Dispose(), current => current.HasActiveWorker))' '            if (false)'
+    }
+    'MUT-RRR26' {
+        # RR09 Dispose 后遗失待延迟释放 encoder 的强引用。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '        VideoEncoder deferredEncoder = cleanupPlan.DeferredEncoder;' '        VideoEncoder deferredEncoder = null;'
+    }
+    'MUT-RRR27' {
+        # RR09 活跃泵时没有保留 raw 临时目录交给延迟清理。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '        string deferredTempDir = cleanupPlan.DeferredTempDir;' '        string deferredTempDir = null;'
+    }
+    'MUT-RRR28' {
+        # RR09 replacement Begin 失败时作业字段尚未取得新 encoder，收场无法释放。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '        publish(replacement);
+        begin(replacement);' '        begin(replacement);
+        publish(replacement);'
+    }
+    'MUT-RRR29' {
+        # RR09 延迟清理只等待泵退出却不 Dispose 被接管的 encoder。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '                    try { dispose(encoder); }' '                    try { }'
+    }
+    'MUT-RRR30' {
+        # RR09 延迟清理完成后不删除保留的作业临时目录。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '                if (directoryExists(tempDir))
+                    deleteDirectory(tempDir);' '                if (false) deleteDirectory(tempDir);'
+    }
+    'MUT-RRR31' {
+        # RR09 忽略收场前已有的活跃工作线程，可能立刻释放 encoder/目录。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '        bool mustDefer = alreadyMustDefer;' '        bool mustDefer = false;'
+    }
+    'MUT-RRR32' {
+        # RR09 Dispose 抛错但 worker 假报空闲时丢失唯一释放引用。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '            mustDefer = disposeError != null || active;' '            mustDefer = active;'
+    }
+    'MUT-RRR33' {
+        # RR09 延迟清理忽略 Dispose 失败，worker 空闲时仍提前删除临时目录。
+        Backup 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/EncoderPreStartOwnership.cs' '                    if (!disposeFailed && !active) break;' '                    if (!active) break;'
+    }
+    'MUT-RB1' {
+        # RR10 恢复旧行为：队列反压等待时仍向 Unity Update 提供正 deltaTime。
+        Backup 'Features/VideoRender/Patches/VideoRenderPatches.cs'
+        ReplaceExact 'Features/VideoRender/Patches/VideoRenderPatches.cs' '    private static float PinnedDelta() => backpressurePaused ? 0f : 1f / armedFps;' '    private static float PinnedDelta() => 1f / armedFps;'
+    }
+    'MUT-RB2' {
+        # RR10/F17 回退为 Update 后恢复的 null 让出，帧末边界丢失。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceAfter 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'private WaitForEndOfFrame WaitForBackpressure()' 'return new WaitForEndOfFrame();' 'return null;'
+    }
+    'MUT-RB3' {
+        # RR10 只钉托管 delta，没有暂停原生 scaled 时间。
+        Backup 'Features/VideoRender/Patches/VideoRenderPatches.cs'
+        ReplaceExact 'Features/VideoRender/Patches/VideoRenderPatches.cs' '        Time.timeScale = 0f;' '        Time.timeScale = backpressureTimeScale;'
+    }
+    'MUT-RB4' {
+        # RR10 队列恢复后仍以暂停状态安排下一捕获帧。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '            UnscaledDeltaPin.EndBackpressureWait();' ''
+    }
+    'MUT-RB5' {
+        # RR10 取消/销毁时卸载时钟却遗漏反压保存的 timeScale。
+        Backup 'Features/VideoRender/Patches/VideoRenderPatches.cs'
+        ReplaceAfter 'Features/VideoRender/Patches/VideoRenderPatches.cs' 'internal static void Uninstall()' 'EndBackpressureWait();' ''
+    }
+    'MUT-RB6' {
+        # RR10 GPU drain 的独立等待漏用暂停边界，不能只覆盖 Flush 队列等待。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '            if (frames.InFlight > 0)
+                yield return WaitForBackpressure();' '            if (frames.InFlight > 0)
+                yield return null;'
+    }
+    'MUT-RB7' {
+        # RR10 Transpiler 的增量源漏用暂停位，和原生 detour 产生分叉。
+        Backup 'Features/VideoRender/Patches/VideoRenderPatches.cs'
+        ReplaceExact 'Features/VideoRender/Patches/VideoRenderPatches.cs' '    internal static float CurrentDelta => backpressurePaused ? 0f : 1f / armedFps;' '    internal static float CurrentDelta => 1f / armedFps;'
+    }
+    'MUT-RB8' {
+        # RR10 连续等待反复保存已为零的 timeScale，恢复后永久暂停。
+        Backup 'Features/VideoRender/Patches/VideoRenderPatches.cs'
+        ReplaceExact 'Features/VideoRender/Patches/VideoRenderPatches.cs' '        if (backpressurePaused) return;' ''
+    }
+    'MUT-SHC1' {
+        # SC01 恢复旧缺陷：渲染开关迁到 Sets.RenderOn，实际读取端收不到关闭值。
+        Backup 'State/ConfigManager.cs'
+        ReplaceExact 'State/ConfigManager.cs' '        MigrateBool(json, ints, "RenderOn", "render_on", Settings.RenderOn);' '        MigrateBool(json, sets, "RenderOn", "RenderOn", Settings.RenderOn);'
+    }
+    'MUT-SHC2' {
+        # SC02 已误迁文件仍只写回旧分区，不发布实际读取的 render_on。
+        Backup 'State/ConfigManager.cs'
+        ReplaceExact 'State/ConfigManager.cs' '                renderInts["render_on"] = legacySets["RenderOn"].DeepClone();' '                legacySets["RenderOn"] = legacySets["RenderOn"].DeepClone();'
+    }
+    'MUT-SHC3' {
+        # SC04 恢复未知版本的必要分叉被当成正常 VersionSkipped。
+        Backup 'Patch/Shared/SpectrePatchHub.cs'
+        ReplaceExact 'Patch/Shared/SpectrePatchHub.cs' '            spec.VersionSkipped = false;' '            spec.VersionSkipped = true;'
+    }
+    'MUT-SHC4' {
+        # SC05 恢复 Resolve 错误不进入失败账本的真实接线缺失。
+        Backup 'Patch/Shared/SpectrePatchHub.cs'
+        ReplaceExact 'Patch/Shared/SpectrePatchHub.cs' '                        _specs.Add(spec);
+                        if (spec.Error != null && !spec.VersionSkipped)
+                            RecordApplyFailure(spec.Id, spec.Error);' '                        _specs.Add(spec);'
+    }
+    'MUT-SHC5' {
+        # SC06 恢复使用历史失败列表而非当前补丁状态，恢复后常驻计数仍残留。
+        Backup 'Patch/Shared/SpectrePatchHub.cs'
+        ReplaceExact 'Patch/Shared/SpectrePatchHub.cs' 'return _specs.Count(spec => spec.Error != null && !spec.VersionSkipped);' 'return ApplyFailures.Count;'
+    }
+    'MUT-SHC6' {
+        # SC07 上界偏一：r149 的合法旧分叉也被跳过，已知版本正向控制必须抓住。
+        Backup 'Patch/Shared/SpectrePatchHub.cs'
+        ReplaceExact 'Patch/Shared/SpectrePatchHub.cs' '            if (a.MaxVersion > 0 && Release > a.MaxVersion)' '            if (a.MaxVersion > 0 && Release >= a.MaxVersion)'
+    }
+    'MUT-SHC7' {
+        # SC03 缺失旧开关强制设为开启，不能保持当前关闭值。
+        Backup 'State/ConfigManager.cs'
+        ReplaceAfter 'State/ConfigManager.cs' 'private static void MigrateBool(' '        var t = json[oldKey];' '        var t = json[oldKey] ?? new JValue(true);'
+    }
+    'MUT-SHU1' {
+        # SU16 F16-cache：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '        internal static int PatchFailures
+        {
+            get => PatchShared.SpectrePatchHub.ApplyFailureCount;
+            set { _ = value; }
+        }' '        internal static int PatchFailures { get; set; }'
+    }
+    'MUT-SHU2' {
+        # SU22 F22-stale-drafts：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '            _outDir.Text = Settings.RenderOutputDir ?? "";
+            _outDirBaseline = _outDir.Text;
+            _outDir.Editing = false;
+            _outDirLoaded = true;
+            _fields.Clear();
+            _fieldCommitters.Clear();
+            _fieldValues.Clear();
+            _sliderDrafts.Clear();' ''
+    }
+    'MUT-SHU3' {
+        # SU23 F23-hidden-capture：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '        internal static void CancelPendingInteraction()
+        {
+            _capturing = 0;
+            _openRow = -1;
+            _pickOutDirPending = false;
+            _outDirPickVersion++;
+            Pages.Pages.CancelCaptures();
+        }' '        internal static void CancelPendingInteraction()
+        {
+            _openRow = -1;
+            _pickOutDirPending = false;
+            _outDirPickVersion++;
+        }'
+    }
+    'MUT-SHU4' {
+        # SU24 F24-off-promise：恢复该交互的旧故障路径。
+        Backup 'Pages/PlaybackPage.cs'
+        ReplaceExact 'Pages/PlaybackPage.cs' '            if (!Settings.ReplayOn)
+            {
+                Status.Warn(keybdSoundLost ? "status.loaded_disabled_nosound" : "status.loaded_disabled", name);
+                return;
+            }
+' ''
+    }
+    'MUT-SHU5' {
+        # SU25 F25-no-close-commit：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '            _fieldCommitters[key] = draft.Commit;
+' ''
+    }
+    'MUT-SHU6' {
+        # SU25 F25-unclamped：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '                if (TryParse(text, out float typed)) Apply(Mathf.Clamp(typed, Min, Max));' '                if (TryParse(text, out float typed)) Apply(typed);'
+    }
+    'MUT-SHU7' {
+        # SU26 F26-short-container：恢复该交互的旧故障路径。
+        Backup 'Ui/ModernSettingsWindow.cs'
+        ReplaceExact 'Ui/ModernSettingsWindow.cs' '            float subHeight = Gui.SegmentTabsH + (failures > 0 ? 32f : 0f);' '            float subHeight = Gui.SegmentTabsH;'
+    }
+    'MUT-SHU8' {
+        # SU28 F28-dropdown：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '            bool enabled = !Gui.IsDim;' '            bool enabled = true;'
+    }
+    'MUT-SHU9' {
+        # SU28 F28-modern-picker：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' '                        GUILayout.Height(28f)) && !Gui.IsDim)
+                    _pickOutDirPending = true;' '                        GUILayout.Height(28f)))
+                    _pickOutDirPending = true;'
+        ReplaceExact 'Ui/OnGui.cs' '            if (Gui.IsDim || !Settings.RenderOn) return;' '            if (!Settings.RenderOn) return;'
+    }
+    'MUT-SHU10' {
+        # SU28 F28-classic-picker：恢复该交互的旧故障路径。
+        Backup 'Ui/OnGui.cs'
+        ReplaceExact 'Ui/OnGui.cs' 'GUILayout.Width(Gui.ButtonW(changeLabel, Gui.ButtonStyle, 90f)), GUILayout.Height(24f)) && !Gui.IsDim)' 'GUILayout.Width(Gui.ButtonW(changeLabel, Gui.ButtonStyle, 90f)), GUILayout.Height(24f)))'
+        ReplaceExact 'Ui/OnGui.cs' '            if (Gui.IsDim || !Settings.RenderOn) return;' '            if (!Settings.RenderOn) return;'
+    }
+    'MUT-SHU11' {
+        # SU29 F29-restore-hides-failure：恢复该交互的旧故障路径。
+        Backup 'Pages/CloudPanel.cs'
+        ReplaceExact 'Pages/CloudPanel.cs' '                            if (r.Restored > 0 && r.Failed > 0)
+                            {
+                                Status.Warn("playback.cloud.partial", Loc.F("playback.cloud.partial.detail",
+                                    r.Restored, r.Failed, CloudErrorText(r.LastError)));
+                            }
+                            else if (r.Restored > 0)' '                            if (r.Restored > 0)'
+    }
+    'MUT-SHU12' {
+        # SU29 F29-upload-hides-failure：恢复该交互的旧故障路径。
+        Backup 'Pages/CloudPanel.cs'
+        ReplaceExact 'Pages/CloudPanel.cs' '                            if (r.Uploaded > 0 && r.Failed > 0)
+                            {
+                                Status.Warn("playback.cloud.partial", Loc.F("playback.cloud.partial.detail",
+                                    r.Uploaded, r.Failed, CloudErrorText(r.LastError)));
+                            }
+                            else if (r.Uploaded > 0)' '                            if (r.Uploaded > 0)'
+    }
+    'MUT-SHR2' {
+        # F21R 手动保存误把接受请求当成写盘成功，失败后热键不能重试。
+        Backup 'Features/Replay/Patches/Patch_Misc.cs'
+        ReplaceAfter 'Features/Replay/Patches/Patch_Misc.cs' 'internal class Patch_ConductorUpdate' '        SaveFile();' '        if (SaveFile()) PendingSave = false;'
+    }
+    'MUT-SHR3' {
+        # F21R 普通过关自动保存恢复提前清标记的旧行为。
+        Backup 'Features/Replay/Patches/Patch_Recording.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_Recording.cs' '        else SaveFile();' '        else if (SaveFile()) PendingSave = false;'
+    }
+    'MUT-SHR4' {
+        # F21R 无失误过关分支也必须等实际保存完成。
+        Backup 'Features/Replay/Patches/Patch_Recording.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_Recording.cs' '            if (HitMarginCompat.FailCount(HitMarginCounts) == 0) SaveFile();' '            if (HitMarginCompat.FailCount(HitMarginCounts) == 0 && SaveFile()) PendingSave = false;'
+    }
+    'MUT-SHR5' {
+        # F21R 失败自动保存恢复提前清标记的旧行为。
+        Backup 'Features/Replay/Patches/Patch_Recording.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_Recording.cs' '        if (Settings.FailSave && PendingSave) SaveFile();' '        if (Settings.FailSave && PendingSave && SaveFile()) PendingSave = false;'
+    }
+    'MUT-SHR6' {
+        # F21R 成功完成漏清待保存，会使下一次热键再次发布同局。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '                if (operation.Success && ReferenceEquals(data, Owner)) PendingSave = false;' ''
+    }
+    'MUT-SHR7' {
+        # F21R 丢掉当前数据身份校验，旧局完成清掉另一实例的新局。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' 'operation.Success && ReferenceEquals(data, Owner)' 'operation.Success'
+    }
+    'MUT-SHR8' {
+        # F21R 同一 ReplayData Reset 后，过期作业不能清新局标记。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            if (ReferenceEquals(Owner.SaveOperation, operation))' '            if (true)'
+    }
+    'MUT-SHR9' {
+        # F21R 失败时盲目恢复待保存会撤销玩家已经取消的意图。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            operation.AllowRetry();' '            operation.AllowRetry(); if (!operation.Success) PendingSave = true;'
+    }
+    'MUT-SHR10' {
+        # AS11 丢弃失焦事件时不记断档，恢复仍把真实按下误判为重复。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            if (_inputGapTicks == 0) _inputGapTicks = DateTime.Now.Ticks;' ''
+    }
+    'MUT-SHR11' {
+        # AS11 只补回放松开却不清来源缓存，恢复首键仍被吞掉。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                HeldAtLastEdge[key] = false;' ''
+    }
+    'MUT-SHR12' {
+        # AS11 只重置去重缓存却不写松开，回放仍跨断档保持旧键。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                if (!ManagedInput.IsModHotkey(key))
+                    data.KeyEvents.Add(new KeyEvent { KeyCode = key, IsPressed = false, SongPosition = gapPosition });' ''
+    }
+    'MUT-SHR13' {
+        # AS12 新录制沿用旧断档，错误释放新局同步种下的持键。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceAfter 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '    internal static void BeginRecording()' '        _inputGapTicks = 0;' ''
+    }
+    'MUT-SHR14' {
+        # AS11 断档补松未同步轮询基线，异步转同步会沿用旧持键。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                PrevKeyState[key] = 0;' ''
+    }
+    'MUT-SHV1' {
+        # F20 原生视频仍走 DSP 实时时钟，captureFramerate 不接管它。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'vp.timeUpdateMode = UnityEngine.Video.VideoTimeUpdateMode.GameTime;' 'vp.timeUpdateMode = UnityEngine.Video.VideoTimeUpdateMode.DSPTime;'
+    }
+    'MUT-SHV2' {
+        # F20 漏接尚未激活的视频，首次显示后仍用原来的异步时钟。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'FindObjectsInactive.Include, FindObjectsSortMode.None' 'FindObjectsInactive.Exclude, FindObjectsSortMode.None'
+    }
+    'MUT-SHV3' {
+        # F20 恢复强制 Play，抢跑并跳过游戏 vidOffset/pitch 初始化。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'vp.timeUpdateMode = UnityEngine.Video.VideoTimeUpdateMode.GameTime;' 'vp.timeUpdateMode = UnityEngine.Video.VideoTimeUpdateMode.GameTime; if (!vp.isPlaying) vp.Play();'
+    }
+    'MUT-SHV4' {
+        # F20 退出遗漏时钟恢复，污染后续普通游玩。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'vp.timeUpdateMode = pinnedVideoClockModes[i];' ''
+    }
+    'MUT-SHV5' {
+        # F20 恢复旧收尾副作用：重置歌曲变速并暂停游戏启动的视频。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'vp.timeUpdateMode = pinnedVideoClockModes[i];' 'vp.timeUpdateMode = pinnedVideoClockModes[i]; vp.playbackSpeed = 1f; vp.Pause();'
+    }
+    'MUT-SHV6' {
+        # F20 保存错误的统一时钟模式，退出丢失播放器各自的原始配置。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'pinnedVideoClockModes.Add(vp.timeUpdateMode);' 'pinnedVideoClockModes.Add(UnityEngine.Video.VideoTimeUpdateMode.DSPTime);'
+    }
+    'MUT-SHV7' {
+        # F20 错把背景视频当必需项，无背景视频关卡不能渲染。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceAfter 'Features/VideoRender/Pipeline/VideoRenderJob.cs' '    private void PinVideoPlayers()' '        if (pinnedVideos.Count > 0)' '        if (pinnedVideos.Count == 0) throw new InvalidOperationException("missing background video");
+        if (pinnedVideos.Count > 0)'
+    }
+    'MUT-SHV8' {
+        # F20 作业启动重读全局帧率，破坏捕获配置快照。
+        Backup 'Features/VideoRender/Pipeline/VideoRenderJob.cs'
+        ReplaceExact 'Features/VideoRender/Pipeline/VideoRenderJob.cs' 'int fps = Math.Max(1, options.Fps);' 'int fps = Math.Max(1, Settings.RenderFps);'
+    }
+    'MUT-SFIX1' {
+        # AS13：同一录制缺时钟的尾部队列被重新开启的监听清空。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '            if (!is_recording) AsyncKeyRecorder.DiscardPending();' '            AsyncKeyRecorder.DiscardPending();'
+    }
+    'MUT-SFIX2' {
+        # F28：漏挂退出门，正常退出不再等待已接受的保存。
+        Backup 'Main.cs'
+        ReplaceExact 'Main.cs' '                Application.wantsToQuit += ReplaySaveShutdown.WantsToQuit;' ''
+    }
+    'MUT-SFIX3' {
+        # F28：只统计已启动线程，等待录音封头的保存被漏出退出凭据。
+        Backup 'State/SpectreState.cs'
+        Backup 'Features/Replay/Runtime/ReplaySaveOperation.cs'
+        ReplaceExact 'State/SpectreState.cs' '        operation.Accept();' ''
+        ReplaceExact 'Features/Replay/Runtime/ReplaySaveOperation.cs' '        if (!ThreadPool.QueueUserWorkItem(_ => Run()))' '        Accept();
+        if (!ThreadPool.QueueUserWorkItem(_ => Run()))'
+    }
+    'MUT-SFIX4' {
+        # F28：无法创建完成观察器/排队失败仍持有凭据，退出永久等待不存在的工作。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' '                queueFailed = true;
+                operation.Release();' '                queueFailed = true;'
+    }
+    'MUT-SFIX5' {
+        # F29：玩家已主动重试退出，旧等待器仍再次触发退出确认。
+        Backup 'State/ReplaySaveShutdown.cs'
+        ReplaceExact 'State/ReplaySaveShutdown.cs' '            quitDeferred = false;
+            return true;' '            return true;'
+    }
+    'MUT-SFIX6' {
+        # F29：新退出请求复用全局标志时，旧等待器未按代际作废，重复存活。
+        Backup 'State/ReplaySaveShutdown.cs'
+        ReplaceExact 'State/ReplaySaveShutdown.cs' 'if (!quitDeferred || Generation != quitGeneration)' 'if (!quitDeferred)'
+    }
+    'MUT-SFIX7' {
+        # F30：本地回放有效载入仍先停旧会话，漏取消会把捕获误判成自然结束。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' '        // 替换是外部中断；先取消捕获，不能让 StopPlaying 被当成自然耗尽并发布短片。
+        if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+            SpectreReplay.Features.VideoRender.VideoRender.CancelRender();' ''
+    }
+    'MUT-SFIX8' {
+        # F30：内存/云载入路径同样不能遗漏捕获取消；不以本地路径的通过替代它。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' '        // 与文件装载相同：解码验证成功前不触碰旧会话；成功后才停录放并替换音频。
+        if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+            SpectreReplay.Features.VideoRender.VideoRender.CancelRender();' '        // 与文件装载相同：解码验证成功前不触碰旧会话；成功后才停录放并替换音频。'
+    }
+    'MUT-SFIX9' {
+        # F30：先 StopPlaying 再取消也必须失败；取消标志须在旧会话停止时已经置位。
+        Backup 'Features/Replay/Runtime/ReplayManager.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayManager.cs' '        // 替换是外部中断；先取消捕获，不能让 StopPlaying 被当成自然耗尽并发布短片。
+        if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+            SpectreReplay.Features.VideoRender.VideoRender.CancelRender();
+        SpectreState.PlayActions.StopPlaying();' '        SpectreState.PlayActions.StopPlaying();
+        if (SpectreReplay.Features.VideoRender.VideoRender.CaptureInProgress)
+            SpectreReplay.Features.VideoRender.VideoRender.CancelRender();'
+    }
+    'MUT-SFIX10' {
+        # AS14：恢复先同步记账再用最终持键去重，迟交的首DOWN丢失且时间倒序。
+        Backup 'State/SpectreState.cs'
+        ReplaceExact 'State/SpectreState.cs' 'ReplayRecorder.RecordKeyboardState(forceSync: true, reconcileAsyncHandoff: true)' 'ReplayRecorder.RecordKeyboardState(forceSync: true)'
+    }
+    'MUT-SFIX11' {
+        # AS15：按时间upper_bound重插会把同歌曲时间的后续UP放到旧DOWN前。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        events.Insert(handoff.PrefixCount + handoff.Published.Count, edge);' '        int index = events.FindLastIndex(e => e.SongPosition <= position) + 1;
+        events.Insert(index, edge);'
+    }
+    'MUT-SFIX12' {
+        # AS16：把采样后才发生的窗口内DOWN强制修正回较早快照，捏造UP。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            if (duringSample.Contains(key)) continue;' ''
+    }
+    'MUT-SFIX13' {
+        # AS16：窗口内真实边沿未协调实时去重状态，后续UP会被旧snapshot吞掉。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            HeldAtLastEdge[key] = (held[key] & 0x80) != 0;
+            PrevKeyState[key] = held[key];' ''
+    }
+    'MUT-SFIX14' {
+        # AS16：本批采样后UP先按旧基线去重，重建迟到DOWN已无法救回该UP。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        if (rebuildHandoff) RebuildSynchronousHandoff(synchronousHandoff);
+        foreach (SkyHookEvent ev in FrameBuffer)' '        foreach (SkyHookEvent ev in FrameBuffer)'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '                SongPosition = songPos
+            });
+        }' '                SongPosition = songPos
+            });
+        }
+        if (rebuildHandoff) RebuildSynchronousHandoff(synchronousHandoff);'
+    }
+    'MUT-SFIX15' {
+        # AS17：交接后的第一条真实边沿若不保留到Tail，迟交采样内边沿会复活错误状态。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '        handoff.Tail.Add(new HandoffObservation { Edge = edge });' '        // Drop the first post-handoff observation.'
+    }
+    'MUT-SFIX16' {
+        # AS18：后续同步采样也必须作为交接后缀证据，不能只依赖普通事件列表。
+        Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' '        AsyncKeyRecorder.ObserveSynchronousState(conductor.songposition_minusi);' '        // Do not retain the later synchronous observation.'
+    }
+    'MUT-SFIX17' {
+        # AS19：失焦断档要建立全键释放边界，不能只释放当前Held表里的键。
+        Backup 'Features/Replay/Runtime/AsyncKeyRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/AsyncKeyRecorder.cs' '            SynchronousHandoff gapHandoff = ObserveGapRelease(gapPosition);' '            SynchronousHandoff gapHandoff = null;'
+    }
+    'MUT-SFIX18' {
+        # AS20：最终排空后要释放旧ReplayData的交接引用。
+        Backup 'Features/Replay/Runtime/ReplayRecorder.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplayRecorder.cs' '        finally { AsyncKeyRecorder.EndRecording(); }' '        finally { }'
+    }
+    'MUT-SHR1' {
+        # F21C2 回退为后台调用带 Unity 日志的包装层；真实保存失败必须被专项击中。
+        Backup 'Features/Replay/Runtime/ReplaySaveOperation.cs'
+        ReplaceExact 'Features/Replay/Runtime/ReplaySaveOperation.cs' 'if (!noEncryption) bytes = ReplayCrypto.EncryptCore(bytes);' 'if (!noEncryption) bytes = ReplayCrypto.Encrypt(bytes);'
+    }
     default {
         throw "未知变异 $Which（可用：MUT-P0…P11 / MUT-U1 / U2 / U3 / U4 / U5 / MUT-K1 / MUT-A1 / A2 / A3 / A4 / A5 / A6 / MUT-C1 / C2 / C3 / MUT-T1 / MUT-R1 / MUT-L1 / MUT-L2 / MUT-V1 / MUT-V2 / MUT-V3 / MUT-V4 / MUT-V5 / MUT-V6 / MUT-V7 / MUT-V8 / MUT-V9 / MUT-V10 / MUT-V11 / MUT-V12 / MUT-V13 / MUT-X1 / MUT-X2 / MUT-E1 / MUT-N1 / MUT-N2 / MUT-D1 / MUT-F1 / MUT-I1 / MUT-G1 / MUT-W1 / MUT-K2 / MUT-D2 / MUT-P12 / MUT-P13 / MUT-U6 / MUT-U7 / MUT-U8 / MUT-U9 / MUT-U10 / MUT-U11 / MUT-U12 / MUT-U13 / MUT-U14 / MUT-U15 / MUT-U19 / MUT-U20 / MUT-U21 / MUT-U22 / MUT-U23 / MUT-U24 / MUT-U25 / MUT-U26 / MUT-U27 / MUT-U28 / MUT-U29 / MUT-U30 / MUT-U31 / MUT-U32…MUT-U100 / MUT-MUX1 / MUT-MUX2 / MUT-API1 / MUT-API2 / MUT-API3 / MUT-RI1 / MUT-RI2 / MUT-RI3 / MUT-ENC1 / MUT-ENC2 / MUT-ENC3 / MUT-ENC4 / MUT-AV1-1 / MUT-AV1-2 / MUT-AV1-3 / MUT-AV1-4 / MUT-AV1-5 / MUT-AV1-6 / MUT-AV1-7 / MUT-AV1-8 / MUT-AV1-9 / MUT-CPU1 / MUT-CPU2 / MUT-CPU3 / MUT-CPU4 / MUT-CPU5 / MUT-CI22 / MUT-CI23 / MUT-CI24 / MUT-HDR1 / MUT-HDR2 / MUT-HDR3 / MUT-HDR4 / MUT-HDR5 / MUT-HDR6 / MUT-HDR7 / MUT-HDR10-1 / MUT-HDR10-2 / MUT-HDR10-3 / MUT-HDR10-4 / MUT-JRP1 / MUT-JRP2 / MUT-2C1 / MUT-2C2 / MUT-OVL1 / MUT-OVL2 / MUT-10B1 / MUT-10B2 / MUT-10B3 / MUT-10B4 / MUT-10B5 / MUT-HW1 / MUT-HW2 / MUT-HW3 / MUT-HW4 / MUT-HW5 / MUT-HW6 / MUT-EF1 / MUT-EF2 / MUT-WS1 / MUT-WS2 / MUT-WS3 / MUT-U108 / MUT-U109 / MUT-U110 / MUT-U111 / MUT-U112 / MUT-U113 / MUT-U114 / MUT-U115 / MUT-U116 / MUT-U140 / MUT-U142 / MUT-QC1 / MUT-QC2 / MUT-QC3 / MUT-QC4 / MUT-QC5 / MUT-QC6 / MUT-QC7 / MUT-QC8 / MUT-QC9 / MUT-QC10 / MUT-QC11 / MUT-QC12 / MUT-QC13 / MUT-QC14）"
     }
@@ -3989,20 +4986,26 @@ switch ($Which) {
 # 跑闸门
 Push-Location (Join-Path $root 'tools\UiPreview')
 $b = & dotnet build UiPreview.csproj -c Release --no-incremental --verbosity quiet 2>&1
+$buildExit = $LASTEXITCODE
 $berrs = @($b | Select-String -Pattern 'error CS')
-if ($berrs.Count -gt 0) {
+if ($buildExit -ne 0 -or $berrs.Count -gt 0) {
     Pop-Location; Cleanup
-    Write-Host '✗ 预览器自身编译不过（检查代码写错了，不是被测对象）' -ForegroundColor Red
-    $berrs | Select-Object -First 5 | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) -ForegroundColor Red }
+    Write-Host ("✗ 预览器构建失败（exit=" + $buildExit + "；检查代码写错了，不是被测对象）") -ForegroundColor Red
+    if ($berrs.Count -gt 0) {
+        $berrs | Select-Object -First 5 | ForEach-Object { Write-Host ('  ' + $_.Line.Trim()) -ForegroundColor Red }
+    } else {
+        $b | Select-Object -Last 12 | ForEach-Object { Write-Host ('  ' + $_) -ForegroundColor DarkGray }
+    }
     exit 2
 }
-$out = & dotnet run -c Release 2>&1
+$out = & dotnet run --no-build -c Release 2>&1
+$runExit = $LASTEXITCODE
 Pop-Location
 
 $bad = @($out | Where-Object { $_ -match '^\s+✗' })
 $good = @($out | Where-Object { $_ -match '^\s+✓' })
 foreach ($b2 in $bad) { Write-Host ('  ' + $b2.Trim()) -ForegroundColor Red }
-Write-Host ('  断言 ' + ($good.Count + $bad.Count) + ' 条，失败 ' + $bad.Count)
+Write-Host ('  断言 ' + ($good.Count + $bad.Count) + ' 条，失败 ' + $bad.Count + '；UiPreview exit=' + $runExit)
 
 # **0 条断言 = 无法判定，不能记成「断言是假的」。** 解析不到输出与
 # 「变异没被检出」是两件事：前者说明预览器崩了或编码不对，后者才是判据有问题。
@@ -4010,6 +5013,12 @@ Write-Host ('  断言 ' + ($good.Count + $bad.Count) + ' 条，失败 ' + $bad.C
 if (($good.Count + $bad.Count) -eq 0) {
     Cleanup
     Write-Host '✗ 一条断言都没解析到（预览器崩溃或输出编码不对）——无法判定本次变异' -ForegroundColor Red
+    $out | Select-Object -Last 15 | ForEach-Object { Write-Host ('  ' + $_) -ForegroundColor DarkGray }
+    exit 2
+}
+if ($runExit -ne $bad.Count) {
+    Cleanup
+    Write-Host ("✗ UiPreview 原生退出码与行为断言失败数不符（exit=" + $runExit + "，解析失败=" + $bad.Count + "）——无法判定本次变异") -ForegroundColor Red
     $out | Select-Object -Last 15 | ForEach-Object { Write-Host ('  ' + $_) -ForegroundColor DarkGray }
     exit 2
 }

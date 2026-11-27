@@ -14,6 +14,7 @@ namespace SpectreReplay;
 public class AudioRecorder : MonoBehaviour
 {
     private static AudioRecorder _instance;
+    private static string _lastDeviceWarning;
 
     [Header("录制配置")]
     [SerializeField]
@@ -45,6 +46,7 @@ public class AudioRecorder : MonoBehaviour
     private static MethodInfo _getDataMethod;
 
     private string microphoneDevice;
+    private static string[] _validatedDeviceSnapshot;
 
     private Thread processingThread;
 
@@ -124,20 +126,20 @@ public class AudioRecorder : MonoBehaviour
             Debug.Log("已经在录制中");
             return false;
         }
-        if (Microphone.devices.Length == 0)
-        {
-            Debug.Log("没有找到可用的麦克风设备");
+        string[] devices = Microphone.devices;
+        string selectedDevice = ResolveConfiguredDevice(deviceName, devices, persist: true);
+        if (string.IsNullOrEmpty(selectedDevice))
             return false;
-        }
         try
         {
+            try { LastStop?.DiscardUnclaimedAudio(); }
+            catch (Exception ex) { Debug.LogWarning("[AudioRecorder] 清理未保存录音失败: " + ex.Message); }
             LastStop = null;
-            if (!string.IsNullOrEmpty(deviceName) && ValidateDevice(deviceName)
-                && deviceName != microphoneDevice)
+            if (!string.Equals(selectedDevice, microphoneDevice, StringComparison.Ordinal))
             {
                 if (!string.IsNullOrEmpty(microphoneDevice) && Microphone.IsRecording(microphoneDevice))
                     Microphone.End(microphoneDevice);
-                microphoneDevice = deviceName;
+                microphoneDevice = selectedDevice;
             }
             lock (bufferLock)
             {
@@ -492,10 +494,13 @@ public class AudioRecorder : MonoBehaviour
                     wavDataBuffer.Clear();
                 }
                 finalizedHash = FinalizeWavFile();
+                if (!string.IsNullOrEmpty(finalizedHash))
+                    LastStop.PreserveAudio(currentFilePath);
             }
         }
         catch (Exception ex)
         {
+            finalizedHash = null;
             Debug.LogError("[AudioRecorder] 音频收尾失败，回放将不附带该段录音: " + ex);
         }
         finally
@@ -667,21 +672,51 @@ public class AudioRecorder : MonoBehaviour
         }
     }
 
-    internal bool ValidateDevice(string deviceName)
+    internal static string ResolveConfiguredDevice(string requested, bool persist)
+        => ResolveConfiguredDevice(requested, Microphone.devices, persist);
+
+    internal static string ResolveConfiguredDevice(string requested, string[] devices, bool persist)
     {
-        if (string.IsNullOrEmpty(deviceName))
+        string selected = MicrophoneDevicePolicy.Resolve(requested, devices, out bool usedFallback);
+        if (string.IsNullOrEmpty(selected))
         {
-            return false;
-        }
-        string[] devices = Microphone.devices;
-        foreach (string device in devices)
-        {
-            if (device == deviceName)
+            string missingKey = "<none>";
+            if (!string.Equals(_lastDeviceWarning, missingKey, StringComparison.Ordinal))
             {
-                return true;
+                Debug.LogWarning("[AudioRecorder] 没有可用的麦克风设备；不会假报告录音已启动");
+                _lastDeviceWarning = missingKey;
+            }
+            _validatedDeviceSnapshot = devices;
+            return null;
+        }
+
+        string warningKey = (requested ?? "") + "=>" + selected;
+        if (usedFallback)
+        {
+            if (!string.Equals(_lastDeviceWarning, warningKey, StringComparison.Ordinal))
+            {
+                Debug.LogWarning("[AudioRecorder] 配置的麦克风不可用，已回退到设备: " + selected);
+                _lastDeviceWarning = warningKey;
             }
         }
-        return false;
+        else
+        {
+            _lastDeviceWarning = null;
+        }
+        _validatedDeviceSnapshot = devices;
+        if (persist && !string.Equals(Settings.MicrophoneDeviceName, selected, StringComparison.Ordinal))
+        {
+            Settings.MicrophoneDeviceName = selected;
+            Settings.CommitSafe();
+        }
+        return selected;
+    }
+
+    internal bool ValidateDevice(string deviceName)
+    {
+        // 现有预热补丁先调用 ValidateDevice，再调用 startMicrophone。这里返回“有
+        // 可用设备即可回退”，而不是把旧名失效误判成“完全没有设备”。
+        return !string.IsNullOrEmpty(ResolveConfiguredDevice(deviceName, persist: false));
     }
 
     private void Cleanup(bool End_microphone = false)
@@ -792,20 +827,24 @@ public class AudioRecorder : MonoBehaviour
             Debug.LogWarning("[AudioRecorder] 上次录音线程仍在收尾，麦克风预热已延后");
             return;
         }
-        if (!ValidateDevice(deviceName))
-        {
-            Debug.Log("device name illegal");
+        string[] devices = _validatedDeviceSnapshot;
+        string selected = null;
+        if (devices != null)
+            selected = MicrophoneDevicePolicy.Resolve(deviceName, devices, out _);
+        if (string.IsNullOrEmpty(selected))
+            selected = ResolveConfiguredDevice(deviceName, persist: true);
+        _validatedDeviceSnapshot = null;
+        if (string.IsNullOrEmpty(selected))
             return;
-        }
-        microphoneDevice = deviceName;
-        if (!Microphone.IsRecording(deviceName))
+        microphoneDevice = selected;
+        if (!Microphone.IsRecording(selected))
         {
-            recordingClip = Microphone.Start(deviceName, true, maxRecordingLength, recordingFrequency);
-            Debug.Log(("Recording " + deviceName));
+            recordingClip = Microphone.Start(selected, true, maxRecordingLength, recordingFrequency);
+            Debug.Log(("[AudioRecorder] 麦克风预热: " + selected));
         }
-        if (!Microphone.IsRecording(deviceName))
+        if (!Microphone.IsRecording(selected))
         {
-            Debug.Log("FAIL");
+            Debug.LogWarning("[AudioRecorder] 麦克风预热失败: " + selected);
         }
     }
 

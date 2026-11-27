@@ -160,6 +160,13 @@ namespace SpectreReplay.Pages
         /// <summary>拖动滑条期间被推迟的落盘。见 Commit 的说明。</summary>
         private static bool _pendingCommit;
 
+        internal static void RefreshAfterConfigRestore()
+        {
+            // 显式恢复不是「把旧界面待办也重放一遍」。新配置已应用/保存，旧草稿作废。
+            _pendingCommit = false;
+            CancelCaptures();
+        }
+
         /// <summary>
         /// 改一个设置后落盘 + 刷新补丁开关。
         ///

@@ -81,6 +81,7 @@ internal static class EffectPresets
                         case "EffectRemoverDecorations": Settings.EffectRemoverDecorations = (bool)prop.Value; applied++; break;
                         case "EffectRemoverBackgrounds": Settings.EffectRemoverBackgrounds = (bool)prop.Value; applied++; break;
                         case "EffectRemoverCameras": Settings.EffectRemoverCameras = (bool)prop.Value; applied++; break;
+                        case "EffectRemoverSetCameraZoom": Settings.EffectRemoverSetCameraZoom = (bool)prop.Value; applied++; break;
                         case "EffectRemoverPlanetOrbit": Settings.EffectRemoverPlanetOrbit = (bool)prop.Value; applied++; break;
                         case "EffectRemoverPlanetScale": Settings.EffectRemoverPlanetScale = (bool)prop.Value; applied++; break;
                         case "EffectRemoverPlanetRadius": Settings.EffectRemoverPlanetRadius = (bool)prop.Value; applied++; break;
@@ -148,6 +149,7 @@ internal static class EffectPresets
                 ["EffectRemoverDecorations"] = Settings.EffectRemoverDecorations,
                 ["EffectRemoverBackgrounds"] = Settings.EffectRemoverBackgrounds,
                 ["EffectRemoverCameras"] = Settings.EffectRemoverCameras,
+                ["EffectRemoverSetCameraZoom"] = Settings.EffectRemoverSetCameraZoom,
                 ["EffectRemoverPlanetOrbit"] = Settings.EffectRemoverPlanetOrbit,
                 ["EffectRemoverPlanetScale"] = Settings.EffectRemoverPlanetScale,
                 ["EffectRemoverPlanetRadius"] = Settings.EffectRemoverPlanetRadius,
@@ -176,8 +178,8 @@ internal static class EffectPresets
                 ["settings"] = settings,
             };
             // UTF-8 无 BOM：与 Configs.json 同一口径，方便手工编辑/跨机器分享
-            File.WriteAllText(Path.Combine(dir, fileName),
-                root.ToString(Newtonsoft.Json.Formatting.Indented), new UTF8Encoding(false));
+            PresetFile.Write(Path.Combine(dir, fileName), new UTF8Encoding(false).GetBytes(
+                root.ToString(Newtonsoft.Json.Formatting.Indented)), overwrite: true);
             return (true, fileName, null);
         }
         catch (Exception ex)
@@ -296,8 +298,16 @@ internal static class EffectPresets
                     skipped++;
                     continue;
                 }
-                File.WriteAllBytes(local, data);
-                pulled++;
+                try
+                {
+                    PresetFile.Write(local, data, overwrite: false);
+                    pulled++;
+                }
+                catch (Exception ex)
+                {
+                    skipped++;
+                    Debug.LogWarning("[SpectreReplay] 云端预设写入失败（保留本地文件，可重试）：" + name + " " + ex.Message);
+                }
             }
             return (pulled, skipped, null);
         }

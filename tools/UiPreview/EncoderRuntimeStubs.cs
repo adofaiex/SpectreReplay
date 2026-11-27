@@ -22,7 +22,7 @@ namespace SpectreReplay
         internal static int RenderWidth, RenderHeight, RenderFps, RenderEncoderMode, RenderQualityMode;
         internal static int RenderRateControl, RenderCrf, RenderCqp, RenderBitrateMbps, RenderPreset;
         internal static int RenderAudioOffsetMs;
-        internal static bool Render10Bit, RenderHdr10, RenderCursorOn;
+        internal static bool RenderOn, Render10Bit, RenderHdr10, RenderCursorOn;
         internal static float RenderTailSeconds;
     }
 }

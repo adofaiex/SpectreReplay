@@ -22,7 +22,7 @@ internal static class EncoderMatrixCheck
         string job = Read("Features/VideoRender/Pipeline/VideoRenderJob.cs");
         string settings = Read("State/Settings.cs");
         string cfg = Read("State/ConfigManager.cs");
-        string pages = Read("Pages/Pages.cs");
+        string pages = Read("Pages/Pages.cs") + "\n" + Read("Pages/RenderPage.cs");
 
         Console.WriteLine("  ── 视频编码器矩阵 ──");
 
@@ -140,9 +140,10 @@ internal static class EncoderMatrixCheck
             && pages.Contains("OnGui.RowSlider(\"render.cqp\"", StringComparison.Ordinal)
             && pages.Contains("OnGui.RowSlider(\"render.bitrate\"", StringComparison.Ordinal),
             "⑥ 界面暴露视频编码/码率模式/preset 入口");
-        Check(pages.Contains("(VideoEncoder.HardwareBackend)Mathf.Clamp(RenderHardware, 0, 4)", StringComparison.Ordinal)
-            && pages.Contains("(VideoEncoder.VideoCodec)Mathf.Clamp(RenderVideoCodec, 0, 2)", StringComparison.Ordinal)
-            && pages.Contains("VideoEncoder.DescribeEncoder(", StringComparison.Ordinal),
+        Check(pages.Contains("OnGui.RowDropdown(\"render.hardware\"", StringComparison.Ordinal)
+            && pages.Contains("OnGui.RowDropdown(\"render.video_codec\"", StringComparison.Ordinal)
+            && pages.Contains("VideoRender.Job?.ActualEncoder", StringComparison.Ordinal)
+            && pages.Contains("probe.Encoder", StringComparison.Ordinal),
             "⑥ 编码路径下拉已瘦身，后端由 hardware 传入");
         Check(pages.Contains("render.codec.mov_av1_fallback", StringComparison.Ordinal)
             && pages.Contains("render.codec.svt_cbr", StringComparison.Ordinal)
@@ -200,5 +201,6 @@ internal static class EncoderMatrixCheck
     }
 
     private static string Read(string rel)
-        => SrcUtil.Source(Driver.ProjectDir, rel);
+        => rel.EndsWith(".cs", StringComparison.OrdinalIgnoreCase)
+            ? SrcUtil.Source(Driver.ProjectDir, rel) : SrcUtil.Read(Driver.ProjectDir, rel);
 }

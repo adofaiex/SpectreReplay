@@ -129,9 +129,10 @@ internal sealed class VideoEncoder : IDisposable
     private static bool IsHardwareCodec(Codec codec)
         => codec >= Codec.NvencH264 && codec <= Codec.AmfAv1;
 
-    private Process pipe;
+    // TearDown/延迟清理与 FinishVideo/Dispose 可并发读取；引用发布与撤销必须可见。
+    private volatile Process pipe;
     private BlockingCollection<PendingFrame> queue;
-    private Thread pump;
+    private volatile Thread pump;
     // **必须 volatile**：泵线程写、主线程在 Submit 里读。非 volatile 时主线程
     // 可能一直读到缓存里的 null，于是一个已经死掉的泵还会被继续 Submit
     // （虽然 pipe.HasExited 与队列 CompleteAdding 最终会兜住，但那已经是
@@ -145,6 +146,43 @@ internal sealed class VideoEncoder : IDisposable
     // 帧队列容量（Begin 时按 256 MiB 预算定）：调用方据此对齐回读缓冲池上限，
     // 否则编码满载时每帧回收的 30+ 个大数组只有 8 个进池、其余全丢 LOH
     internal int QueueCapacity { get; private set; }
+
+    // 读取本地快照，避免另一线程在 null 检查与属性访问之间撤销字段。
+    // Process.HasExited 在 Dispose/无关联进程时会抛 InvalidOperationException；
+    // 这表示本对象已没有可等待的进程。其它异常保持“仍活跃”，避免不确定时提前删临时目录。
+    internal bool HasActiveWorker
+    {
+        get
+        {
+            Thread activePump = pump;
+            if (activePump != null)
+            {
+                try
+                {
+                    if (activePump.IsAlive) return true;
+                }
+                catch
+                {
+                    return true;
+                }
+            }
+
+            Process activePipe = pipe;
+            if (activePipe == null) return false;
+            try
+            {
+                return !activePipe.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+            catch
+            {
+                return true;
+            }
+        }
+    }
 
     internal VideoEncoder(string exePath, string rawVideoPath, string finalVideoPath,
         int width, int height, int fps, Quality quality, int qualityTier, bool flipRows,
@@ -275,39 +313,80 @@ internal sealed class VideoEncoder : IDisposable
         }
     }
 
-    /// <summary>
-    /// 后台预热：LocateEncoder + NVENC 探测。两者都是起 ffmpeg 子进程并
-    /// WaitForExit(15000)，如果在 OnGUI 里首次调用会卡主线程很久。
-    /// mod 加载与渲染页打开时各调一次（内部节流），把 spawn 的文件缓存
-    /// 与探测结果提前焐热，用户点「开始渲染」时预启动的 Join 不再等。
-    /// </summary>
-    private static int lastWarmUpTick = int.MinValue;
+    internal enum ProbeState { Pending, Ready, Failed }
 
-    internal static void WarmUp()
+    // 单次引用发布：OnGUI/开始按钮只读，不取得 ProbeLock，也不触发文件/进程 IO。
+    internal sealed class ProbeSnapshot
     {
-        // 渲染页每帧都会走到这里，冷却期内不重复起线程（与负缓存同一语义）
-        if (Cooling(lastWarmUpTick)) return;
-        lastWarmUpTick = Environment.TickCount;
-        System.Threading.ThreadPool.QueueUserWorkItem(_ =>
-        {
-            try
-            {
-                string exe = LocateEncoder();
-                if (exe == null) return;
-                EncoderCatalog.EnsureLoaded(exe);
-                // 预热当前设置会选中的编码器；ResolveCodec 会在需要时起 1 帧 preflight。
-                var container = (OutContainer)Mathf.Clamp(SpectreReplay.Settings.RenderOutputFormat, 0, 3);
-                var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 2);
-                var hardware = (HardwareBackend)Mathf.Clamp(SpectreReplay.Settings.RenderHardware, 0, 4);
-                ResolveCodec(container, codec, hardware, SpectreReplay.Settings.Render10Bit,
-                    SpectreReplay.Settings.RenderHdr10);
-            }
-            catch { /* 预热失败不影响后续按需探测 */ }
-        });
+        internal readonly ProbeState State;
+        internal readonly string Path;
+        internal readonly string Encoder;
+        internal ProbeSnapshot(ProbeState state, string path, string encoder)
+        { State = state; Path = path; Encoder = encoder; }
     }
 
-    // PATH 探测已并入 VerifyEncoder（对最终选择统一跑 -version，含 PATH 回落），
-    // 原 PathProbeSucceeded 于 2026-11-02 移除——UI 与渲染门全部改走 VerifyEncoder。
+    private static volatile ProbeSnapshot probeSnapshot = new ProbeSnapshot(ProbeState.Pending, null, "…");
+    internal static ProbeSnapshot ReadProbeSnapshot() => probeSnapshot;
+    private static volatile int lastWarmUpTick = int.MinValue;
+    private static string lastWarmUpKey;
+    private static int warmUpActive;
+
+    internal static void WarmUp(bool forConversion = false)
+    {
+        if (!SpectreReplay.Settings.RenderOn && !forConversion) return;
+        // 设置快照只在主线程取；后台不读 Unity API。设置改变不受旧设置的冷却阻挡。
+        var container = (OutContainer)Mathf.Clamp(SpectreReplay.Settings.RenderOutputFormat, 0, 3);
+        var codec = (VideoCodec)Mathf.Clamp(SpectreReplay.Settings.RenderVideoCodec, 0, 2);
+        var hardware = (HardwareBackend)Mathf.Clamp(SpectreReplay.Settings.RenderHardware, 0, 4);
+        bool tenBit = SpectreReplay.Settings.Render10Bit;
+        bool hdr = RenderOutputPolicy.Hdr10Enabled(SpectreReplay.Settings.RenderHdr10,
+            SpectreReplay.Settings.RenderCaptureMode, (int)codec, (int)container);
+        string key = container + "|" + codec + "|" + hardware + "|" + tenBit + "|" + hdr;
+        if (key == lastWarmUpKey && Cooling(lastWarmUpTick)) return;
+        if (Interlocked.CompareExchange(ref warmUpActive, 1, 0) != 0) return;
+        lastWarmUpKey = key;
+        lastWarmUpTick = Environment.TickCount;
+        ProbeSnapshot previous = probeSnapshot;
+        // 已验证路径在刷新期间仍可启动（尤其 CPU 自动重试），不能每 30s 制造一次假性未就绪。
+        probeSnapshot = new ProbeSnapshot(previous.State == ProbeState.Ready ? ProbeState.Ready : ProbeState.Pending,
+            previous.Path, "…");
+        try
+        {
+            bool queued = ThreadPool.QueueUserWorkItem(_ =>
+            {
+                string exe = null;
+                try
+                {
+                    exe = LocateEncoder();
+                    if (!VerifyEncoder(exe))
+                    {
+                        probeSnapshot = new ProbeSnapshot(ProbeState.Failed, exe, "—");
+                        return;
+                    }
+                    EncoderCatalog.EnsureLoaded(exe);
+                    string name = DescribeEncoder(container, codec, hardware, tenBit, hdr);
+                    probeSnapshot = new ProbeSnapshot(ProbeState.Ready, exe, name);
+                    // 待目录/硬件探测落定后刷新描述；至少间隔 1s，不能每个 OnGUI 起一条线程。
+                    if (name == "…") lastWarmUpTick = unchecked(Environment.TickCount - (ProbeRetryMs - 1000));
+                }
+                catch (Exception ex)
+                {
+                    probeSnapshot = new ProbeSnapshot(ProbeState.Failed, exe, "—");
+                    Debug.LogWarning("[SpectreReplay] encoder warm-up failed: " + ex.Message);
+                }
+                finally
+                {
+                    Volatile.Write(ref warmUpActive, 0);
+                }
+            });
+            if (!queued) throw new InvalidOperationException("encoder warm-up could not be queued");
+        }
+        catch
+        {
+            probeSnapshot = new ProbeSnapshot(ProbeState.Failed, previous.Path, "—");
+            Volatile.Write(ref warmUpActive, 0);
+        }
+    }
 
     internal void Begin()
     {
@@ -357,16 +436,19 @@ internal sealed class VideoEncoder : IDisposable
         }
     }
 
-    // 队列满时自旋等待；取消检查交给回调。
-    // 另加卡死看门狗：ffmpeg 若停止读 stdin（磁盘满/编码器挂起），泵线程会堵在
-    // 管道 Write 上，队列随之填满——此时若用户不点取消，Submit 会无限自旋，
-    // 协程永远到不了带超时的 FinishVideo，整次渲染静默挂死（与本文件其余路径
-    // 的"超时即失败上报"策略不一致）。连续入队失败超过阈值即判定编码器卡死。
+    // 单次零等待入队。false 时所有权仍在调用方，协程必须让出再重试同一帧；
+    // 成功后才由泵负责回收。看门狗计真实连续阻塞时间，不随帧率/轮询次数改变。
     private const int SubmitStallTimeoutMs = 120_000;
-    private const int SubmitRetryMs = 50;
+    private Stopwatch submitStallClock;
 
-    internal void Submit(byte[] data, int length, int repeat, Action<byte[]> recycle, Func<bool> canceled)
+    internal bool TrySubmit(byte[] data, int length, int repeat, Action<byte[]> recycle, Func<bool> canceled)
     {
+        if (canceled != null && canceled())
+            throw new OperationCanceledException("canceled");
+        if (pipe == null || pipe.HasExited)
+            throw new InvalidOperationException("encoder process exited unexpectedly" + StderrSuffix());
+        if (pumpFailure != null)
+            throw new InvalidOperationException("encoder pump failed" + StderrSuffix(), pumpFailure);
         var frame = new PendingFrame
         {
             Data = data,
@@ -374,74 +456,99 @@ internal sealed class VideoEncoder : IDisposable
             Repeat = Math.Max(1, repeat),
             Recycle = recycle
         };
-        var waitedMs = 0;
-        while (true)
+        if (queue.TryAdd(frame, 0))
         {
-            if (canceled != null && canceled())
-                throw new OperationCanceledException("canceled");
-            if (pipe == null || pipe.HasExited)
-                throw new InvalidOperationException("encoder process exited unexpectedly"
-                    + StderrSuffix());
-            if (pumpFailure != null)
-                throw new InvalidOperationException("encoder pump failed" + StderrSuffix(), pumpFailure);
-            if (queue.TryAdd(frame, SubmitRetryMs))
-                return;
-            waitedMs += SubmitRetryMs;
-            if (waitedMs >= SubmitStallTimeoutMs)
-                throw new TimeoutException("encoder stalled: frame queue full for "
-                    + (SubmitStallTimeoutMs / 1000) + "s (ffmpeg stopped consuming stdin?)");
+            submitStallClock = null;
+            return true;
         }
+        if (submitStallClock == null) submitStallClock = Stopwatch.StartNew();
+        if (submitStallClock.ElapsedMilliseconds >= SubmitStallTimeoutMs)
+            throw new TimeoutException("encoder stalled: frame queue full for "
+                + (SubmitStallTimeoutMs / 1000) + "s (ffmpeg stopped consuming stdin?)");
+        return false;
     }
 
-    // 关闭管道收尾：等待写线程排空并让 ffmpeg 正常退出
-    internal void FinishVideo()
+    // 关闭管道收尾：等待写线程排空并让 ffmpeg 正常退出。
+    // cancelRequested 只由主线程提供；这里轮询它，不在主线程 Join。
+    internal void FinishVideo(Func<bool> canceled = null, TimeSpan? timeout = null)
     {
         if (pipe == null)
             return;
         queue.CompleteAdding();
-        // 泵线程排空队列；若 ffmpeg 停止读 stdin，泵会堵在满管道的 Write 上，
-        // 无限 Join 会把主线程挂死——限时轮询逃生（见 JoinPump）
-        if (!JoinPump(TimeSpan.FromMinutes(10)))
+        TimeSpan drainLimit = timeout ?? TimeSpan.FromMinutes(10);
+        if (!JoinPump(drainLimit, canceled))
         {
-            try { pipe.Kill(); } catch { }
-            try { pump.Join(3000); } catch { }
+            TerminateProcessAndDrainQueue();
+            if (canceled != null && canceled())
+                throw new OperationCanceledException("video encode canceled while draining");
             throw new InvalidOperationException("video encode stalled while draining (timeout)");
+        }
+        if (canceled != null && canceled())
+        {
+            TerminateProcessAndDrainQueue();
+            throw new OperationCanceledException("video encode canceled");
         }
         if (pumpFailure != null)
             throw new InvalidOperationException("encoder pump failed" + StderrSuffix(), pumpFailure);
         pipe.StandardInput.Close();
-        // 收尾只剩尾部 GOP flush + trailer，正常秒级完成；10 分钟兜底防 ffmpeg 卡死
-        // （磁盘满/编码器挂起）把主线程永久挂死，超时 Kill 走既有失败上报链路
-        if (!pipe.WaitForExit(600_000))
+        // 收尾只剩尾部 GOP flush + trailer；轮询等待既保持主线程非阻塞，
+        // 也让取消能在 ffmpeg 不主动退出时有界杀掉子进程。
+        CancellableWaitResult processResult = CancellableWait.Wait(
+            milliseconds => pipe.WaitForExit(milliseconds), canceled, drainLimit, 250);
+        if (processResult == CancellableWaitResult.Canceled)
         {
-            try { pipe.Kill(); } catch { }
-            try { pipe.WaitForExit(3000); } catch { }
+            TerminateProcessAndDrainQueue();
+            throw new OperationCanceledException("video encode canceled at finalize");
+        }
+        if (processResult == CancellableWaitResult.TimedOut)
+        {
+            TerminateProcessAndDrainQueue();
             throw new InvalidOperationException("video encode stalled at finalize (timeout)");
         }
+        if (canceled != null && canceled())
+            throw new OperationCanceledException("video encode canceled");
         if (pipe.ExitCode != 0)
             throw new InvalidOperationException("video encode failed, exit code " + pipe.ExitCode
                 + StderrSuffix());
         pipe.Dispose();
         pipe = null;
+        DrainPendingFrames();
         queue.Dispose();
         queue = null;
         pump = null;
     }
 
-    // 限时等待泵线程排空退出：ffmpeg 已死时管道断开、阻塞中的 Write 随即抛错，
-    // 泵必然很快收场（再宽限 3 秒）；活着但停止消费（锁文件/驱动挂起等）只能
-    // 等限时到头，由调用方 Kill 解除泵的阻塞再走失败链路
-    private bool JoinPump(TimeSpan limit)
+    // 限时等待泵线程排空退出：ffmpeg 已死时管道断开、阻塞中的 Write 随即抛错。
+    private bool JoinPump(TimeSpan limit, Func<bool> canceled)
     {
-        DateTime deadline = DateTime.UtcNow + limit;
-        while (!pump.Join(1000))
+        CancellableWaitResult result = CancellableWait.Wait(
+            milliseconds => pump.Join(milliseconds), canceled, limit, 250);
+        if (result == CancellableWaitResult.Completed) return true;
+        if (pipe.HasExited) return pump.Join(3000);
+        return false;
+    }
+
+    private void TerminateProcessAndDrainQueue()
+    {
+        try
         {
-            if (pipe.HasExited)
-                return pump.Join(3000);
-            if (DateTime.UtcNow >= deadline)
-                return false;
+            if (pipe != null && !pipe.HasExited)
+                pipe.Kill();
         }
-        return true;
+        catch { }
+        try { pipe?.WaitForExit(3000); } catch { }
+        try { pump?.Join(3000); } catch { }
+        if (pump == null || !pump.IsAlive)
+            DrainPendingFrames();
+    }
+
+    private void DrainPendingFrames()
+    {
+        if (queue == null) return;
+        while (queue.TryTake(out PendingFrame frame))
+        {
+            try { frame.Recycle?.Invoke(frame.Data); } catch { }
+        }
     }
 
     // 视频轨与混音轨合成最终文件。webm 只能 Opus/Vorbis 音频（强制 48k，Opus 不收其他采样率）。
@@ -461,7 +568,7 @@ internal sealed class VideoEncoder : IDisposable
     //                首段；两条路径都保持正时间戳起步。
     //   offset == 0 → 不加任何参数，命令行与无偏移时逐字一致（用户拿到与历史版本
     //                 bit 级相同的合成命令）。
-    internal void MuxWith(string wavPath, double audioOffsetSec)
+    internal void MuxWith(string wavPath, double audioOffsetSec, Func<bool> canceled = null, TimeSpan? timeout = null)
     {
         if (!File.Exists(wavPath))
             throw new InvalidOperationException("mixdown file missing: " + wavPath);
@@ -480,7 +587,7 @@ internal sealed class VideoEncoder : IDisposable
             + " " + Quote(finalVideoPath);
         try
         {
-            RunAndWait(exePath, args);
+            RunAndWait(exePath, args, canceled, timeout);
         }
         catch
         {
@@ -504,27 +611,34 @@ internal sealed class VideoEncoder : IDisposable
 
     public void Dispose()
     {
+        if (queue != null && !queue.IsAddingCompleted)
+        {
+            try { queue.CompleteAdding(); } catch (InvalidOperationException) { }
+        }
+        try
+        {
+            if (pipe != null && !pipe.HasExited)
+            {
+                pipe.Kill();
+                pipe.WaitForExit(3000);
+            }
+        }
+        catch { }
+        // 子进程/泵仍活着时不能关队列或回收仍在写的 PendingFrame。
+        // TearDown 的延迟清理会在后台再次 Dispose，待它们确实退出后再释放。
+        if (HasActiveWorker) return;
         if (pipe != null)
         {
-            try
-            {
-                if (!pipe.HasExited)
-                {
-                    // Kill 异步：等它真正退出，否则临时文件仍被占用
-                    pipe.Kill();
-                    pipe.WaitForExit(3000);
-                }
-            }
-            catch { }
             pipe.Dispose();
             pipe = null;
         }
+        DrainPendingFrames();
         if (queue != null)
         {
-            if (!queue.IsAddingCompleted) queue.CompleteAdding();
             queue.Dispose();
             queue = null;
         }
+        pump = null;
     }
 
     private void PumpLoop()
@@ -1175,63 +1289,10 @@ internal sealed class VideoEncoder : IDisposable
     // 超时基本只可能是"真卡住了"（磁盘满/解码器死锁/IO 阻塞）
     private const int RunAndWaitTimeoutMs = 30 * 60 * 1000;
 
-    internal static void RunAndWait(string exePath, string arguments)
-    {
-        var info = new ProcessStartInfo
-        {
-            FileName = exePath,
-            Arguments = "-hide_banner -loglevel warning " + arguments,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true
-        };
-        // stderr 收集：事件线程写、超时/失败路径读——StringBuilder 非线程安全，
-        // 全部访问走这把锁；并封顶保留**末尾** 8KB（审计 2026-11-02）：失控
-        // 进程的刷屏不该变成无界内存，而排障有用的恰恰是最后几行。
-        StringBuilder stderr = new StringBuilder();
-        var stderrLock = new object();
-        using (Process mux = Process.Start(info))
-        {
-            if (mux == null)
-                throw new InvalidOperationException("failed to start encoder");
-            mux.ErrorDataReceived += (_, e) =>
-            {
-                if (e.Data == null) return;
-                lock (stderrLock)
-                {
-                    stderr.AppendLine(e.Data);
-                    if (stderr.Length > 8192)
-                        stderr.Remove(0, stderr.Length - 8192);
-                }
-            };
-            mux.OutputDataReceived += (_, e) => { };
-            mux.BeginErrorReadLine();
-            mux.BeginOutputReadLine();
-            // 必须带超时：WaitForExit() 无参会无限等待。ffmpeg 卡死（磁盘满/解码器
-            // 死锁/IO 阻塞）时工作线程会永久阻塞在这里，ConvertState.Running 永远
-            // 不会置 false —— UI 停在"转换中"且 VideoConverter 没有取消通道，
-            // 用户只能重启游戏。渲染管线的同类调用都带超时，这里补齐。
-            if (!mux.WaitForExit(RunAndWaitTimeoutMs))
-            {
-                try { mux.Kill(); } catch { }
-                try { mux.WaitForExit(5000); } catch { }
-                string tail;
-                lock (stderrLock) { tail = stderr.ToString(); }
-                throw new TimeoutException("ffmpeg timed out after "
-                    + (RunAndWaitTimeoutMs / 60000) + " min (mux/convert)"
-                    + (tail.Length > 0 ? " stderr tail: " + tail : ""));
-            }
-            // 带参 WaitForExit 返回 true 只保证进程退出；异步读取器可能还在
-            // 排最后一口管道。无参 WaitForExit 等它们排完，再读 ExitCode 与
-            // stderr——否则失败消息可能截掉最后几行真正的错误原因。
-            mux.WaitForExit();
-            string stderrText;
-            lock (stderrLock) { stderrText = stderr.ToString(); }
-            if (mux.ExitCode != 0)
-                throw new InvalidOperationException("mux failed, exit code " + mux.ExitCode + ": " + stderrText);
-        }
-    }
+    internal static void RunAndWait(string exePath, string arguments,
+        Func<bool> canceled = null, TimeSpan? timeout = null)
+        => CancellableProcessRunner.RunAndWait(exePath, arguments, canceled,
+            timeout ?? TimeSpan.FromMilliseconds(RunAndWaitTimeoutMs));
 
     private Process Spawn(string arguments, bool redirectInput)
     {

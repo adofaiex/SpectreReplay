@@ -28,7 +28,20 @@ namespace SpectreReplay.Pages
                 // 独立窗口把总开关移到最上方；UMM 旧入口保留原顺序。
                 if (!Gui.ModernMode) OnGui.Note("record.howto");
                 if (!Gui.ModernMode) Gui.Divider();
-                OnGui.Row("record.recording", ReplayOn, v => { ReplayOn = v; Commit(); });
+                OnGui.Row("record.recording", ReplayOn,
+                    v =>
+                    {
+                        ReplayOn = v;
+                        if (!v)
+                        {
+                            if (VideoRender.CaptureInProgress)
+                                VideoRender.CancelRender();
+                            PlayActions.StopPlaying();
+                            PlayActions.StopRecording();
+                        }
+                        SpectreState.SetGetKeyAsyncEnabled(v && GetDataFromAsyncInput);
+                        Commit();
+                    });
                 OnGui.Row("record.autosave", AutoSave, v => { AutoSave = v; Commit(); }, ReplayOn);
                 // 保存策略七项：**每一项都真的在控制回放什么时候落盘**
                 // （Patch_Recording.cs:136/137/139/142/163、SpectreState.cs:254、
@@ -188,6 +201,17 @@ namespace SpectreReplay.Pages
         // 正在等按键的那一行（-1 = 没有）。_remapFrom 表示改左半还是右半。
         private static int _remapRow = -1;
         private static bool _remapFrom;
+        private static int _saveDirPickVersion;
+
+        internal static bool KeyRemapCapturing => _remapRow >= 0;
+
+        internal static void CancelCaptures()
+        {
+            _remapRow = -1;
+            _remapFrom = false;
+            _pickSaveDirPending = false;
+            _saveDirPickVersion++;
+        }
 
         private static void DrawKeyRemapList()
         {
@@ -318,7 +342,12 @@ namespace SpectreReplay.Pages
         private static void DrawAsyncInputRow()
         {
             OnGui.Row("record.asyncinput", GetDataFromAsyncInput,
-                v => { GetDataFromAsyncInput = v; Commit(); });
+                v =>
+                {
+                    GetDataFromAsyncInput = v;
+                    SpectreState.SetGetKeyAsyncEnabled(Settings.ReplayOn && v);
+                    Commit();
+                });
 
             bool gameOn;
             try
@@ -409,7 +438,8 @@ namespace SpectreReplay.Pages
             _pickSaveDirPending = false;
             try
             {
-                MainThread.Defer(PickSaveDirDeferred);
+                int version = _saveDirPickVersion;
+                MainThread.Defer(() => PickSaveDirDeferred(version));
             }
             catch (Exception ex)
             {
@@ -420,15 +450,16 @@ namespace SpectreReplay.Pages
         }
 
         /// <summary>在 OnGUI 之外跑原生选择框，拿到结果再写设置。</summary>
-        private static void PickSaveDirDeferred()
+        private static void PickSaveDirDeferred(int version)
         {
+            if (version != _saveDirPickVersion) return;
             try
             {
                 string dir = FileBrowser.PickFolder(
                     SaveDirText(), null, null, Loc.T("record.savedir.pick"));
-                if (string.IsNullOrEmpty(dir))
+                if (string.IsNullOrEmpty(dir) || version != _saveDirPickVersion)
                 {
-                    return;   // 玩家取消
+                    return;   // 玩家取消或配置恢复/切页已作废请求
                 }
                 SavePath = dir;
                 // 走统一落盘入口：它除了写盘还会 Settings.check 并刷新补丁开关。

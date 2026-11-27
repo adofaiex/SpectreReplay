@@ -25,19 +25,21 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private bool finalizingReplay;
     internal string ActualEncoder => encoder?.ActualEncoder;
 
-    private bool cancelRequested;
+    private volatile bool cancelRequested;
     private VideoFrameSource frames;
     private VideoAudioTrack mixdown;
     private volatile VideoEncoder encoder;
+    // 预启动 candidate 与 TearDown 共用发布/撤销闩锁；Begin 本身始终在锁外。
+    private readonly EncoderPreStartOwnership<VideoEncoder> encoderOwnership =
+        new EncoderPreStartOwnership<VideoEncoder>();
     private string tempDir;
     private string rawVideoPath;
     private string wavPath;
     private byte[] blackout;
     private int delivered;
-    // VideoPlayer 接管（视频背景确定性化）：渲染期间 Unity VideoPlayer 仍走实时播放，
-    // 渲染比实时慢时背景跑 ahead——暂停后每帧按 RenderClock 定位
+    // 只接管背景视频的时钟；播放、歌曲 pitch 和 vidOffset 仍由游戏控制。
     private readonly List<UnityEngine.Video.VideoPlayer> pinnedVideos = new();
-    private readonly List<bool> pinnedVideosWerePlaying = new();
+    private readonly List<UnityEngine.Video.VideoTimeUpdateMode> pinnedVideoClockModes = new();
     // 捕获起点计时：ETA 按平均交付速率外推（渲染稳态后速率相当平稳，整体均值足够）
     private System.Diagnostics.Stopwatch captureClock;
     private bool playbackLive;
@@ -272,6 +274,34 @@ internal sealed class VideoRenderJob : MonoBehaviour
     private System.Threading.Thread _encoderPreStart;
     private volatile Exception _encoderPreStartError;
 
+    private void DisposePreStartCandidate(VideoEncoder candidate)
+    {
+        if (candidate == null) return;
+        // Begin 可能在 Spawn 后失败；给后台泵一个有界退出窗口，不能让预启动线程永久占住。
+        // 超时后把唯一释放权交给收场清理；目录在确认泵退出前必须保留。
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+        while (true)
+        {
+            try { candidate.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }
+            bool active;
+            try { active = candidate.HasActiveWorker; }
+            catch { active = true; }
+            if (!active) return;
+            if (DateTime.UtcNow >= deadline)
+            {
+                if (encoderOwnership.RetainForDeferredCleanup(candidate))
+                {
+                    Debug.LogWarning("[SpectreReplay] 预启动 candidate 释放超时，转交后台收尾并保留临时目录");
+                    return;
+                }
+                // 单预启动线程只会有一个 candidate；若不变量意外破坏，不放弃仍活跃资源。
+                Debug.LogError("[SpectreReplay] 预启动 candidate 延迟交接冲突，继续保留并尝试释放");
+                deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+            }
+            System.Threading.Thread.Sleep(100);
+        }
+    }
+
     private void LogTiming(string stage, string detail = null)
     {
         double ms = _jobClock == null ? -1 : _jobClock.Elapsed.TotalMilliseconds;
@@ -377,9 +407,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
         _encoderPreStartError = null;
         _encoderPreStart = new System.Threading.Thread(() =>
         {
+            VideoEncoder enc = null;
+            bool registered = false;
             try
             {
-                var enc = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
+                enc = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
                     preW, preH, fps,
                     (VideoEncoder.Quality)options.Quality, options.QualityTier, preFlip,
                     container,
@@ -388,22 +420,37 @@ internal sealed class VideoRenderJob : MonoBehaviour
                     options.Crf, options.Cqp,
                     options.Bitrate, options.Preset,
                     hardware, tenBit, hdr10);
-                enc.Begin();
-                if (tornDown)
+                registered = encoderOwnership.TryRegister(enc);
+                if (!registered)
                 {
-                    // 发布前已被收场（超时/取消）：自己释放，避免进程泄漏
-                    try { enc.Dispose(); } catch { }
+                    DisposePreStartCandidate(enc);
+                    enc = null;
                     return;
                 }
-                encoder = enc;
+                enc.Begin();
+                if (encoderOwnership.TryPublish(enc))
+                    enc = null;
+                else
+                {
+                    VideoEncoder owned = encoderOwnership.Abandon(enc);
+                    enc = null;
+                    DisposePreStartCandidate(owned);
+                }
             }
             catch (Exception ex)
             {
+                VideoEncoder owned = registered ? encoderOwnership.Abandon(enc) : enc;
+                enc = null;
+                DisposePreStartCandidate(owned);
                 _encoderPreStartError = ex;
+            }
+            finally
+            {
+                encoderOwnership.EndPreStart();
             }
         });
         _encoderPreStart.IsBackground = true;
-        _encoderPreStart.Start();
+        encoderOwnership.StartPreStart(() => _encoderPreStart.Start());
         LogTiming("encoder-begin", encSw.ElapsedMilliseconds + "ms (pre-started while waiting)");
         SaveGlobalState(fps);
 
@@ -517,6 +564,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
                 && prestartWait.Elapsed.TotalSeconds < VideoEncoder.PreStartWaitSeconds && !cancelRequested)
                 yield return null;
         }
+        encoderOwnership.ClaimPublished(value => encoder = value);
         if (cancelRequested) { NotifyCanceled(); yield break; }
         if (_encoderPreStartError != null)
         {
@@ -537,20 +585,31 @@ internal sealed class VideoRenderJob : MonoBehaviour
             // 等待期改了分辨率/捕获来源：预启动参数作废，就地重建。正常路径
             // 尺寸不变不会进这里；真发生时这次冷启动成本与旧行为同价位。
             LogTiming("encoder-rebuild after resize");
-            encoder?.Dispose();
+            if (!EncoderPreStartOwnership<VideoEncoder>.CanReplaceAfterDispose(
+                    encoder, current => current.Dispose(), current => current.HasActiveWorker))
+            {
+                // Dispose 超时或仍活跃时不能与旧泵竞争同一 rawVideoPath；保留 encoder 字段，
+                // 让 TearDown 将它交给延迟清理并保留作业目录。
+                throw new VideoEncoder.PreStartException(
+                    VideoEncoder.PreStartFailureReason.Generic,
+                    "encoder resize rebuild aborted: previous worker remains active");
+            }
+            encoder = null;
             setupSw.Restart();
-            encoder = new VideoEncoder(encoderPath, rawVideoPath, outputPath,
-                frames.Width, frames.Height, fps,
-                (VideoEncoder.Quality)options.Quality, options.QualityTier, frames.NeedsRowFlip,
-                container,
-                (VideoEncoder.VideoCodec)options.Codec,
-                (VideoEncoder.RateControlMode)options.RateControl,
-                options.Crf, options.Cqp,
-                options.Bitrate, options.Preset,
-                hardware, tenBit, hdr10);
             try
             {
-                encoder.Begin();
+                EncoderPreStartOwnership<VideoEncoder>.CreateAndBeginReplacement(
+                    () => new VideoEncoder(encoderPath, rawVideoPath, outputPath,
+                        frames.Width, frames.Height, fps,
+                        (VideoEncoder.Quality)options.Quality, options.QualityTier, frames.NeedsRowFlip,
+                        container,
+                        (VideoEncoder.VideoCodec)options.Codec,
+                        (VideoEncoder.RateControlMode)options.RateControl,
+                        options.Crf, options.Cqp,
+                        options.Bitrate, options.Preset,
+                        hardware, tenBit, hdr10),
+                    value => encoder = value,
+                    value => value.Begin());
             }
             // 已分类失败和取消原样交给 Drive；只为未分类失败补上本地化类型。
             catch (Exception ex) when (ex is not VideoEncoder.PreStartException && ex is not OperationCanceledException)
@@ -641,13 +700,16 @@ internal sealed class VideoRenderJob : MonoBehaviour
             // 回读在途满时先排空再继续（反压）
             while (frames.InFlight >= frames.MaxInFlight && !cancelRequested)
             {
-                Flush();
+                while (!Flush()) yield return WaitForBackpressure();
                 if (frames.InFlight < frames.MaxInFlight)
                     break;
-                yield return null;
+                yield return WaitForBackpressure();
             }
             if (cancelRequested) break;
 
+            // 反压期间跳过的 Update 不对应输出帧。在上一帧末恢复，确保下一帧
+            // 从 Unity 原生时间步计算起就正常推进，而不是在 Update 后半途解冻。
+            UnscaledDeltaPin.EndBackpressureWait();
             yield return new WaitForEndOfFrame();
 
             // 早期帧逐帧计时：首帧与头几帧若慢，间隙会直接落在日志里
@@ -819,9 +881,6 @@ internal sealed class VideoRenderJob : MonoBehaviour
                 {
                     VideoRender.PinnedSongPosition = anchorSongPosition + (elapsed - pinnedElapsed) * pitch;
                 }
-                // 视频背景确定性化：按渲染时钟/真实耗时比值连续调速（VideoPlayer
-                // 原生走实时时钟，渲染慢于实时时背景视频会跑 ahead）
-                StepPinnedVideos(clock.Time);
             }
             else
             {
@@ -926,7 +985,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
                             : $"pitch=- pin={VideoRender.PinnedSongPosition:0.000} dspPos=n/a (conductor gone)"));
             }
 
-            Flush();
+            while (!Flush()) yield return WaitForBackpressure();
 
             // 回放事件耗尽时回放引擎会自动停止，以此判定进入结尾
             bool playing = SpectreState.is_playing;
@@ -972,14 +1031,16 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
         // 捕获循环已结束：之后再有 Start_Rewind 属于正常收尾/重开，不该再中止作业
         VideoRender.CaptureInProgress = false;
+        // 不等 GPU/编码器排空：最后一帧捕获后立即交还音频设备，后台只读封好的 WAV。
+        mixdown.Seal();
 
         // 排空残余在途回读
-        int drainGuard = fps * 5;
-        while (frames.InFlight > 0 && drainGuard-- > 0 && !cancelRequested)
+        var drainClock = System.Diagnostics.Stopwatch.StartNew();
+        while (frames.InFlight > 0 && drainClock.Elapsed.TotalSeconds < 5.0 && !cancelRequested)
         {
-            Flush();
+            while (!Flush()) yield return WaitForBackpressure();
             if (frames.InFlight > 0)
-                yield return null;
+                yield return WaitForBackpressure();
         }
 
         if (cancelRequested) { NotifyCanceled(); yield break; }
@@ -1023,7 +1084,6 @@ internal sealed class VideoRenderJob : MonoBehaviour
         captureClock = null;
         VideoRender.Current.EtaSeconds = -1;
         SetPhase(VideoRender.Phase.Finalizing, "rendervideo.stage.finalizing", Path.GetFileName(outputPath));
-        mixdown.Seal();
         if (mixdown.Dead)
         {
             NotifyFailed(LocalizationManager.GetLocalizedText("rendervideo.audio_failed")
@@ -1046,6 +1106,21 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 所以这里对 cancelRequested 不做任何事——等它自然结束后再按取消上报。
         while (!finalizeDone)
             yield return null;
+
+        if (cancelRequested || finalizeError is OperationCanceledException)
+        {
+            // 取消只删除可能截断的目标文件，不消费源回放，也不进入硬件失败重试。
+            try
+            {
+                if (File.Exists(outputPath)) File.Delete(outputPath);
+            }
+            catch (Exception cleanupEx)
+            {
+                Debug.Log("[SpectreReplay] canceled render output cleanup failed: " + cleanupEx.Message);
+            }
+            NotifyCanceled();
+            yield break;
+        }
 
         if (finalizeError != null)
         {
@@ -1117,10 +1192,10 @@ internal sealed class VideoRenderJob : MonoBehaviour
         {
             try
             {
-                enc.FinishVideo();
+                enc.FinishVideo(() => cancelRequested);
                 try
                 {
-                    enc.MuxWith(wav, audioOffset);
+                    enc.MuxWith(wav, audioOffset, () => cancelRequested);
                 }
                 catch (Exception muxEx)
                 {
@@ -1322,28 +1397,42 @@ internal sealed class VideoRenderJob : MonoBehaviour
 
     // 按序交付已完成的帧。回读失败由帧源用「上一个成功帧」顶替（VideoFrameSource
     // TryTake），这里只剩真正的最后防线：上个成功帧缺位（开局连败）时才黑帧。
-    private void Flush()
+    private byte[] pendingPixels;
+    private Action<byte[]> pendingRecycle;
+
+    private bool Flush()
     {
-        while (frames.TryTake(out int index, out byte[] pixels, out bool failed))
+        while (true)
         {
-            if (failed || pixels == null)
+            if (pendingPixels == null)
             {
-                Debug.LogWarning("[SpectreReplay] readback failed at frame " + index
-                    + ", and no previous frame to repeat — black frame substituted");
-                failedReadbacks++;
-                if (failedReadbacks == 10)
+                if (!frames.TryTake(out int index, out byte[] pixels, out bool failed)) return true;
+                if (failed || pixels == null)
                 {
-                    Debug.LogWarning("[SpectreReplay] 已替换 10 个黑帧（开局连败形态）："
-                        + "回读反复失败，建议改用「纯净相机」画面来源、降低渲染帧率，或更新显卡驱动");
+                    Debug.LogWarning("[SpectreReplay] readback failed at frame " + index
+                        + ", and no previous frame to repeat — black frame substituted");
+                    failedReadbacks++;
+                    if (failedReadbacks == 10)
+                    {
+                        Debug.LogWarning("[SpectreReplay] 已替换 10 个黑帧（开局连败形态）："
+                            + "回读反复失败，建议改用「纯净相机」画面来源、降低渲染帧率，或更新显卡驱动");
+                    }
+                    pendingPixels = blackout;
+                    pendingRecycle = null;
                 }
-                encoder.Submit(blackout, blackout.Length, 1, null, () => cancelRequested);
+                else
+                {
+                    // RecycleOrHold：保留帧（回读失败的顶替源）在泵写完后不回池，
+                    // 其余照常回池——见 VideoFrameSource.RecycleOrHold 的时序说明。
+                    pendingPixels = pixels;
+                    pendingRecycle = frames.RecycleOrHold;
+                }
             }
-            else
-            {
-                // RecycleOrHold：保留帧（回读失败的顶替源）在泵写完后不回池，
-                // 其余照常回池——见 VideoFrameSource.RecycleOrHold 的时序说明。
-                encoder.Submit(pixels, pixels.Length, 1, frames.RecycleOrHold, () => cancelRequested);
-            }
+            if (!encoder.TrySubmit(pendingPixels, pendingPixels.Length, 1, pendingRecycle, () => cancelRequested))
+                return false;
+            // 成功入队才转移所有权；失败/取消由 TearDown 归还尚未交付的这一帧。
+            pendingPixels = null;
+            pendingRecycle = null;
             VideoRender.Current.FramesDone = ++delivered;
             // 剩余时间 = 未交付帧数 ÷ 捕获以来平均交付速率；
             // 前半秒速率未成形（首帧含回读建立开销）时不给估计，避免开局跳变
@@ -1356,6 +1445,24 @@ internal sealed class VideoRenderJob : MonoBehaviour
                     : -1;
             }
         }
+    }
+
+    private WaitForEndOfFrame WaitForBackpressure()
+    {
+        // 只在帧末轮询：yield null 会在 Update 后恢复，再捕获同帧就会漏掉一步模拟。
+        // 普通方法在 Drive 的异常边界内执行，且跨连续轮询保持暂停；下一捕获帧
+        // 安排前或 RestoreGlobalState 卸载时钟时统一恢复，不交给嵌套协程收尾。
+        UnscaledDeltaPin.BeginBackpressureWait();
+        return new WaitForEndOfFrame();
+    }
+
+    private void ReleasePendingFrame()
+    {
+        byte[] pixels = pendingPixels;
+        Action<byte[]> recycle = pendingRecycle;
+        pendingPixels = null;
+        pendingRecycle = null;
+        recycle?.Invoke(pixels);
     }
 
     /// <summary>
@@ -1636,7 +1743,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
         Debug.Log("[SpectreReplay] replay render failed: " + message);
         // 编码器/后端中途失败：整段重来一次，强制 CPU。只重试一次，且不在
         // mux 阶段重试（容器/音轨问题重跑编码器没有意义）。
-        if (!finalizeErrorFromMux
+        if (!cancelRequested && !finalizeErrorFromMux
             && encoder != null
             && encoder.IsBackendFailure()
             && encoder.UsingHardware
@@ -1930,6 +2037,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 幂等：OnDestroy 兜底与协程正常收尾都会走到这里，重复执行会二次
         // Delete 临时目录、二次 Destroy(gameObject)
         if (tornDown) return;
+        // 与预启动发布共用同一把锁：封闭之后不可能再把 candidate 发布进作业。
+        // 预启动线程仍持有 Begin 中的 candidate，收场只负责异步等它退出。
+        if (!encoderOwnership.Close(encoder, out VideoEncoder closingEncoder,
+                out bool preStartStillActive))
+            return;
         tornDown = true;
         // **先把游戏交还回去再看收尾。** 正常路径下协程走到这里时已经释放过（幂等），
         // 但 OnDestroy 兜底路径是从半途掐断的——此时游戏可能正带着冻结的钉扎时钟跑，
@@ -1940,63 +2052,44 @@ internal sealed class VideoRenderJob : MonoBehaviour
             if (wasPlayModeBeforeRender) SpectreState.PlayActions.SwitchToPlayMode();
             else SpectreState.PlayActions.SwitchToRecordMode();
         }
-        // **先等工作线程收场。** 收尾现在跑在后台线程上（见 StartFinalizeOnWorker）：
-        // 它会读 tempDir 里的中间文件、写最终成片。TearDown 若在它还在跑时删临时目录
-        // 或 Dispose 编码器，结果是成片写到一半被打断、或者干脆删掉了正在被读的文件。
-        //
-        // 正常路径走到这里时 finalizeDone 已经是 true（协程的等待循环保证了这点），
-        // 这个 Join 立即返回。它兜的是异常路径：用户在 Finalizing 阶段切场景/退关卡，
-        // OnDestroy 把协程掐断、而工作线程还在跑。
-        //
-        // **限时 5 秒，不是 12 分钟。** 这里在主线程上，等 12 分钟等于把
-        // 「收尾卡顿」换成「整个游戏假死」——比原问题更糟。正常的收尾（排空 + copy 合成）
-        // 是秒级到十几秒；若 5 秒还没完，说明它撞上了慢盘或 ffmpeg 真卡住，
-        // 这时正确做法是**放手**：跳过与它冲突的清理，让它自己在后台跑完。
-        bool workerStillRunning = false;
-        try
+        // TearDown 在 Unity 主线程上从不 Join；活着的工作交给后台清理线程，目录必须保留。
+        bool finalizeStillRunning = finalizeWorker != null && finalizeWorker.IsAlive;
+        if (finalizeStillRunning)
         {
-            if (finalizeWorker != null && finalizeWorker.IsAlive)
-            {
-                Debug.Log("[SpectreReplay] teardown: 后台收尾仍在进行，等待最多 5 秒");
-                workerStillRunning = !finalizeWorker.Join(TimeSpan.FromSeconds(5));
-                if (workerStillRunning)
-                    Debug.LogWarning("[SpectreReplay] teardown: 收尾线程未在 5 秒内结束——"
-                        + "跳过临时目录清理与编码器释放，交给该线程自己收场");
-            }
+            cancelRequested = true;
+            Debug.LogWarning("[SpectreReplay] teardown: 收尾线程仍在运行，转交后台取消与清理");
         }
-        catch (Exception ex)
-        {
-            Debug.Log("[SpectreReplay] teardown: 等待收尾线程失败: " + ex.Message);
-        }
-        // 预启动线程若还在构造/Spawn，先等它收尾（最长约一个探测超时）：
-        // 否则它稍后发布的 encoder 会被这里的 encoder?.Dispose() 漏掉，
-        // ffmpeg 进程与帧队列一起泄漏。tornDown 已置位，线程会自己释放。
-        try
-        {
-            if (_encoderPreStart != null && _encoderPreStart.IsAlive)
-                _encoderPreStart.Join(6500);
-        }
-        catch { }
+        bool preStartStillRunning = preStartStillActive
+            || (_encoderPreStart != null && _encoderPreStart.IsAlive);
+        if (preStartStillRunning)
+            Debug.LogWarning("[SpectreReplay] teardown: 编码器预启动仍在运行，目录清理延迟到预启动退出后");
+        bool preStartCleanupPending = encoderOwnership.HasDeferredCleanupCandidate;
+
         ReleaseGameControl();
+        // 归还仍由作业持有、尚未入队的一帧；队列内帧继续只由泵/编码器回收。
+        try { ReleasePendingFrame(); } catch (Exception ex) { Debug.LogException(ex); }
+        // 帧源包含 Unity 纹理，必须在主线程释放；后台清理线程绝不销毁 Unity 资源。
         try { frames?.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }
+        bool encoderWorkerStillRunning = closingEncoder != null && closingEncoder.HasActiveWorker;
+        bool workerStillRunning = EncoderPreStartOwnership<VideoEncoder>.MustDeferCleanup(
+            finalizeStillRunning, preStartStillRunning, preStartCleanupPending, encoderWorkerStillRunning);
         try { mixdown?.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }
         // **编码器不能在工作线程还在用它时 Dispose。** Dispose 会 Kill ffmpeg 进程，
         // 而那个线程正卡在 FinishVideo/MuxWith 里等同一个进程——提前杀等于把成片毁掉。
         // 工作线程还在跑时把引用交给延迟清理，否则就地释放。
-        VideoEncoder deferredEncoder = null;
-        string deferredTempDir = null;
-        if (!workerStillRunning)
-        {
-            try { encoder?.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }
-        }
-        else
-        {
-            // **必须在这里抓引用。** 下面几行会把字段置 null，而延迟清理是在
-            // 工作线程结束之后才跑的——它读字段只会读到 null，于是编码器永远不释放，
-            // ffmpeg 进程与帧队列一起泄漏。
-            deferredEncoder = encoder;
-            deferredTempDir = tempDir;
-        }
+        EncoderPreStartOwnership<VideoEncoder>.CleanupPlan cleanupPlan =
+            EncoderPreStartOwnership<VideoEncoder>.CreateCleanupPlan(
+                closingEncoder, tempDir, workerStillRunning,
+                current => current.Dispose(), current => current.HasActiveWorker);
+        if (cleanupPlan.DisposeError != null)
+            Debug.LogException(cleanupPlan.DisposeError);
+        workerStillRunning = cleanupPlan.MustDefer;
+        // 快照在关闭发布闸后取得；清理线程只拥有这一份 encoder/目录引用。
+        VideoEncoder deferredEncoder = cleanupPlan.DeferredEncoder;
+        string deferredTempDir = cleanupPlan.DeferredTempDir;
+        bool canDeleteTempNow = EncoderPreStartOwnership<VideoEncoder>.CanDeleteTemporaryDirectory(
+            !preStartStillRunning, !finalizeStillRunning,
+            !preStartCleanupPending && !workerStillRunning);
         frames = null;
         mixdown = null;
         encoder = null;
@@ -2006,7 +2099,7 @@ internal sealed class VideoRenderJob : MonoBehaviour
         // 临时目录同理：里面正是工作线程还在读的 raw 视频与 wav。它对 tempDir 的
         // 使用一直持续到 RunAndWait 返回，提前 Delete 会让合成中途失败。
         // 留一个 RenderTemp 目录（几百 MB）远好过毁掉用户等了很久的成片。
-        if (!workerStillRunning)
+        if (canDeleteTempNow)
         {
             try
             {
@@ -2037,7 +2130,8 @@ internal sealed class VideoRenderJob : MonoBehaviour
             // 这样既不阻塞主线程，也不泄漏进程/磁盘。
             // （不在这里直接 Kill：工作线程可能正等着这个进程写出成片，
             //   杀掉就是毁掉用户等了很久的结果。）
-            DeferCleanupAfterWorker(deferredEncoder, deferredTempDir);
+            DeferCleanupAfterWorker(deferredEncoder, deferredTempDir,
+                preStartStillRunning ? _encoderPreStart : null);
         }
         VideoRender.CloseJob();
         // 兜底：未报过终态的按失败；事件在 Job 清空之后触发，订阅者可安全启动下一个渲染
@@ -2077,42 +2171,48 @@ internal sealed class VideoRenderJob : MonoBehaviour
     ///
     /// 所以挂到工作线程后面：主线程立刻返回，回收在它结束后于后台完成。
     /// </summary>
-    private void DeferCleanupAfterWorker(VideoEncoder deferredEncoder, string deferredTempDir)
+    private void DeferCleanupAfterWorker(VideoEncoder deferredEncoder, string deferredTempDir,
+        System.Threading.Thread deferredPreStart)
     {
-        // **必须抓住收尾线程的引用。** 要等的是它，不是这个清理线程自己——
-        // 写成 waiter.Join(...) 是让线程 Join 自己，直接死锁（或抛 ThreadStateException），
-        // 回收永远不会发生，而这一整条路径正是「主线程等不及」时才走的。
+        // **必须抓住后台线程引用。** 主线程只登记异步清理，不 Join；清理线程等待
+        // 预启动与最终化都退出后，才允许触碰 encoder 或临时目录。
         System.Threading.Thread target = finalizeWorker;
-        if (target == null)
-        {
-            // 理论上不可达（workerStillRunning 为真时它必然存在），但清理路径
-            // 不能假设，否则一个空引用就让编码器与临时目录双双泄漏。
-            try { deferredEncoder?.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }
-            return;
-        }
         var waiter = new System.Threading.Thread(() =>
         {
             try
             {
-                // 上限与编码器自身的超时对齐：FinishVideo 的 WaitForExit 是 10 分钟，
-                // MuxWith 走 RunAndWait 的 30 分钟上限，最坏组合留 40 分钟余量。
-                if (!target.Join(TimeSpan.FromMinutes(40)))
+                // FinishVideo/MuxWith 的最坏组合留 40 分钟余量；预启动单独有界，
+                // 冷启动卡死时保留目录，不让后台清理永久占用线程。
+                if (target != null && !target.Join(TimeSpan.FromMinutes(40)))
                 {
-                    Debug.LogWarning("[SpectreReplay] 延迟清理：收尾线程超时未结束，放弃回收");
+                    Debug.LogWarning("[SpectreReplay] 延迟清理：收尾线程超时未结束，保留临时目录");
                     return;
                 }
-                try { deferredEncoder?.Dispose(); } catch (Exception ex) { Debug.LogException(ex); }
-                if (!string.IsNullOrEmpty(deferredTempDir))
+                if (deferredPreStart != null
+                    && !deferredPreStart.Join(TimeSpan.FromSeconds(VideoEncoder.PreStartWaitSeconds + 35.0)))
                 {
-                    try
-                    {
-                        if (Directory.Exists(deferredTempDir))
-                            Directory.Delete(deferredTempDir, true);
-                    }
-                    catch (Exception ex)
-                    {
-                        Debug.Log("[SpectreReplay] 延迟清理临时目录失败: " + ex.Message);
-                    }
+                    Debug.LogWarning("[SpectreReplay] 延迟清理：编码器预启动超时未结束，保留临时目录");
+                    return;
+                }
+                var cleanupEncoders = new List<VideoEncoder>();
+                if (deferredEncoder != null) cleanupEncoders.Add(deferredEncoder);
+                VideoEncoder preStartCandidate = encoderOwnership.TakeDeferredCleanupCandidate();
+                if (preStartCandidate != null && !ReferenceEquals(preStartCandidate, deferredEncoder))
+                    cleanupEncoders.Add(preStartCandidate);
+                DateTime cleanupDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(30);
+                bool cleanupFinished = EncoderPreStartOwnership<VideoEncoder>.FinishDeferredCleanup(
+                    cleanupEncoders.ToArray(), deferredTempDir,
+                    cleanupEncoder => cleanupEncoder.Dispose(),
+                    cleanupEncoder => cleanupEncoder.HasActiveWorker,
+                    path => Directory.Exists(path),
+                    path => Directory.Delete(path, true),
+                    () => DateTime.UtcNow >= cleanupDeadline,
+                    () => System.Threading.Thread.Sleep(100),
+                    ex => Debug.LogException(ex));
+                if (!cleanupFinished)
+                {
+                    Debug.LogWarning("[SpectreReplay] 延迟清理：资源未能安全释放，保留临时目录");
+                    return;
                 }
                 Debug.Log("[SpectreReplay] 延迟清理完成（收尾线程已结束）");
             }
@@ -2129,64 +2229,28 @@ internal sealed class VideoRenderJob : MonoBehaviour
         waiter.Start();
     }
 
-    // ── VideoPlayer 接管（视频背景确定性化）────────────────────────────────
-    // Unity VideoPlayer 走自身实时时钟，不受 Time.captureFramerate / RenderClock 控制。
-    //
-    // 方案（v4）：连续调速——用渲染时钟 / 真实耗时 的比值驱动 playbackSpeed，
-    // 视频以与渲染完全一致的速度播放（渲染慢 3 倍 → 视频 0.33x），零 seek 零跳变。
-    //
-    // v1（Pause + time seek）：暂停态纹理不更新 → 黑屏
-    // v2（Play + 每帧 frame setter）：seek 塞满解码器 → 冻结
-    // v3（Play + 偏差>1s 才 seek）：渲染慢于实时时周期性跳回 → 卡帧
-    // v4（Play + playbackSpeed 调速）：连续匹配渲染速率 → 平滑
-
-    private System.Diagnostics.Stopwatch videoRealClock;
+    // ── VideoPlayer 时钟接管 ─────────────────────────────────────────────
+    // Unity 的 GameTime 模式会遵守 captureFramerate，同步准备、寻帧和播放；
+    // DSPTime/UnscaledGameTime 则仍异步追实时。无需逐帧 seek 或估算 playbackSpeed。
+    // 游戏仍负责 Prepare/Play/Pause、歌曲 pitch 与 vidOffset；提前 Play 会让
+    // scrVfxPlus 的 isPlaying 门跳过首次偏移初始化。反压等待的 timeScale=0
+    // 同时冻结 GameTime，等待帧不消耗视频时间。退出只恢复我们修改的时钟模式。
 
     private void PinVideoPlayers()
     {
         pinnedVideos.Clear();
-        pinnedVideosWerePlaying.Clear();
-        // FindObjectsByType(FindObjectsInactive.Include, FindObjectsSortMode.None)：
-        // 第二个参数不去重排序（我们只调速不依赖顺序）。
-        // FindObjectsInactive.Include 不可省——单参重载默认 Exclude，而视频背景
-        // 可能在接管时刻尚未 SetActive(true)，漏掉就会在首次显示时失去调速控制。
+        pinnedVideoClockModes.Clear();
+        // 未激活/未准备的视频也要切时钟，但不能替游戏启动它们。
         foreach (UnityEngine.Video.VideoPlayer vp in FindObjectsByType<UnityEngine.Video.VideoPlayer>(
                     FindObjectsInactive.Include, FindObjectsSortMode.None))
         {
             if (vp == null) continue;
-            pinnedVideosWerePlaying.Add(vp.isPlaying);
-            if (!vp.isPlaying)
-                vp.Play();
+            pinnedVideoClockModes.Add(vp.timeUpdateMode);
             pinnedVideos.Add(vp);
+            vp.timeUpdateMode = UnityEngine.Video.VideoTimeUpdateMode.GameTime;
         }
-        videoRealClock = System.Diagnostics.Stopwatch.StartNew();
         if (pinnedVideos.Count > 0)
-            Debug.Log("[SpectreReplay] renderClock: " + pinnedVideos.Count + " VideoPlayer(s) speed-matched to render clock");
-    }
-
-    private void StepPinnedVideos(double gameSeconds)
-    {
-        if (pinnedVideos.Count == 0 || videoRealClock == null) return;
-        double realSeconds = videoRealClock.Elapsed.TotalSeconds;
-        if (realSeconds < 0.1) return; // 起步阶段比值不稳定，先不动
-
-        // 渲染时钟 / 真实耗时：渲染慢于实时 → <1（视频减速），快于实时 → >1（视频加速）
-        float speed = Mathf.Clamp((float)(gameSeconds / realSeconds), 0.1f, 10f);
-
-        for (int i = 0; i < pinnedVideos.Count; i++)
-        {
-            UnityEngine.Video.VideoPlayer vp = pinnedVideos[i];
-            if (vp == null) continue;
-            try
-            {
-                // 平滑过渡（避免速率突变造成视觉跳动）
-                float current = vp.playbackSpeed;
-                float smoothed = Mathf.Lerp(current, speed, 0.1f);
-                if (Mathf.Abs(smoothed - current) > 0.001f)
-                    vp.playbackSpeed = smoothed;
-            }
-            catch { /* 纯装饰，失败静默 */ }
-        }
+            Debug.Log("[SpectreReplay] renderClock: " + pinnedVideos.Count + " VideoPlayer(s) use capture-synchronous GameTime");
     }
 
     private void UnpinVideoPlayers()
@@ -2197,13 +2261,11 @@ internal sealed class VideoRenderJob : MonoBehaviour
             if (vp == null) continue;
             try
             {
-                vp.playbackSpeed = 1f; // 恢复正常速度
-                if (pinnedVideosWerePlaying.Count > i && !pinnedVideosWerePlaying[i] && vp.isPlaying)
-                    vp.Pause();
+                vp.timeUpdateMode = pinnedVideoClockModes[i];
             }
-            catch { /* 纯装饰恢复，失败静默 */ }
+            catch (Exception ex) { Debug.LogException(ex); }
         }
         pinnedVideos.Clear();
-        pinnedVideosWerePlaying.Clear();
+        pinnedVideoClockModes.Clear();
     }
 }

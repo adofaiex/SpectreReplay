@@ -404,21 +404,12 @@ namespace SpectreReplay.Pages
                     return;
                 }
 
-                data = loaded;
+                ApplyLoadedReplay(loaded);
                 _loadedPath = "";              // 云端这份没有本地路径
                 _loadedCloudName = remoteName;
-                ApplyLoadedReplay();
 
                 string name = Path.GetFileNameWithoutExtension(remoteName);
-                if (keybdSoundLost)
-                {
-                    Status.Warn("playback.cloud.play.nosound", name);
-                }
-                else
-                {
-                    Status.Say(PlayMode && !is_playing ? "status.pending_replay" : "status.loaded",
-                        name);
-                }
+                NotifyReplayLoaded(name, keybdSoundLost);
             }
             catch (Exception ex)
             {
@@ -439,8 +430,14 @@ namespace SpectreReplay.Pages
         /// ADOBase.lm 为 null，此时算不出来 → 保持 false，宁可少一条提示，
         /// 也不要对半截回放谎称「可任意位置开始」。</para>
         /// </summary>
-        private static void ApplyLoadedReplay()
+        private static void ApplyLoadedReplay(ReplayData loaded)
         {
+            // Decoding must finish first; on failure the old session is untouched.
+            // Once valid bytes are ready, stop before replacing data so an active
+            // recording's Stop path still saves its own data object.
+            PlayActions.StopPlaying();
+            PlayActions.StopRecording();
+            data = loaded;
             IsFullRun = data.StartTile.HasValue && data.EndTile.HasValue
                 && data.StartTile == 0
                 && ADOBase.lm != null
@@ -584,17 +581,27 @@ namespace SpectreReplay.Pages
                     Status.Warn("playback.idle_err", Path.GetFileNameWithoutExtension(path));
                     return;
                 }
-                data = loaded;
+                ApplyLoadedReplay(loaded);
                 _loadedPath = path;
                 _loadedCloudName = "";          // 换成本地这份：云端标记作废
-                ApplyLoadedReplay();
-                Status.Say(PlayMode && !is_playing ? "status.pending_replay" : "status.loaded",
-                    Path.GetFileNameWithoutExtension(path));
+                NotifyReplayLoaded(Path.GetFileNameWithoutExtension(path));
             }
             catch (Exception ex)
             {
                 Debug.LogWarning("[SpectreReplay] 载入回放失败：" + ex);
             }
+        }
+
+        private static void NotifyReplayLoaded(string name, bool keybdSoundLost = false)
+        {
+            // 允许装载/查看，但总开关关闭时生命周期补丁未挂；不能承诺重开会播。
+            if (!Settings.ReplayOn)
+            {
+                Status.Warn(keybdSoundLost ? "status.loaded_disabled_nosound" : "status.loaded_disabled", name);
+                return;
+            }
+            if (keybdSoundLost) Status.Warn("playback.cloud.play.nosound", name);
+            else Status.Say(PlayMode && !is_playing ? "status.pending_replay" : "status.loaded", name);
         }
 
         /// <summary>

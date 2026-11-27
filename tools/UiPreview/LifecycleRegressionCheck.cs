@@ -442,7 +442,8 @@ static class ManagedInput
 {
     public static bool Mirror;
     public static List<ushort> Noted = new List<ushort>();
-    public static void Note(ushort key, bool pressed) { Noted.Add(key); }
+    public static bool Note(ushort key, bool pressed, ushort source, out bool aggregateChanged, out ushort aggregateVk)
+    { Noted.Add(key); aggregateChanged = true; aggregateVk = key; return true; }
     __HOTKEY_MEMBERS__
 }
 static class KeyViewerBridge { public static int CachedNativeVk(KeyCode key) => (int)key - 170; }

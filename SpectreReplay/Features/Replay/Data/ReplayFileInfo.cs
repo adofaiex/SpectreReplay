@@ -296,7 +296,7 @@ internal sealed class ReplayFileInfo
     private static readonly string[] JudgmentNames =
     {
         "TooEarly", "VeryEarly", "EarlyPerfect", "PerfectMinus",
-        "XPerfect", "PerfectPlus", "LatePerfect", "VeryLate",
+        "XPerfect", "PerfectPlus", "LatePerfect", "VeryLate", "Perfect",
         "TooLate", "Multipress", "FailMiss", "FailOverload",
         "Auto", "OverPress", "Midspin", "FailedFloor",
     };
@@ -308,7 +308,7 @@ internal sealed class ReplayFileInfo
         "playback.judge.earlyperfect", "playback.judge.perfectminus",
         "playback.judge.xperfect", "playback.judge.perfectplus",
         "playback.judge.lateperfect", "playback.judge.verylate",
-        "playback.judge.toolate", "playback.judge.multipress",
+        "playback.judge.perfect", "playback.judge.toolate", "playback.judge.multipress",
         "playback.judge.failmiss", "playback.judge.failoverload",
         "playback.judge.auto", "playback.judge.overpress",
         "playback.judge.midspin", "playback.judge.failedfloor",
@@ -327,6 +327,8 @@ internal sealed class ReplayFileInfo
         count = 0;
         if (JudgmentCounts == null || row < 0 || row >= JudgmentNames.Length)
             return false;
+        if (JudgmentNames[row] == "Perfect" && SpectreReplay.Features.Compat.HitMarginCompat.HasXPerfect)
+            return false; // 新枚举只显示新桶，不把旧别名重复计入。
         if (!SpectreReplay.Features.Compat.HitMarginCompat.TryResolve(JudgmentNames[row], out var margin))
             return false;   // 本版游戏没这个成员：不画，而不是画一个 0
         int idx = (int)margin;
@@ -385,6 +387,7 @@ internal sealed class ReplayFileInfo
         // 本项目共识色（深底可读、按档位语义分组）。
         switch (name)
         {
+            case "Perfect":
             case "XPerfect":
             case "PerfectMinus":
             case "PerfectPlus":

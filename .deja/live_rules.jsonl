@@ -1,0 +1,2 @@
+{"id":"40c5f0fa3b","kind":"rule","text":"Don't change `magpie quota credits`, `auto-reset` or `alert` settings","symbols":["auto-reset","alert","--json","magpie","provider","plan","kind","subscription","balance","windows","used","remaining"],"date":"2026-11-26","from":"2cc7de4c-1bd9-4091-a9fe-3eb866e19692"}
+{"id":"a2cb098633","kind":"rule","text":"当前分支 fix/replay-lifecycle-render-audio-pr 有大量既有未提交修改，禁止编辑、提交、部署、调用设备/云写操作或运行硬件编码/HDR探针。","files":["fix/replay-lifecycle-render-audio-pr"],"date":"2026-11-26","from":"2cc7de4c-1bd9-4091-a9fe-3eb866e19692"}

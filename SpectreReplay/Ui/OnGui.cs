@@ -22,6 +22,8 @@ namespace SpectreReplay.Ui
 
         /// <summary>输入框是否已从设置载入过。首次打开面板前 OnShow 不一定跑过。</summary>
         private static bool _outDirLoaded;
+        private static string _outDirBaseline = "";
+        private static int _outDirPickVersion;
 
         /// <summary>点击选目录后置位，等下一拍再弹选择框（同 Pages.DrawSaveDirRow）。</summary>
         private static bool _pickOutDirPending;
@@ -36,14 +38,13 @@ namespace SpectreReplay.Ui
         /// <summary>正在等按键的那一行（0 = 没有）。</summary>
         private static int _capturing;
 
-        /// <summary>
-        /// 挂失败的补丁数。由 Main 注入。
-        ///
-        /// UI 层不直接引 PatchLoader：离线预览器不链接那套（要 Harmony 与游戏
-        /// 程序集），引了那边编不过。挂不上的补丁 = 对应功能静默消失，
-        /// 而设置页看起来一切正常——必须在顶部明说。
-        /// </summary>
-        internal static int PatchFailures;
+        /// <summary>只读当前故障数，不保留启动快照。setter 兼容 Main 的旧赋值；
+        /// 计数唯一事实源仍是 Hub，修复/卸载后不会残留旧数。读取不调用 Unity。</summary>
+        internal static int PatchFailures
+        {
+            get => PatchShared.SpectrePatchHub.ApplyFailureCount;
+            set { _ = value; }
+        }
 
         private static readonly string[] TabKeys =
         {
@@ -83,6 +84,7 @@ namespace SpectreReplay.Ui
             _visible = true;
             _outDir.Text = Settings.RenderOutputDir ?? "";
             _outDir.Editing = false;
+            _outDirBaseline = _outDir.Text;
             _outDirLoaded = true;
             Loc.RefreshLanguage();
         }
@@ -95,6 +97,7 @@ namespace SpectreReplay.Ui
         {
             _outDir.Text = Settings.RenderOutputDir ?? "";
             _outDir.Editing = false;
+            _outDirBaseline = _outDir.Text;
             _outDirLoaded = true;
             Loc.RefreshLanguage();
         }
@@ -105,6 +108,7 @@ namespace SpectreReplay.Ui
             // 关窗口时提交文本框里还没回车的内容——窗口一关，玩家看不到任何
             // "未保存"的提示，不提交就等于白打。顺手落一次盘，与 Save 同语义。
             CommitText();
+            CancelPendingInteraction();
             // 拖动滑条时落盘被推迟了（见 Pages.Commit）。FlushConfig 统一收口，
             // 它会强制补上，否则松手前关窗会丢掉这次修改。
             FlushConfig();
@@ -133,6 +137,7 @@ namespace SpectreReplay.Ui
         {
             try
             {
+                CommitText();
                 if (Pages.Pages.FlushPending(true))
                 {
                     return;   // 完整提交已经写过盘了，不重复写
@@ -190,6 +195,7 @@ namespace SpectreReplay.Ui
             if (!_outDirLoaded)
             {
                 _outDir.Text = Settings.RenderOutputDir ?? "";
+                _outDirBaseline = _outDir.Text;
                 _outDirLoaded = true;
             }
 
@@ -327,8 +333,11 @@ namespace SpectreReplay.Ui
         internal static void SetSubTab(int index)
         {
             int page = Mathf.Clamp(_tab, 0, TabKeys.Length - 1);
-            _subSel[page] = Mathf.Clamp(index, 0, SubTabKeys[page].Length - 1);
-            _openRow = -1;
+            int next = Mathf.Clamp(index, 0, SubTabKeys[page].Length - 1);
+            if (_subSel[page] == next) return;
+            CommitText();
+            CancelPendingInteraction();
+            _subSel[page] = next;
         }
 
         internal static bool IsModernSectionVisible(string key)
@@ -362,12 +371,16 @@ namespace SpectreReplay.Ui
             get => _tab;
             set
             {
-                _tab = Mathf.Clamp(value, 0, TabKeys.Length - 1);
-                _openRow = -1;
+                int next = Mathf.Clamp(value, 0, TabKeys.Length - 1);
+                if (_tab == next) return;
+                CommitText();
+                CancelPendingInteraction();
+                _tab = next;
             }
         }
 
-        internal static int CapturingTarget => _capturing;
+        internal static int CapturingTarget
+            => _capturing != 0 ? _capturing : Pages.Pages.KeyRemapCapturing ? -1 : 0;
 
         internal static string CurrentHotkey(int value)
             => value > 0 ? KeyName((KeyCode)value) : Loc.T("ui.nokey");
@@ -383,10 +396,7 @@ namespace SpectreReplay.Ui
                         on ? Gui.AccentButtonStyle : Gui.QuietButtonStyle,
                         GUILayout.Width(TabW), GUILayout.Height(26f)))
                 {
-                    _tab = i;
-                    // 换页时收起展开的下拉：否则旧页的下拉会挂在新页上，
-                    // 看起来像"点开了一个不属于这里的列表"。
-                    _openRow = -1;
+                    CurrentTab = i;
                 }
             }
             GUILayout.FlexibleSpace();
@@ -506,35 +516,7 @@ namespace SpectreReplay.Ui
                 GUILayout.EndHorizontal();
 
                 // 与 RowInput 同理：自绘控件不参与 GUILayout 布局，画在组外。
-                var st = GetField(labelKey);
-                SyncField(st, NumberOf(full));
-                bool canceled;
-                bool commit = st.Draw(field, Gui.LabelStyle, "", out canceled);
-                if (canceled)
-                {
-                    // Esc = 放弃本次编辑，还原成滑条当前值
-                    st.Text = NumberOf(full);
-                }
-                else if (commit)
-                {
-                    if (TryParse(st.Text, out float typed))
-                    {
-                        // 夹进滑条自身的区间：输入框能写 99999，而滑条给不出那个值——
-                        // 不夹的话下一帧滑条按越界值算 k，滑块会黏在端点上而数值显示
-                        // 一个永远拖不回来的数。
-                        float clamped = Mathf.Clamp(typed, min, max);
-                        if (!Mathf.Approximately(clamped, value))
-                        {
-                            onChange(clamped);
-                            return;   // 本帧以输入框为准，别再让滑条覆盖一次
-                        }
-                    }
-                    st.Text = NumberOf(full);   // 解析失败：复位成当前值（自愈）
-                }
-                if (!Mathf.Approximately(now, value))
-                {
-                    onChange(now);
-                }
+                DrawSliderField(labelKey, field, value, now, min, max, fmt, onChange);
             });
             RowGap();
         }
@@ -544,31 +526,36 @@ namespace SpectreReplay.Ui
         {
             Gui.Dim(!enabled, () =>
             {
+                bool rowOpen = false;
+                bool horizontalOpen = false;
                 Gui.BeginModernRow();
-                DrawModernTextStack(labelKey);
-                GUILayout.Space(6f);
-                GUILayout.BeginHorizontal();
-                GUILayout.Label(Loc.T(labelKey), Gui.ModernDescStyle,
-                    GUILayout.Width(Gui.ModernLabelW), GUILayout.Height(28f));
-                Rect track = GUILayoutUtility.GetRect(10f, 28f,
-                    GUILayout.ExpandWidth(true), GUILayout.Height(28f));
-                float now = Gui.Slider(track, value, min, max);
-                Rect field = GUILayoutUtility.GetRect(Gui.ModernValueW, 28f,
-                    GUILayout.Width(Gui.ModernValueW), GUILayout.Height(28f));
-                string shown = fmt(Mathf.Approximately(now, value) ? value : now);
-                TextField st = GetField(labelKey);
-                SyncField(st, NumberOf(shown));
-                bool canceled;
-                bool commit = st.Draw(field, Gui.LabelStyle, "", out canceled);
-                if (canceled) st.Text = NumberOf(shown);
-                else if (commit && TryParse(st.Text, out float typed))
+                rowOpen = true;
+                try
                 {
-                    onChange?.Invoke(Mathf.Clamp(typed, min, max));
-                    return;
+                    DrawModernTextStack(labelKey);
+                    GUILayout.Space(6f);
+                    GUILayout.BeginHorizontal();
+                    horizontalOpen = true;
+                    GUILayout.Label(Loc.T(labelKey), Gui.ModernDescStyle,
+                        GUILayout.Width(Gui.ModernLabelW), GUILayout.Height(28f));
+                    Rect track = GUILayoutUtility.GetRect(10f, 28f,
+                        GUILayout.ExpandWidth(true), GUILayout.Height(28f));
+                    float now = Gui.Slider(track, value, min, max);
+                    Rect field = GUILayoutUtility.GetRect(Gui.ModernValueW, 28f,
+                        GUILayout.Width(Gui.ModernValueW), GUILayout.Height(28f));
+                    DrawSliderField(labelKey, field, value, now, min, max, fmt, onChange);
                 }
-                if (!Mathf.Approximately(now, value)) onChange?.Invoke(now);
-                GUILayout.EndHorizontal();
-                Gui.EndModernRow();
+                finally
+                {
+                    try
+                    {
+                        if (horizontalOpen) GUILayout.EndHorizontal();
+                    }
+                    finally
+                    {
+                        if (rowOpen) Gui.EndModernRow();
+                    }
+                }
             });
         }
 
@@ -654,6 +641,69 @@ namespace SpectreReplay.Ui
         private static readonly Dictionary<string, Action<string>> _fieldCommitters =
             new Dictionary<string, Action<string>>();
 
+        private static readonly Dictionary<string, string> _fieldValues =
+            new Dictionary<string, string>();
+        private static readonly Dictionary<string, SliderDraft> _sliderDrafts =
+            new Dictionary<string, SliderDraft>();
+
+        // 委托持有可更新的行状态，不捕获某一帧的 value；Draw 提交和关窗提交共用它。
+        private sealed class SliderDraft
+        {
+            internal TextField Field;
+            internal float Value, Min, Max;
+            internal Func<float, string> Format;
+            internal Action<float> Changed;
+
+            internal void Commit(string text)
+            {
+                Field.Editing = false;
+                if (TryParse(text, out float typed)) Apply(Mathf.Clamp(typed, Min, Max));
+                Field.Text = NumberOf(Format(Value));
+            }
+
+            internal void Apply(float next)
+            {
+                if (Mathf.Approximately(next, Value)) return;
+                Value = next; // 先更新快照，回调/关窗重入不能重复提交同一个值。
+                if (!Field.Editing) Field.Text = NumberOf(Format(Value));
+                Changed?.Invoke(next);
+            }
+        }
+
+        private static SliderDraft RegisterSliderField(string key, float value, float min, float max,
+            Func<float, string> format, Action<float> changed)
+        {
+            if (!_sliderDrafts.TryGetValue(key, out SliderDraft draft))
+            {
+                draft = new SliderDraft { Field = GetField(key) };
+                _sliderDrafts[key] = draft;
+            }
+            draft.Value = value;
+            draft.Min = min;
+            draft.Max = max;
+            draft.Format = format;
+            draft.Changed = changed;
+            _fieldCommitters[key] = draft.Commit;
+            return draft;
+        }
+
+        private static void DrawSliderField(string key, Rect box, float value, float now,
+            float min, float max, Func<float, string> format, Action<float> changed)
+        {
+            SliderDraft draft = RegisterSliderField(key, value, min, max, format, changed);
+            TextField field = draft.Field;
+            if (Gui.IsDim)
+            {
+                field.Editing = false;
+                field.Text = NumberOf(format(value));
+            }
+            SyncField(field, NumberOf(format(value)));
+            bool commit = field.Draw(box, Gui.LabelStyle, "", out bool canceled);
+            if (canceled) field.Text = NumberOf(format(value));
+            else if (!Gui.IsDim && commit) draft.Commit(field.Text);
+            else if (!Gui.IsDim) draft.Apply(now);
+        }
+
         private static TextField GetField(string key)
         {
             if (!_fields.TryGetValue(key, out TextField f))
@@ -676,6 +726,8 @@ namespace SpectreReplay.Ui
         internal static void RowDropdown(string labelKey, string[] options, int current,
             Action<int> onChange)
         {
+            bool enabled = !Gui.IsDim;
+            if (!enabled && _openRow == _openSeq) _openRow = -1;
             if (Gui.ModernMode)
             {
                 Gui.BeginModernRow();
@@ -684,12 +736,12 @@ namespace SpectreReplay.Ui
                 GUILayout.BeginHorizontal();
                 string modernShown = current >= 0 && current < options.Length ? options[current] : "—";
                 if (GUILayout.Button(modernShown, Gui.ButtonStyle,
-                        GUILayout.Width(Gui.ModernDropdownW), GUILayout.Height(28f)))
+                        GUILayout.Width(Gui.ModernDropdownW), GUILayout.Height(28f)) && enabled)
                     _openRow = _openRow == _openSeq ? -1 : _openSeq;
                 int modernSeq = _openSeq++;
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
-                if (_openRow == modernSeq)
+                if (_openRow == modernSeq && enabled)
                 {
                     GUILayout.Space(4f);
                     GUILayout.BeginHorizontal();
@@ -700,7 +752,7 @@ namespace SpectreReplay.Ui
                         if (i > 0) GUILayout.Space(4f);
                         if (GUILayout.Button(options[i], i == current
                                 ? Gui.AccentButtonStyle : Gui.ButtonStyle,
-                                GUILayout.Height(26f)))
+                                GUILayout.Height(26f)) && enabled)
                         {
                             _openRow = -1;
                             if (i != current) onChange(i);
@@ -721,7 +773,7 @@ namespace SpectreReplay.Ui
             // 说明覆盖整行(标签 + 下拉框)。**不登记在展开的选项列表上**:
             // 玩家点开下拉时是在挑值，这时候弹说明正好把选项挡住。
             Gui.Tip(new Rect(dd.x - LabelW, dd.y, LabelW + dd.width, dd.height), labelKey);
-            if (GUI.Button(dd, shown, Gui.ButtonStyle))
+            if (GUI.Button(dd, shown, Gui.ButtonStyle) && enabled)
             {
                 _openRow = _openRow == seq ? -1 : seq;
             }
@@ -731,7 +783,7 @@ namespace SpectreReplay.Ui
             // 也咬成一根，看不出哪个是当前值、哪几个是可选项。
             RowGap();
 
-            if (_openRow != seq)
+            if (_openRow != seq || !enabled)
             {
                 return;
             }
@@ -747,7 +799,7 @@ namespace SpectreReplay.Ui
                 }
                 // 当前项标出来：选项多的时候光靠位置认不出来
                 string mark = i == current ? "● " : "    ";
-                if (GUILayout.Button(mark + options[i], Gui.ButtonStyle, GUILayout.Height(22f)))
+                if (GUILayout.Button(mark + options[i], Gui.ButtonStyle, GUILayout.Height(22f)) && enabled)
                 {
                     _openRow = -1;
                     if (i != current)
@@ -837,7 +889,7 @@ namespace SpectreReplay.Ui
 
         private static void CaptureKey(int id, bool enabled, Action<int> set)
         {
-            if (!enabled)
+            if (!enabled || Gui.IsDim)
             {
                 // 行在等待按键期间被关掉（总开关拨回去）：顺手退出等待态，
                 // 否则它会继续占着 _capturing，下一次点别处才被顶掉。
@@ -1151,6 +1203,7 @@ namespace SpectreReplay.Ui
         {
             TextField field = GetField(labelKey);
             _fieldCommitters[labelKey] = onCommit;
+            _fieldValues[labelKey] = value ?? "";
             SyncField(field, value ?? "");
             if (Gui.ModernMode)
             {
@@ -1182,6 +1235,14 @@ namespace SpectreReplay.Ui
 
         internal static void RowInput(string labelKey)
         {
+            if (Gui.IsDim)
+            {
+                _pickOutDirPending = false;
+                _outDirPickVersion++;
+                _outDir.Text = Settings.RenderOutputDir ?? "";
+                _outDirBaseline = _outDir.Text;
+                _outDir.Editing = false;
+            }
             if (Gui.ModernMode)
             {
                 Gui.BeginModernRow();
@@ -1194,7 +1255,7 @@ namespace SpectreReplay.Ui
                 GUIStyle changeStyle = Gui.ButtonStyle;
                 if (GUILayout.Button(modernChangeLabel, Gui.ButtonStyle,
                         GUILayout.Width(Gui.ButtonW(modernChangeLabel, changeStyle, 90f)),
-                        GUILayout.Height(28f)))
+                        GUILayout.Height(28f)) && !Gui.IsDim)
                     _pickOutDirPending = true;
                 GUILayout.FlexibleSpace();
                 GUILayout.EndHorizontal();
@@ -1202,11 +1263,11 @@ namespace SpectreReplay.Ui
                 bool commitInput = _outDir.Draw(modernBox, Gui.LabelStyle,
                     Loc.T("render.outdir.empty"), out canceledInput);
                 if (canceledInput) _outDir.Text = Settings.RenderOutputDir ?? "";
-                if (commitInput) CommitText();
+                if (commitInput && !Gui.IsDim) CommitText();
                 if (_pickOutDirPending)
                 {
                     _pickOutDirPending = false;
-                    try { MainThread.Defer(PickOutDirDeferred); }
+                    try { QueueOutDirPick(); }
                     catch (Exception ex) { Debug.LogWarning("[SpectreReplay] 无法启动输出目录选择框：" + ex.Message); }
                 }
                 Gui.EndModernRow();
@@ -1231,7 +1292,7 @@ namespace SpectreReplay.Ui
             // 宽度按文案实测（下限 90）：写死会在长文案语言下裁字。
             string changeLabel = Loc.T("record.changedir");
             if (GUILayout.Button(changeLabel, Gui.ButtonStyle,
-                    GUILayout.Width(Gui.ButtonW(changeLabel, Gui.ButtonStyle, 90f)), GUILayout.Height(24f)))
+                    GUILayout.Width(Gui.ButtonW(changeLabel, Gui.ButtonStyle, 90f)), GUILayout.Height(24f)) && !Gui.IsDim)
             {
                 _pickOutDirPending = true;
             }
@@ -1248,7 +1309,7 @@ namespace SpectreReplay.Ui
                 // Esc = 放弃本次编辑，还原成设置里的值（不回写设置）
                 _outDir.Text = Settings.RenderOutputDir ?? "";
             }
-            if (commit)
+            if (commit && !Gui.IsDim)
             {
                 CommitText();
             }
@@ -1262,7 +1323,7 @@ namespace SpectreReplay.Ui
             {
                 // 与保存目录同理：FileBrowser.PickFolder 是**阻塞式原生模态框**，
                 // 在 IMGUI 的 Layout/Repaint 趟里直接弹会让事件队列配对错位。
-                MainThread.Defer(PickOutDirDeferred);
+                QueueOutDirPick();
             }
             catch (Exception ex)
             {
@@ -1279,20 +1340,29 @@ namespace SpectreReplay.Ui
         /// 分不清就会把「取消」当成「恢复默认」，把玩家已填的路径悄悄清掉。
         /// 所以：拿不到非空结果就什么都不做。
         /// </summary>
-        private static void PickOutDirDeferred()
+        private static void QueueOutDirPick()
         {
+            if (Gui.IsDim || !Settings.RenderOn) return;
+            int version = _outDirPickVersion;
+            MainThread.Defer(() => PickOutDirDeferred(version));
+        }
+
+        private static void PickOutDirDeferred(int version)
+        {
+            if (version != _outDirPickVersion || !Settings.RenderOn) return;
             try
             {
                 string start = string.IsNullOrEmpty(Settings.RenderOutputDir)
                     ? Settings.SavePath : Settings.RenderOutputDir;
                 string dir = FileBrowser.PickFolder(start, null, null, Loc.T("render.outdir.pick"));
-                if (string.IsNullOrEmpty(dir))
+                if (string.IsNullOrEmpty(dir) || version != _outDirPickVersion || !Settings.RenderOn)
                 {
-                    return;   // 玩家取消：保持原样
+                    return;   // 玩家取消或恢复配置/关闭功能已作废本次请求：保持原样
                 }
                 Settings.RenderOutputDir = dir;
                 Settings.CommitSafe();
                 _outDir.Text = dir;
+                _outDirBaseline = dir;
                 _outDir.Editing = false;
             }
             catch (Exception ex)
@@ -1301,10 +1371,62 @@ namespace SpectreReplay.Ui
             }
         }
 
+        /// <summary>显式恢复以新配置为准：即使正在编辑，也丢弃旧草稿而非稍后合并。
+        /// 云端调用方在配置成功应用后调用；这里只改托管状态，不做 Unity/线程调度。</summary>
+        internal static void RefreshAfterConfigRestore()
+        {
+            CancelPendingInteraction();
+            _outDir.Text = Settings.RenderOutputDir ?? "";
+            _outDirBaseline = _outDir.Text;
+            _outDir.Editing = false;
+            _outDirLoaded = true;
+            _fields.Clear();
+            _fieldCommitters.Clear();
+            _fieldValues.Clear();
+            _sliderDrafts.Clear();
+            Pages.Pages.RefreshAfterConfigRestore();
+        }
+
+        internal static void CancelPendingInteraction()
+        {
+            _capturing = 0;
+            _openRow = -1;
+            _pickOutDirPending = false;
+            _outDirPickVersion++;
+            Pages.Pages.CancelCaptures();
+        }
+
+        private static void CancelText()
+        {
+            foreach (var entry in _fields)
+            {
+                TextField field = entry.Value;
+                if (!field.Editing) continue;
+                field.Editing = false;
+                if (_sliderDrafts.TryGetValue(entry.Key, out SliderDraft slider))
+                    field.Text = NumberOf(slider.Format(slider.Value));
+                else if (_fieldValues.TryGetValue(entry.Key, out string value))
+                    field.Text = value;
+            }
+            _outDir.Text = Settings.RenderOutputDir ?? "";
+            _outDirBaseline = _outDir.Text;
+            _outDir.Editing = false;
+        }
+
+        /// <summary>Update 早于 IMGUI KeyDown：先取消草稿/捕获，下一次 Escape 才关窗。</summary>
+        internal static bool HandleEscape()
+        {
+            bool handled = CapturingTarget != 0 || _openRow >= 0 || _outDir.Editing;
+            foreach (TextField field in _fields.Values) handled |= field.Editing;
+            CancelText();
+            CancelPendingInteraction();
+            return handled;
+        }
+
         /// <summary>提交输入框内容。关窗口、点 Save、点别处、回车时都会调。</summary>
         internal static void CommitText()
         {
-            // RowTextField 的草稿也属于关窗提交；热键关窗没有「点别处」事件。
+            // 文本行和滑条数字都属于关窗提交；热键关窗没有「点别处」事件。
             foreach (var entry in _fieldCommitters)
             {
                 if (!_fields.TryGetValue(entry.Key, out TextField field) || !field.Editing) continue;
@@ -1312,10 +1434,16 @@ namespace SpectreReplay.Ui
                 entry.Value?.Invoke(field.Text ?? "");
             }
             string draft = _outDir.Text ?? "";
-            if (draft != Settings.RenderOutputDir)
+            _outDir.Editing = false;
+            // 只提交用户改过的草稿；未编辑的旧显示值绝不能覆盖外部应用的新配置。
+            if (_outDirLoaded && draft != _outDirBaseline)
             {
-                Settings.RenderOutputDir = draft;
-                Settings.CommitSafe();
+                _outDirBaseline = draft;
+                if (draft != Settings.RenderOutputDir)
+                {
+                    Settings.RenderOutputDir = draft;
+                    Settings.CommitSafe();
+                }
             }
         }
     }

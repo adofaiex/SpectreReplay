@@ -78,7 +78,7 @@ internal class Patch_ConductorUpdate
         // 下面这一处负责。
         LateSaveMode = false;
         PlayActions.StopRecording();
-        if (SaveFile()) PendingSave = false;
+        SaveFile();
     }
 }
 

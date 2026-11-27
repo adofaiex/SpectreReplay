@@ -184,7 +184,13 @@ public static class SpectreAPI
             SpectreState.ApiBlockPlaying = true;
         }
         // 停回放要动游戏状态机，转回主线程；未开启回放时为无害空操作
-        MainThread.Run(SpectreState.PlayActions.StopPlaying);
+        MainThread.Run(() =>
+        {
+            // 阻断是外部中断，不是自然播完。先取消捕获，避免停止标志被当成成功耗尽。
+            if (Features.VideoRender.VideoRender.CaptureInProgress)
+                Features.VideoRender.VideoRender.CancelRender();
+            SpectreState.PlayActions.StopPlaying();
+        });
     }
 
     /// <summary>阻断开始游玩（匿名来源）。</summary>
@@ -369,14 +375,21 @@ public static class SpectreAPI
     /// </summary>
     public static bool IsFeatureAvailable(string feature) => SpectrePatchHub.IsAvailable(feature);
 
-    /// <summary>当前是否加载了回放数据。</summary>
-    public static bool HasLoadedReplay => SpectreState.data != null;
+    /// <summary>当前是否有已装载且可播放的回放数据。</summary>
+    private static bool HasPlayableReplayData
+        => SpectreState.PlayMode
+            && !SpectreState.is_recording
+            && SpectreState.data != null
+            && SpectreState.data.HasRequiredMetadata;
 
-    /// <summary>已加载回放的只读信息快照；无加载数据时返回 null。</summary>
+    /// <summary>当前是否加载了回放数据，而不是录制中的空壳数据。</summary>
+    public static bool HasLoadedReplay => HasPlayableReplayData;
+
+    /// <summary>已加载回放的只读信息快照；无有效加载数据时返回 null。</summary>
     public static ReplayInfo GetLoadedReplayInfo()
     {
+        if (!HasPlayableReplayData) return null;
         var d = SpectreState.data;
-        if (d == null) return null;
         return new ReplayInfo(
             d.SongName ?? "",
             d.ArtistName ?? "",

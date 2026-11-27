@@ -1,6 +1,14 @@
 {
   "lang": "ro",
   "entries": {
+    "render.video.rate_unsupported": "Această platformă nu poate păstra viteza videoclipului de fundal {0:0.######}×. Randarea a fost oprită pentru a evita o viteză incorectă.",
+    "render.video.speed_control_unavailable": "Această platformă nu poate controla viteza videoclipului de fundal. Randarea a fost oprită pentru a evita o viteză incorectă.",
+    "status.loaded_disabled": "{0} a fost încărcat, dar comutatorul principal este oprit. Activează-l în Înregistrare și repornește nivelul pentru redare.",
+    "status.loaded_disabled_nosound": "{0} a fost încărcat, dar comutatorul principal este oprit și lipsește sunetul tastaturii. Activează-l în Înregistrare și repornește nivelul.",
+    "playback.cloud.partial": "Operațiune în cloud finalizată parțial: {0}",
+    "playback.cloud.partial.detail": "Reușite: {0}; eșuate: {1}; {2}",
+    "render.ffmpeg.probing": "Se verifică encoderul în fundal. Încearcă din nou în curând.",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "Înregistrare",
     "page.playback": "Redare",
     "page.render": "Randare video",

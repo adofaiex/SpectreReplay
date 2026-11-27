@@ -344,7 +344,12 @@ namespace SpectreReplay.Pages
                         if (restore)
                         {
                             var r = CloudReplay.RestoreMissing();
-                            if (r.Restored > 0)
+                            if (r.Restored > 0 && r.Failed > 0)
+                            {
+                                Status.Warn("playback.cloud.partial", Loc.F("playback.cloud.partial.detail",
+                                    r.Restored, r.Failed, CloudErrorText(r.LastError)));
+                            }
+                            else if (r.Restored > 0)
                             {
                                 Status.Say("playback.cloud.restored", r.Restored.ToString());
                             }
@@ -360,7 +365,12 @@ namespace SpectreReplay.Pages
                         else
                         {
                             var r = CloudReplay.UploadAllLocal();
-                            if (r.Uploaded > 0)
+                            if (r.Uploaded > 0 && r.Failed > 0)
+                            {
+                                Status.Warn("playback.cloud.partial", Loc.F("playback.cloud.partial.detail",
+                                    r.Uploaded, r.Failed, CloudErrorText(r.LastError)));
+                            }
+                            else if (r.Uploaded > 0)
                             {
                                 Status.Say("playback.cloud.uploaded", r.Uploaded.ToString());
                             }

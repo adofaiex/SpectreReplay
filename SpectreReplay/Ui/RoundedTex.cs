@@ -55,6 +55,8 @@ namespace SpectreReplay.Ui
         }
 
         private static readonly Dictionary<Key, Texture2D> Cache = new Dictionary<Key, Texture2D>();
+        // Well3D 在滑条每次 Repaint 时调用，必须按颜色/半径缓存原生纹理。
+        private static readonly Dictionary<Key, Texture2D> WellCache = new Dictionary<Key, Texture2D>();
 
         private static int To8(float v) => Mathf.Clamp(Mathf.RoundToInt(v * 255f), 0, 255);
 
@@ -223,7 +225,11 @@ namespace SpectreReplay.Ui
         /// </summary>
         internal static Texture2D Well3D(Color fill, int r)
         {
+            r = Mathf.Clamp(r, 0, 64);
             int inner = r * 2 + 8, size = inner;
+            var key = new Key { W = size, H = size, R = r, Col = Pack(fill), Corners = 15 };
+            if (WellCache.TryGetValue(key, out Texture2D hit) && hit != null)
+                return hit;
             var t = NewTex(size, size);
             var px = new Color[size * size];
             for (int y = 0; y < size; y++)
@@ -243,6 +249,7 @@ namespace SpectreReplay.Ui
                 }
             t.SetPixels(px);
             t.Apply(false, false);
+            WellCache[key] = t;
             return t;
         }
 

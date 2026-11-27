@@ -159,6 +159,16 @@ namespace UiPreview
             total += lifecycleRegressionFail;
             total += boundaryRegressionFail;
             total += EffectSaveGuardCheck.Run();
+            total += UiToolRepairCheck.Run();
+            total += SessionRepairCheck.Run(ProjectDir);
+            total += AsyncRepairCheck.Run();
+            total += RenderRepairCheck.Run();
+            total += AudioRepairCheck.Run();
+            total += ShippingCoreCheck.Run();
+            total += ShippingCloudCheck.Run();
+            total += ShippingReplayCheck.Run();
+            total += ShippingRenderCheck.Run();
+            total += ShippingUiCheck.Run();
             Console.WriteLine();
             Console.WriteLine(total == 0
                 ? "  全部通过"

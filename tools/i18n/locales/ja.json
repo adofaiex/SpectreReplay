@@ -1,6 +1,14 @@
 {
   "lang": "ja",
   "entries": {
+    "render.video.rate_unsupported": "このプラットフォームでは背景動画の速度 {0:0.######}× を維持できないため、速度の誤りを避けてレンダリングを停止しました。",
+    "render.video.speed_control_unavailable": "このプラットフォームでは背景動画の速度を制御できないため、速度の誤りを避けてレンダリングを停止しました。",
+    "status.loaded_disabled": "{0} を読み込みましたが、全体スイッチがオフです。「録画」で有効にしてからレベルを再開してください。",
+    "status.loaded_disabled_nosound": "{0} を読み込みましたが、全体スイッチがオフでキー音もありません。「録画」で有効にしてからレベルを再開してください。",
+    "playback.cloud.partial": "クラウド操作が一部完了しました：{0}",
+    "playback.cloud.partial.detail": "成功 {0}、失敗 {1}；{2}",
+    "render.ffmpeg.probing": "バックグラウンドでエンコーダーを確認中です。少し待って再試行してください。",
+    "playback.judge.perfect": "Perfect {0}",
     "page.record": "録画",
     "page.playback": "再生",
     "page.render": "動画レンダリング",

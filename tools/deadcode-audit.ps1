@@ -118,6 +118,14 @@ foreach ($f in $files) {
         if ($relForCat -match '\\Patch') { $cat = 'A 补丁（Harmony 扫属性发现）' }
         elseif ($pluginCallbackNames -contains $name) { $cat = 'A 插件回调（反射调用）' }
         elseif ($relForCat -match 'SpectreAPI') { $cat = 'B 公开 API 面' }
+        # AudioRecorder.VerifyAudioFile 是公开类上的 public 方法；回放装载现用一次性快照字节
+        # 校验，但此兼容面仍对外可见，不能因本模组不再内部调用就当成漏接线。
+        elseif ($relForCat -eq 'State\AudioRecorder.cs' -and $name -eq 'VerifyAudioFile') { $cat = 'B 公开 API 面（兼容入口）' }
+        # 委托订阅不带方法调用的括号；仅在真实 wantsToQuit 订阅存在时认作事件入口。
+        elseif ($relForCat -eq 'State\ReplaySaveShutdown.cs' -and $name -eq 'WantsToQuit' -and
+            $stripped[(Join-Path $src 'Main.cs')] -match 'Application\.wantsToQuit\s*\+=\s*ReplaySaveShutdown\.WantsToQuit\s*;') {
+            $cat = 'A Application.wantsToQuit 事件回调'
+        }
         elseif ($relForCat -match 'VideoRenderClockPatches' -and $name -in @('ConductorTranspiler','Delta','DspTime','TimeD','TimeF')) { $cat = 'A IL 直调（Transpiler 改写调用点，源码里没有这个调用字样）' }
         elseif ($name -in @('PatchManual','Defer','OnKeyUpdated','DrawTooltip','ResetTips','OnUmmOpen')) { $cat = 'A UMM 回调（反射调用）' }
         # C 类：随移植搬来、**调用方在 Spectre 侧而本项目按裁决"不补"**（见
