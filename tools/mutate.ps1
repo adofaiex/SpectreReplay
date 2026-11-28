@@ -1095,7 +1095,7 @@ switch ($Which) {
         # 256 项。**只许删 Count 这条**（Append 的带花括号，锚点互不污染）。
         # CrossPlatformInputCheck ⑮ 钉的形状。
         Backup 'Features\Replay\Runtime\ManagedInput.cs'
-        ReplaceExact 'Features\Replay\Runtime\ManagedInput.cs' 'if (state == ButtonState.IsDown && _heldCount == 0) return 0;' ''
+        ReplaceExact 'Features\Replay\Runtime\ManagedInput.cs' 'if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) return 0;' ''
     }
     'MUT-U117' {
         # 判定飘字隐藏被拆——前缀恒放行，纯净相机成片里全是判定文本
@@ -5062,6 +5062,59 @@ switch ($Which) {
         ReplaceExact 'Features/EffectRemover/EffectRemover.cs' '            scnGame game = CurrentGame(scnEditor.instance);
             return game == null ? null : game.levelData;' '            return scnEditor.instance != null ? scnEditor.instance.levelData
                 : ADOBase.customLevel == null ? null : ADOBase.customLevel.levelData;'
+    }
+    'MUT-NT1' {
+        # F14b Count：恢复帧末空持键短路，丢掉早期tick的长按。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '        if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) return 0;' '        if (state == ButtonState.IsDown && _heldCount == 0) return 0;'
+    }
+    'MUT-NT2' {
+        # F14b Append：同一缺陷在真实键列表入口也必须被检出。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '        if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) { return 0; }' '        if (state == ButtonState.IsDown && _heldCount == 0) { return 0; }'
+    }
+    'MUT-NT3' {
+        # F14c：没有成功注入记录时错误借用帧末Held，失败的未来DOWN/UP提前泄漏。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '                bool heldAtTick = NativeHeld[vk];' '                bool heldAtTick = Held[vk];'
+    }
+    'MUT-NT4' {
+        # F14c/F14：删除已消费事件却忘记推进持键基线，稍后碰撞会丢既有长按。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '            NativeHeld[edge.Vk] = edge.HeldAfter;' '            // Omit the consumed held-state checkpoint.'
+    }
+    'MUT-NT5' {
+        # F14d：恢复按墙钟清理；原生队列并无两秒过期机制。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '    internal static void BeginNativeTick(long tick)
+    {
+        _nativeTickContext = tick;' '    internal static void BeginNativeTick(long tick)
+    {
+        long oldestUsefulTick = DateTime.Now.Ticks - 20000000L;
+        NativeFallbackTicks.RemoveWhere(queued => queued < oldestUsefulTick);
+        InjectedEvents.RemoveAll(edge => edge.Tick < oldestUsefulTick);
+        _nativeTickContext = tick;'
+    }
+    'MUT-NT6' {
+        # F14e：原生清队列但补丁遗漏清理，残余回退标记/基线污染后续查询。
+        Backup 'Features/Replay/Patches/Patch_InputInjection.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_InputInjection.cs' '    internal static void ClearKeys_Postfix()
+        => ManagedInput.ClearNativeEvents();' '    internal static void ClearKeys_Postfix() { }'
+    }
+    'MUT-NT7' {
+        # F14e：消费后不移除碰撞标记，会把旧tick继续留在回退路径。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '        NativeFallbackTicks.Remove(tick);' '        // Leave the consumed fallback marker behind.'
+    }
+    'MUT-NT8' {
+        # F14f：跳转只恢复帧态、不播种tick基线，下一碰撞丢掉恢复的长按。
+        Backup 'Features/Replay/Runtime/ManagedInput.cs'
+        ReplaceExact 'Features/Replay/Runtime/ManagedInput.cs' '        NativeHeld[aggregateVk] = aggregatePressed;' '        // Omit the restored held-state baseline.'
+    }
+    'MUT-NT9' {
+        # F14g：回退为仅镜像开启时隔离，未镜像的真人键重新混入原生队列。
+        Backup 'Features/Replay/Patches/Patch_MirrorEchoSuppressor.cs'
+        ReplaceExact 'Features/Replay/Patches/Patch_MirrorEchoSuppressor.cs' 'if (!SpectreReplay.SpectreState.is_playing || ev.Key == PauseKey)' 'if (!SpectreReplay.SpectreState.is_playing || !ManagedInput.Mirror || ev.Key == PauseKey)'
     }
     'MUT-SHR1' {
         # F21C2 回退为后台调用带 Unity 日志的包装层；真实保存失败必须被专项击中。

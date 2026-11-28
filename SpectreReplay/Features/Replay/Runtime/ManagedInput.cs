@@ -51,6 +51,9 @@ internal static class ManagedInput
         internal bool HeldBefore;
         internal bool HeldAfter;
     }
+    // State actually consumed by the native queue, not the final state pumped this frame.
+    private static readonly bool[] NativeHeld = new bool[256];
+    private static readonly long[] NativeHeldTick = new long[256];
     private static readonly List<TickEvent> InjectedEvents = new();
     private static readonly HashSet<long> NativeFallbackTicks = new();
     private static readonly bool[] CollisionPressSource = new bool[256];
@@ -164,7 +167,6 @@ internal static class ManagedInput
         bool heldBefore, bool heldAfter, long tick)
     {
         if (source >= CollisionPressSource.Length || tick <= 0 || vk >= Held.Length) return;
-        PruneInjectedEvents(DateTime.Now.Ticks);
         InjectedEvents.Add(new TickEvent
         {
             Vk = vk,
@@ -180,7 +182,6 @@ internal static class ManagedInput
 
     internal static void BeginNativeTick(long tick)
     {
-        PruneInjectedEvents(DateTime.Now.Ticks);
         _nativeTickContext = tick;
     }
     internal static void EndNativeTick()
@@ -188,17 +189,25 @@ internal static class ManagedInput
         long tick = _nativeTickContext;
         _nativeTickContext = long.MinValue;
         if (tick == long.MinValue) return;
+        foreach (TickEvent edge in InjectedEvents)
+        {
+            if (edge.Tick > tick || edge.Tick < NativeHeldTick[edge.Vk]) continue;
+            NativeHeld[edge.Vk] = edge.HeldAfter;
+            NativeHeldTick[edge.Vk] = edge.Tick;
+        }
         NativeFallbackTicks.Remove(tick);
         InjectedEvents.RemoveAll(edge => edge.Tick <= tick);
     }
 
-    private static void PruneInjectedEvents(long nowTicks)
+    // Injection-time timestamp validation is not a queue expiry. Retain metadata
+    // until ProcessKeyInputs consumes it or the real native queue is cleared.
+    internal static void ClearNativeEvents()
     {
-        // AsyncInputInjector only accepts timestamps within ±2 seconds of wall time.
-        // Drop records the game can no longer dequeue (for example after focus loss).
-        long oldestUsefulTick = nowTicks - 20000000L;
-        NativeFallbackTicks.RemoveWhere(tick => tick < oldestUsefulTick);
-        InjectedEvents.RemoveAll(edge => edge.Tick < oldestUsefulTick);
+        _nativeTickContext = long.MinValue;
+        InjectedEvents.Clear();
+        NativeFallbackTicks.Clear();
+        Array.Clear(NativeHeld, 0, NativeHeld.Length);
+        Array.Clear(NativeHeldTick, 0, NativeHeldTick.Length);
     }
 
     private static bool TryGetNativeTickPresses(ushort vk, out int count)
@@ -223,31 +232,15 @@ internal static class ManagedInput
                     if (edge.Tick == tick && edge.Vk == vk && !edge.Pressed) return true;
                 return false;
             case ButtonState.IsDown:
-                bool hasPast = false;
-                long latestPastTick = long.MinValue;
-                bool heldAtPast = false;
-                bool hasFuture = false;
-                long earliestFutureTick = long.MaxValue;
-                bool heldBeforeFuture = false;
+                long latestPastTick = NativeHeldTick[vk];
+                bool heldAtTick = NativeHeld[vk];
                 foreach (TickEvent edge in InjectedEvents)
                 {
-                    if (edge.Vk != vk) continue;
-                    if (edge.Tick <= tick && edge.Tick >= latestPastTick)
-                    {
-                        hasPast = true;
-                        latestPastTick = edge.Tick;
-                        heldAtPast = edge.HeldAfter;
-                    }
-                    else if (edge.Tick > tick && edge.Tick < earliestFutureTick)
-                    {
-                        hasFuture = true;
-                        earliestFutureTick = edge.Tick;
-                        heldBeforeFuture = edge.HeldBefore;
-                    }
+                    if (edge.Vk != vk || edge.Tick > tick || edge.Tick < latestPastTick) continue;
+                    latestPastTick = edge.Tick;
+                    heldAtTick = edge.HeldAfter;
                 }
-                if (hasPast) return heldAtPast;
-                if (hasFuture) return heldBeforeFuture;
-                return Held[vk];
+                return heldAtTick;
             default:
                 return false;
         }
@@ -313,6 +306,7 @@ internal static class ManagedInput
             return;
         if (!aggregateChanged) return;
         Held[aggregateVk] = aggregatePressed;
+        NativeHeld[aggregateVk] = aggregatePressed;
         _heldCount += aggregatePressed ? 1 : -1;
     }
 
@@ -377,9 +371,7 @@ internal static class ManagedInput
         List<ushort> released = SnapshotHeld();
         _takeoverFrame = -1;
         _takeover = false;
-        _nativeTickContext = long.MinValue;
-        InjectedEvents.Clear();
-        NativeFallbackTicks.Clear();
+        ClearNativeEvents();
         Array.Clear(CollisionPressSource, 0, CollisionPressSource.Length);
         Array.Clear(Held, 0, Held.Length);
         Array.Clear(SourceHeld, 0, SourceHeld.Length);
@@ -410,7 +402,7 @@ internal static class ManagedInput
     {
         if (keys == null) return 0;
         // 空闲段短路（仅 IsDown——不能用于 WentDown，理由见 Count）
-        if (state == ButtonState.IsDown && _heldCount == 0) { return 0; }
+        if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) { return 0; }
         int frame = Time.frameCount;
         int added = 0;
         for (int vk = 0; vk < Held.Length; vk++)
@@ -451,7 +443,7 @@ internal static class ManagedInput
         // 空闲段短路：IsDown 只读 Held[]，零键时必为 0。**不能对 WentDown 用
         // 同一早退**——同帧内按下又抬起会把 _heldCount 送回 0，而 PressedFrame
         // 已写入该帧，早退会吞掉这个合法的按下沿（240fps 下快节拍常见）。
-        if (state == ButtonState.IsDown && _heldCount == 0) return 0;
+        if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) return 0;
         int frame = Time.frameCount;
         int count = 0;
         for (int vk = 0; vk < Held.Length; vk++)

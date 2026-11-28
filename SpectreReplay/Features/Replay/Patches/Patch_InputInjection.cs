@@ -86,6 +86,11 @@ internal static class Patch_RDInput
         return __exception;
     }
 
+    // Native focus/hook resets discard queued events as well as held masks.
+    [SpectrePatch(typeof(AsyncInputManager), "ClearKeys", PatchType.Postfix, Feature = FeatureKeys.Replay)]
+    internal static void ClearKeys_Postfix()
+        => ManagedInput.ClearNativeEvents();
+
     // 检查点前导期也要泵（2026-11-07「中间开始按键提前/晚打」实测）：中间
     // 开始时游戏走 States.Checkpoint——音乐已 scrub、歌曲位置已从起点起走，
     // 但 PlayerControl_Update 在前导期不跑，泵挂在它上面会让首键等到状态

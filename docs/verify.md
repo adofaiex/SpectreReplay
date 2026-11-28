@@ -43,7 +43,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 线上 dll 与构建产物的 sha256 一致、上游 Spectre 工作区干净。
 （后两项只在本地跑，`-Ci` 跳过；上游路径优先读 `SPECTRE_UPSTREAM`。）
 
-> **当前打印 704 条断言 0 失败**（2026-11-28 回读与编辑器生命周期修复后 `verify.ps1 -Ci` 实跑；Release 0 错误/0 警告、6 项只读审计通过；本轮执行时唯一失败为 11 项未提交改动）。
+> **当前打印 713 条断言 0 失败**（2026-11-28 原生输入 tick 状态修复后 `verify.ps1 -Ci` 实跑；Release 0 错误/0 警告、6 项只读审计通过；闸门退出码 1，唯一失败为本轮未提交改动，不宣称干净工作区全绿）。
 > 这个数字会随轮次变，引用前先跑一遍 `verify.ps1` 看真实条数。
 > **注意它是「✓ 行数」而不是判据数**——`UiLogicShapeCheck` 现有 195 条判据只印 1 行，
 > 所以加判据这个数字不变。
@@ -101,7 +101,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools\verify.ps1
 
 - `EffectEditorLifetimeCheck` 抽取生产 `EffectRemover` 的场景加载补丁、当前谱面选择、保存/导出/直写入口与按钮刷新方法，连同真实 `EffectDataSafety` 执行；假游戏 getter 保留 r150 的 `levelData => customLevel.levelData` 语义。EL01–04 覆盖 `Start` 前空编辑器、游戏单例已创建但尚未绑定、传入编辑器与全局单例不同时的对象/路径一致性，以及初始化后的覆盖保护、显式允许、另存与干净谱面。旧实现前三项行为失败，修复后四项通过；`MUT-EL1`–`MUT-EL5` 分别恢复不安全 getter、漏掉游戏单例回退、用错编辑器刷新、遗漏显式覆盖开关，以及直写入口的旧当前谱面读取。离线夹具没有启动 Unity，修后真实编辑器加载日志尚待实机复测。
 
-**总数以 `verify.ps1` 实跑为准**（2026-11-28 回读与编辑器生命周期修复后离线套件实跑 704 条 `✓` 行、0 失败；CI 闸门本轮唯一失败是 11 项未提交改动；`-Ci` 跳过部署一致性与本机上游工作区检查）。
+- `ShippingReplayCheck` 的 F14b–g 执行生产 `ManagedInput`、实际注入循环与清队列 Postfix：覆盖帧末松键前的 tick 级 Count/Append、后续 DOWN/UP 注入失败不泄漏、已消费持键基线、超过两秒仍未消费的碰撞、消费与原生清队列后的清理、跳转恢复持键但不伪造按下沿。独立执行现有 `Patch_MirrorEchoSuppressor.Prefix`，验证回放期物理键/镜像回声被隔离，Esc 与非回放输入放行；不为合并真人输入改变产品策略。原代码 F14b/c/d 共五项行为失败，修后通过。新增 `MUT-NT1`–`MUT-NT9` 均被相关行为断言检出；本轮另重跑 `MUT-SFIX19`–`MUT-SFIX23` 与调整锚点后的 `MUT-U116`，全部检出。15 项串行执行，每项后核对生产源码 SHA256 还原；没有跑全历史矩阵。离线边界不替代 Unity/SkyHook 实机验收。
+
+**总数以 `verify.ps1` 实跑为准**（2026-11-28 原生输入 tick 状态修复后离线套件实跑 713 条 `✓` 行、0 失败；CI 闸门退出码 1，唯一失败为本轮未提交改动；`-Ci` 跳过部署一致性与本机上游工作区检查）。
 这个数字会随轮次变；引用前先跑一遍。**它是「✓ 行数」而不是判据数**，
 `UiLogicShapeCheck` 的 195 条判据只印 1 行，所以加判据这个数字不变。
 

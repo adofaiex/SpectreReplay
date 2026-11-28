@@ -22,6 +22,7 @@ internal static class ShippingReplayCheck
         failures = 0;
         Test("F10/F13", ControlFixture());
         Test("F11", InputFixture());
+        Test("F14g", IsolationFixture());
         Test("F15", JudgmentFixture());
         Test("F27", SampleFixture());
         Test("F30", ReplayLoadFixture());
@@ -240,19 +241,51 @@ namespace UnityEngine { static class Debug { public static void Log(string text)
             .Replace("__REQUEST_CANCEL__", Method(job, "RequestCancel"));
     }
 
+    private static string IsolationFixture()
+    {
+        var isolation = Type("Features/Replay/Patches/Patch_MirrorEchoSuppressor.cs", "Patch_MirrorEchoSuppressor");
+        string fields = string.Join("\n", isolation.Members.OfType<FieldDeclarationSyntax>());
+        string prefix = isolation.Members.OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.ValueText == "Prefix")
+            .WithAttributeLists(default).ToString();
+        return """
+using System;using UnityEngine;
+public static class Fixture {
+ public static string[] Run(){
+  SpectreReplay.SpectreState.is_playing=true;
+  ManagedInput.Mirror=false;
+  bool physical=Patch_MirrorEchoSuppressor.Prefix(new SkyHook.SkyHookEvent{Key=81});
+  ManagedInput.Mirror=true;
+  bool echo=Patch_MirrorEchoSuppressor.Prefix(new SkyHook.SkyHookEvent{Key=81});
+  bool pause=Patch_MirrorEchoSuppressor.Prefix(new SkyHook.SkyHookEvent{Key=27});
+  SpectreReplay.SpectreState.is_playing=false;
+  bool live=Patch_MirrorEchoSuppressor.Prefix(new SkyHook.SkyHookEvent{Key=81});
+  return new[]{(!physical&&!echo&&pause&&live?"✓ ":"✗ ")+"F14g 实际钩子前缀在回放期隔离真人键/镜像回声，Esc与非回放输入放行"};
+ }
+}
+static class Patch_MirrorEchoSuppressor { __FIELDS__ __PREFIX__ }
+static class ManagedInput {public static bool Mirror;}
+namespace SpectreReplay { static class SpectreState {public static bool is_playing;} }
+namespace SkyHook { struct SkyHookEvent {public int Key;} }
+namespace UnityEngine { static class Debug {public static void Log(object x){} } }
+""".Replace("__FIELDS__", fields).Replace("__PREFIX__", prefix);
+    }
+
     private static string InputFixture()
     {
         var managed = Type("Features/Replay/Runtime/ManagedInput.cs", "ManagedInput");
-        string[] fields = { "Held", "SourceHeld", "SourceVk", "HeldSourceCount", "PressedFrame", "PressCountFrame", "ReleasedFrame", "_heldCount", "_loggedFirstInjection", "_takeoverFrame", "_takeover", "InjectedEvents", "NativeFallbackTicks", "CollisionPressSource", "_nativeTickContext" };
+        string[] fields = { "Held", "SourceHeld", "SourceVk", "HeldSourceCount", "PressedFrame", "PressCountFrame", "ReleasedFrame", "_heldCount", "_loggedFirstInjection", "_takeoverFrame", "_takeover", "InjectedEvents", "NativeFallbackTicks", "CollisionPressSource", "_nativeTickContext", "NativeHeld", "NativeHeldTick" };
         string members = string.Join("\n", managed.Members.Where(m => m is FieldDeclarationSyntax f
             && f.Declaration.Variables.Any(v => fields.Contains(v.Identifier.ValueText))))
             + "\n" + string.Join("\n", managed.Members.OfType<StructDeclarationSyntax>().Where(s => s.Identifier.ValueText == "TickEvent"))
             + "\n" + managed.Members.OfType<PropertyDeclarationSyntax>().Single(m => m.Identifier.ValueText == "NativeTakeover")
-            + "\n" + string.Join("\n", new[] { "Note", "TrackSource", "Clear", "SnapshotHeld", "IsHeldVk", "Count", "Append", "AssociateInjectedEvent", "BeginNativeTick", "EndNativeTick", "PruneInjectedEvents", "TryGetNativeTickPresses", "MatchesNativeTick", "ToNativeVk" }.Select(n => Method(managed,n)))
+            + "\n" + string.Join("\n", new[] { "Note", "TrackSource", "Clear", "Restore", "ClearNativeEvents", "SnapshotHeld", "IsHeldVk", "Count", "Append", "AssociateInjectedEvent", "BeginNativeTick", "EndNativeTick", "TryGetNativeTickPresses", "MatchesNativeTick", "ToNativeVk" }.Select(n => Method(managed,n)))
             + "\n" + string.Join("\n", managed.Members.OfType<MethodDeclarationSyntax>().Where(m => m.Identifier.ValueText == "Matches" || m.Identifier.ValueText == "Any"));
         var pump = Type("Features/Replay/Runtime/ReplayPlayer.cs", "ReplayPlayer").Members.OfType<MethodDeclarationSyntax>()
             .Single(m => m.Identifier.ValueText=="PumpInput" && m.ParameterList.Parameters.Count==2);
         string loop=pump.DescendantNodes().OfType<WhileStatementSyntax>().Single().ToString();
+        string clearKeys = Type("Features/Replay/Patches/Patch_InputInjection.cs", "Patch_RDInput")
+            .Members.OfType<MethodDeclarationSyntax>().Single(m => m.Identifier.ValueText == "ClearKeys_Postfix")
+            .WithAttributeLists(default).ToString();
         return """
 using System;using System.Collections.Generic;using System.Linq;using UnityEngine;
 using static SpectreReplay.SpectreState;
@@ -313,6 +346,66 @@ public static string[] Run(){
  ManagedInput.EndNativeTick();
  Check(groups.Length==4&&priorActionHeld&&!futureActionUp,
   "F14 后续tick的抬起不提前应用，保留当前tick动作键持态");
+ ManagedInput.Clear();AsyncInputInjector.Reset();CurrKeyState=new byte[256];
+ data.KeyEvents=new(){new Key{KeyCode=65,IsPressed=true,SongPosition=1},new Key{KeyCode=66,IsPressed=true,SongPosition=1.01},new Key{KeyCode=65,IsPressed=false,SongPosition=1.02},new Key{KeyCode=66,IsPressed=false,SongPosition=1.03}};
+ KeyEventIndex=0;Pump();groups=AsyncInputInjector.Groups.OrderBy(g=>g.Key).ToArray();
+ ManagedInput.BeginNativeTick(groups[1].Key);
+ Check(ManagedInput.Count(ButtonState.IsDown)==1,"F14b 帧末已全部松开，早期碰撞tick的Count仍保留按住键");
+ var earlierHeld=new List<AnyKeyCode>();
+ Check(ManagedInput.Append(earlierHeld,ButtonState.IsDown)==1&&earlierHeld.Single().Value.Vk==81,
+  "F14b 帧末已全部松开，早期碰撞tick的Append仍保留真实按住键");
+ ManagedInput.EndNativeTick();
+ foreach(bool failedDown in new[]{true,false}){
+  ManagedInput.Clear();AsyncInputInjector.Reset();CurrKeyState=new byte[256];
+  AsyncInputInjector.FailVk=87;AsyncInputInjector.FailAt=1.03;
+  data.KeyEvents=new();
+  if(!failedDown)data.KeyEvents.Add(new Key{KeyCode=67,IsPressed=true,SongPosition=1});
+  data.KeyEvents.AddRange(new[]{new Key{KeyCode=65,IsPressed=true,SongPosition=1.01},new Key{KeyCode=66,IsPressed=true,SongPosition=1.02},new Key{KeyCode=67,IsPressed=failedDown,SongPosition=1.03}});
+  KeyEventIndex=0;Pump();groups=AsyncInputInjector.Groups.OrderBy(g=>g.Key).ToArray();
+  for(int i=0;i<groups.Length-1;i++){ManagedInput.BeginNativeTick(groups[i].Key);ManagedInput.EndNativeTick();}
+  ManagedInput.BeginNativeTick(groups.Last().Key);
+  Check(ManagedInput.Matches(InputAction.Action2,ButtonState.IsDown)==!failedDown,
+   "F14c 后续"+(failedDown?"DOWN":"UP")+"注入失败不污染早期碰撞tick（含已消费持键基线）");
+  ManagedInput.EndNativeTick();
+ }
+ ManagedInput.Clear();AsyncInputInjector.Reset();CurrKeyState=new byte[256];
+ // Accepted at the old wall time; the native queue has not consumed or cleared it.
+ long delayedTick=DateTime.Now.Ticks-30000000L;
+ ManagedInput.Note(81,true,65,out _,out _);
+ ManagedInput.AssociateInjectedEvent(65,81,true,false,true,delayedTick);
+ ManagedInput.Note(81,true,66,out _,out _);
+ ManagedInput.AssociateInjectedEvent(66,81,true,true,true,delayedTick);
+ ManagedInput.BeginNativeTick(delayedTick);
+ Check(!ManagedInput.NativeTakeover&&ManagedInput.Count(ButtonState.WentDown)==2,
+  "F14d 排队超过两秒的未消费碰撞仍保留双来源计数");
+ ManagedInput.EndNativeTick();
+ ManagedInput.BeginNativeTick(delayedTick);
+ Check(ManagedInput.NativeTakeover,"F14e 已消费碰撞移除回退标记，不残留到后续查询");
+ ManagedInput.EndNativeTick();
+ ManagedInput.Clear();AsyncInputInjector.Reset();CurrKeyState=new byte[256];
+ data.KeyEvents=new(){new Key{KeyCode=67,IsPressed=true,SongPosition=1},new Key{KeyCode=65,IsPressed=true,SongPosition=1.1},new Key{KeyCode=66,IsPressed=true,SongPosition=1.2}};
+ KeyEventIndex=0;Pump();groups=AsyncInputInjector.Groups.OrderBy(g=>g.Key).ToArray();
+ ManagedInput.BeginNativeTick(groups[0].Key);ManagedInput.EndNativeTick();
+ // The game clears its queue/masks here, then our actual postfix clears only native metadata.
+ AsyncInputInjector.Reset();Patch_RDInput.ClearKeys_Postfix();
+ ManagedInput.BeginNativeTick(groups[2].Key);
+ bool clearedMarker=ManagedInput.NativeTakeover;
+ ManagedInput.EndNativeTick();
+ Settings.key_code_convert[68]=81;
+ data.KeyEvents=new(){new Key{KeyCode=68,IsPressed=true,SongPosition=1.3}};
+ KeyEventIndex=0;Pump();long resetTick=AsyncInputInjector.Groups.Keys.Single();
+ ManagedInput.BeginNativeTick(resetTick);
+ Check(clearedMarker&&ManagedInput.IsHeldVk(87)&&!ManagedInput.Matches(InputAction.Action2,ButtonState.IsDown),
+  "F14e 原生ClearKeys后丢弃队列标记和消费基线，保留托管回放持键");
+ ManagedInput.EndNativeTick();
+ ManagedInput.Clear();AsyncInputInjector.Reset();
+ ManagedInput.Restore(87,true,67);
+ data.KeyEvents=new(){new Key{KeyCode=65,IsPressed=true,SongPosition=1},new Key{KeyCode=66,IsPressed=true,SongPosition=1.01}};
+ KeyEventIndex=0;Pump();groups=AsyncInputInjector.Groups.OrderBy(g=>g.Key).ToArray();
+ ManagedInput.BeginNativeTick(groups[1].Key);
+ Check(ManagedInput.Matches(InputAction.Action2,ButtonState.IsDown)&&!ManagedInput.Matches(InputAction.Action2,ButtonState.WentDown),
+  "F14f 跳转恢复的按住键播种tick基线，但不伪造按下沿");
+ ManagedInput.EndNativeTick();
  return Lines.ToArray();}
 static Data data=new();static int KeyEventIndex;static bool _mirrorUsedThisPlayback;
 static byte[] CurrKeyState=new byte[256];
@@ -326,13 +419,14 @@ static void Feed(bool down,ushort source,ushort map,bool sendInput,bool asyncInj
 static void Pump(bool asyncInject=true,bool sendInput=true){var inputs=new List<KeyboardSimulation.INPUT>();double songPosition=2;int pumped=0;const int MaxEventsPerFrame=64;__LOOP__}
 }
 static class ManagedInput { __MEMBERS__ public static bool IsModHotkey(ushort k)=>k==Settings.Hotkey; }
+static class Patch_RDInput { __CLEAR_KEYS__ }
 class Key{public ushort KeyCode;public bool IsPressed;public double SongPosition;}
 class Data{public List<Key> KeyEvents=new();}
 static class Settings{public static ushort[] key_code_convert=new ushort[256];public static ushort Hotkey;}
 struct AnyKeyCode{public readonly AsyncKeyCode Value;public AnyKeyCode(AsyncKeyCode k)=>Value=k;}
 struct AsyncKeyCode{public readonly ushort Vk;public AsyncKeyCode(ushort vk)=>Vk=vk;}
 static class KeyboardSimulation{public struct INPUT{} public static INPUT MakeInput(byte k,bool p,bool e)=>new();}
-static class AsyncInputInjector{public static bool Healthy=true,Usable=true,Injectable=true;public static readonly Dictionary<long,HashSet<ushort>> Groups=new();static readonly HashSet<ushort> held=new();static readonly long Epoch=DateTime.Now.Ticks;public static void Reset(){Groups.Clear();held.Clear();}public static bool Inject(ushort k,bool p,double d,out long tick){tick=Epoch+10000+(long)(d*100);if(!Groups.TryGetValue(tick,out var group))Groups[tick]=group=new();if(p){if(held.Add(k))group.Add(k);}else held.Remove(k);return true;} }
+static class AsyncInputInjector{public static bool Healthy=true,Usable=true,Injectable=true;public static ushort FailVk;public static double FailAt;public static readonly Dictionary<long,HashSet<ushort>> Groups=new();static readonly HashSet<ushort> held=new();static readonly long Epoch=DateTime.Now.Ticks;public static void Reset(){Groups.Clear();held.Clear();Healthy=true;FailVk=0;FailAt=0;}public static bool Inject(ushort k,bool p,double d,out long tick){if(k==FailVk&&d==FailAt){tick=0;Healthy=false;return false;}tick=Epoch+10000+(long)(d*100);if(!Groups.TryGetValue(tick,out var group))Groups[tick]=group=new();if(p){if(held.Add(k))group.Add(k);}else held.Remove(k);return true;} }
 static class QuartzLiveBridge{public static void Edge(ushort k,bool p){} }
 static class ReplayInputBridge{public static void Edge(ushort k,bool p){} }
 namespace Features.VideoRender{static class RenderOverlayCapture{public static void QuartzKey(ushort k,bool p){}}}
@@ -344,7 +438,8 @@ static class KeyViewerBridge{public static int CachedNativeVk(KeyCode k)=>k swit
 static class RDInputType_Keyboard{public static readonly KeyCode[] LeftKeys={KeyCode.Q};public static readonly KeyCode[] RightKeys={KeyCode.W};public static readonly KeyCode[] ConfirmKeys={KeyCode.Q};}
 namespace SpectreReplay{static class SpectreState{public static bool is_playing=true;}}
 namespace UnityEngine{static class Time{public static int frameCount=7;}static class Debug{public static void Log(string s){}public static void LogException(Exception e){}}}
-""".Replace("__CHECKS__",Checks).Replace("__MEMBERS__",members).Replace("__LOOP__",loop);
+""".Replace("__CHECKS__",Checks).Replace("__MEMBERS__",members).Replace("__LOOP__",loop)
+            .Replace("__CLEAR_KEYS__",clearKeys);
     }
 
     private static string JudgmentFixture()

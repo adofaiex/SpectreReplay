@@ -437,7 +437,7 @@ namespace UiPreview
             {
                 string appendBody = input.Substring(appendAt, countAt - appendAt);
                 string countBody = input.Substring(countAt, matchesAt - countAt);
-                const string IdleExit = "if (state == ButtonState.IsDown && _heldCount == 0)";
+                const string IdleExit = "if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue)";
                 Expect(countBody.Contains(IdleExit + " return 0;", StringComparison.Ordinal)
                     && countBody.IndexOf(IdleExit, StringComparison.Ordinal) < countBody.IndexOf("int frame = Time.frameCount", StringComparison.Ordinal),
                     "⑮ Count 的空闲段早退丢了或没在扫描之前 —— 无按键帧照旧全表扫描 256 项");

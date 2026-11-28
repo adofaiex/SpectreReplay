@@ -30,9 +30,9 @@ internal static class SessionRepairCheck
             var info = Method(apiType, "GetLoadedReplayInfo");
             var managed = Type(projectDir, "Features/Replay/Runtime/ManagedInput.cs", "ManagedInput");
             var inputMembers = managed.Members.Where(m => m is FieldDeclarationSyntax f &&
-                (f.Declaration.Variables.Any(v => new[] { "Held", "SourceHeld", "SourceVk", "HeldSourceCount", "PressedFrame", "PressCountFrame", "ReleasedFrame", "_heldCount", "_loggedFirstInjection", "_takeoverFrame", "_takeover", "InjectedEvents", "NativeFallbackTicks", "CollisionPressSource", "_nativeTickContext" }.Contains(v.Identifier.ValueText))))
+                (f.Declaration.Variables.Any(v => new[] { "Held", "SourceHeld", "SourceVk", "HeldSourceCount", "PressedFrame", "PressCountFrame", "ReleasedFrame", "_heldCount", "_loggedFirstInjection", "_takeoverFrame", "_takeover", "InjectedEvents", "NativeFallbackTicks", "CollisionPressSource", "_nativeTickContext", "NativeHeld", "NativeHeldTick" }.Contains(v.Identifier.ValueText))))
                 .Select(m => m.ToString());
-            var inputMethods = new[] { "Note", "TrackSource", "Clear", "SnapshotHeld", "IsHeldVk", "Count", "AssociateInjectedEvent", "BeginNativeTick", "EndNativeTick", "PruneInjectedEvents", "TryGetNativeTickPresses", "MatchesNativeTick" }
+            var inputMethods = new[] { "Note", "TrackSource", "Clear", "SnapshotHeld", "IsHeldVk", "Count", "AssociateInjectedEvent", "BeginNativeTick", "EndNativeTick", "ClearNativeEvents", "TryGetNativeTickPresses", "MatchesNativeTick" }
                 .Select(name => managed.Members.OfType<MethodDeclarationSyntax>()
                     .Single(m => m.Identifier.ValueText == name).ToString());
             var asyncState = Parse(projectDir, "State/SpectreState.cs");
