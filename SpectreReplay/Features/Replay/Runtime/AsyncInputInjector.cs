@@ -131,7 +131,11 @@ internal static class AsyncInputInjector
     /// <param name="pressed">true = 按下。</param>
     /// <param name="songPosition">这个事件应当落在的歌曲时间（秒）。</param>
     internal static bool Inject(ushort vk, bool pressed, double songPosition)
+        => Inject(vk, pressed, songPosition, out _);
+
+    internal static bool Inject(ushort vk, bool pressed, double songPosition, out long eventTicks)
     {
+        eventTicks = 0;
         Resolve();
         if (_fTimeSec == null || _fType == null || _fLabel == null || _fKey == null) return Fail();
 
@@ -166,6 +170,7 @@ internal static class AsyncInputInjector
             // 秒。偏离超过 2 秒就说明换算不可信——宁可不入队交给托管层兜底，也不能把
             // 陈旧 tick 灌进 UpdateInput 触发整段重放。
             if (Math.Abs(evTicks - nowTicks) > 20000000L) return Fail();
+            eventTicks = evTicks;
 
             long rel = evTicks - EpochTicks;
             if (rel < 0) rel = 0;

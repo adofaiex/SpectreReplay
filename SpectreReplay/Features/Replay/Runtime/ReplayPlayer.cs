@@ -593,7 +593,16 @@ internal static class ReplayPlayer
                 if (sourceChanged && (ev.IsPressed || aggregateChanged)
                     && asyncInject && AsyncInputInjector.Healthy)
                 {
-                    try { AsyncInputInjector.Inject(aggregateVk, ev.IsPressed, ev.SongPosition); }
+                    try
+                    {
+                        bool injected = AsyncInputInjector.Inject(aggregateVk, ev.IsPressed, ev.SongPosition, out long eventTicks);
+                        if (injected)
+                        {
+                            bool heldBefore = !aggregateChanged || !ev.IsPressed;
+                            ManagedInput.AssociateInjectedEvent(ev.KeyCode, aggregateVk, ev.IsPressed,
+                                heldBefore, ManagedInput.IsHeldVk(aggregateVk), eventTicks);
+                        }
+                    }
                     catch (Exception ex) { Debug.LogException(ex); }
                 }
             }

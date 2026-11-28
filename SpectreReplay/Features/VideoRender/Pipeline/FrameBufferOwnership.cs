@@ -19,18 +19,26 @@ internal sealed class FrameBufferOwnership : IDisposable
     internal FrameBufferOwnership(int spareLimit)
         => this.spareLimit = Math.Max(1, spareLimit);
 
-    // 同一临界区内先退役旧源、再租借并登记新源。泵回调不能在两步之间
-    // 把刚退役的 buffer 提前借给失败帧。
-    internal byte[] RentForFrame(int size)
+    // 回读完成回调先租独立缓冲，不能把可能先完成的后序帧变成顶替源。
+    internal bool TryRentForReadback(int size, out byte[] pixels)
+    {
+        lock (gate)
+        {
+            pixels = disposed ? null : RentLocked(size);
+            return pixels != null;
+        }
+    }
+
+    // FIFO 真正交付成功帧时才接管保留位；待交付的回读缓冲不在池中，
+    // 不会被编码泵回调提前复用。退役和登记仍在同一个临界区。
+    internal void HoldFrame(byte[] pixels)
     {
         lock (gate)
         {
             ThrowIfDisposed();
             RetireHeldLocked();
-            byte[] pixels = RentLocked(size);
             heldFrame = pixels;
             heldWritten = false;
-            return pixels;
         }
     }
 

@@ -30,9 +30,9 @@ internal static class SessionRepairCheck
             var info = Method(apiType, "GetLoadedReplayInfo");
             var managed = Type(projectDir, "Features/Replay/Runtime/ManagedInput.cs", "ManagedInput");
             var inputMembers = managed.Members.Where(m => m is FieldDeclarationSyntax f &&
-                (f.Declaration.Variables.Any(v => new[] { "Held", "SourceHeld", "SourceVk", "HeldSourceCount", "PressedFrame", "PressCountFrame", "ReleasedFrame", "_heldCount", "_loggedFirstInjection", "_takeoverFrame", "_takeover" }.Contains(v.Identifier.ValueText))))
+                (f.Declaration.Variables.Any(v => new[] { "Held", "SourceHeld", "SourceVk", "HeldSourceCount", "PressedFrame", "PressCountFrame", "ReleasedFrame", "_heldCount", "_loggedFirstInjection", "_takeoverFrame", "_takeover", "InjectedEvents", "NativeFallbackTicks", "CollisionPressSource", "_nativeTickContext", "NativeHeld", "NativeHeldTick" }.Contains(v.Identifier.ValueText))))
                 .Select(m => m.ToString());
-            var inputMethods = new[] { "Note", "TrackSource", "Clear", "SnapshotHeld", "IsHeldVk", "Count" }
+            var inputMethods = new[] { "Note", "TrackSource", "Clear", "SnapshotHeld", "IsHeldVk", "Count", "AssociateInjectedEvent", "BeginNativeTick", "EndNativeTick", "ClearNativeEvents", "TryGetNativeTickPresses", "MatchesNativeTick" }
                 .Select(name => managed.Members.OfType<MethodDeclarationSyntax>()
                     .Single(m => m.Identifier.ValueText == name).ToString());
             var asyncState = Parse(projectDir, "State/SpectreState.cs");
@@ -59,7 +59,7 @@ internal static class SessionRepairCheck
                 .Replace("__API_HELPER__", loadedHelper.ToString().Replace("SpectreState.", "", StringComparison.Ordinal), StringComparison.Ordinal)
                 .Replace("__API_HAS__", hasLoaded.ToString().Replace("SpectreState.", "", StringComparison.Ordinal), StringComparison.Ordinal)
                 .Replace("__API_INFO__", info.ToString().Replace("SpectreState.", "", StringComparison.Ordinal), StringComparison.Ordinal)
-                .Replace("__INPUT_FIELDS__", string.Join("\n", inputMembers), StringComparison.Ordinal)
+                .Replace("__INPUT_FIELDS__", string.Join("\n", inputMembers) + "\n" + string.Join("\n", managed.Members.OfType<StructDeclarationSyntax>().Where(s => s.Identifier.ValueText == "TickEvent")), StringComparison.Ordinal)
                 .Replace("__INPUT_METHODS__", string.Join("\n", inputMethods), StringComparison.Ordinal)
                 .Replace("__ASYNC_TOGGLE__", asyncToggle.ToString(), StringComparison.Ordinal)
                 .Replace("__CLOUD_APPLY__", cloudApply.ToString(), StringComparison.Ordinal)

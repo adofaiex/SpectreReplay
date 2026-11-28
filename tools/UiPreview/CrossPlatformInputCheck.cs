@@ -154,6 +154,11 @@ namespace UiPreview
                 "⑦ 没有在 UpdateInput 的 Prefix 上记账 —— 异步链由 UpdateInput → ProcessKeyInputs 驱动");
             Expect(patch.Contains("ReplayPlayer.PumpInput()"),
                 "⑦ 两个 Prefix 没有真正调用 PumpInput —— 事件根本没人灌");
+            Expect(Has(patch, @"typeof\(scrController\)\s*,\s*""ProcessKeyInputs""\s*,\s*PatchType\.Prefix")
+                && patch.Contains("ManagedInput.BeginNativeTick(__0)")
+                && Has(patch, @"typeof\(scrController\)\s*,\s*""ProcessKeyInputs""\s*,\s*PatchType\.Finalizer")
+                && patch.Contains("ManagedInput.EndNativeTick()"),
+                "⑦b 原生tick组没有设置/清理输入上下文 —— 多来源碰撞回退会整帧重复计数或泄漏到下一组");
 
             // ⑧ 按下/抬起按帧戳判定。
             //    靠清集合的写法在「无待办事件」时走不到清空，按下会一直挂着。
@@ -432,7 +437,7 @@ namespace UiPreview
             {
                 string appendBody = input.Substring(appendAt, countAt - appendAt);
                 string countBody = input.Substring(countAt, matchesAt - countAt);
-                const string IdleExit = "if (state == ButtonState.IsDown && _heldCount == 0)";
+                const string IdleExit = "if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue)";
                 Expect(countBody.Contains(IdleExit + " return 0;", StringComparison.Ordinal)
                     && countBody.IndexOf(IdleExit, StringComparison.Ordinal) < countBody.IndexOf("int frame = Time.frameCount", StringComparison.Ordinal),
                     "⑮ Count 的空闲段早退丢了或没在扫描之前 —— 无按键帧照旧全表扫描 256 项");

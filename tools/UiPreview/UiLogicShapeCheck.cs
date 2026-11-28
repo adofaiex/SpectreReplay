@@ -1481,14 +1481,15 @@ namespace UiPreview
             // 成功帧（首版常驻副本每帧一次 8MB BlockCopy，240fps 下烧掉 ~10%
             // 帧预算，2026-11-12 性能审查撤换），失败帧复制它顶替；上个成功帧
             // 缺位才黑帧。判据钉四处：
-            // ① heldFrame 赋值在 data.CopyTo 之后（顶替源必须跟随最新成功帧）；
-            // ② RetireHeld 必须在 Rent 之前（先归队再租，Rent 才可能复用旧缓冲）；
+            // ① 完成回调在 CopyTo 后发布像素，FIFO 交付才更新保留源；
+            // ② 在途回读租独立缓冲，不能借用尚未退役的保留帧；
             // ③ 泵写完保留帧必须 hold（RecycleOrHold 的 ==heldFrame 分支）；
             // ④ 完成日志必须带顶替统计（排查「画面微顿」的第一现场）。
             fail += Check(projectRoot,
                 "回读失败必须引用保留上一帧顶替而非黑帧（零每帧拷贝）",
                 "Features\\VideoRender\\Pipeline\\VideoFrameSource.cs",
-                s => IndexBefore(s, "pixels = buffers.RentForFrame(frameBytes);", "data.CopyTo(pixels);")
+                s => IndexBefore(s, "data.CopyTo(pixels);", "flight.Pixels = pixels;")
+                    && s.Contains("buffers.HoldFrame(pixels);", StringComparison.Ordinal)
                     && s.Contains("buffers.RecycleOrHold(pixels);", StringComparison.Ordinal)
                     && s.Contains("buffers.TryRentSubstitute(frameBytes, out byte[] source, out pixels)", StringComparison.Ordinal)
                     && s.Contains("Buffer.BlockCopy(source, 0, pixels, 0, frameBytes);", StringComparison.Ordinal)

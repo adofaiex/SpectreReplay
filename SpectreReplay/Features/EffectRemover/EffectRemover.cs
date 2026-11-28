@@ -89,9 +89,21 @@ internal static class EffectRemover
     }
 
     private static bool CanSave(scnEditor editor)
-        => Safety.CanWrite(editor == null ? CurrentLevelData : editor.levelData,
-            ADOBase.customLevel == null ? null : ADOBase.levelPath,
+    {
+        scnGame game = CurrentGame(editor);
+        return Safety.CanWrite(game == null ? null : game.levelData,
+            game == null ? null : game.levelPath,
             !ModDisabled && Enabled && Settings.EffectRemoverEnableSave);
+    }
+
+    private static scnGame CurrentGame(scnEditor editor)
+    {
+        if (editor == null) editor = scnEditor.instance;
+        // LoadGameScene 在 Start 之前返回，editor.levelData 的原生 getter
+        // 仍会解引用未赋值的 customLevel；此时改查已创建的游戏单例。
+        return editor != null && editor.customLevel != null
+            ? editor.customLevel : ADOBase.customLevel;
+    }
 
     internal static void OnEditorLoadGameScenePostfix(scnEditor instance) => RefreshEditorSaveButtons(instance);
 
@@ -107,8 +119,14 @@ internal static class EffectRemover
     private static bool Enabled => Settings.EffectRemoverOn;
 
     // Undo/Redo 会换对象；保存与还原始终查询当前对象的记录，不能查询最近一次 Decode。
-    private static LevelData CurrentLevelData => scnEditor.instance != null
-        ? scnEditor.instance.levelData : ADOBase.customLevel != null ? ADOBase.customLevel.levelData : null;
+    private static LevelData CurrentLevelData
+    {
+        get
+        {
+            scnGame game = CurrentGame(scnEditor.instance);
+            return game == null ? null : game.levelData;
+        }
+    }
 
     internal static bool HasProtectedEditorData()
     {
@@ -199,7 +217,7 @@ internal static class EffectRemover
 
     internal static void RefreshEditorSaveButtons(scnEditor editor)
     {
-        SetEditorSaveButtons(editor, EditorSaveEnabled);
+        SetEditorSaveButtons(editor, CanSave(editor));
     }
 
     /// <summary>离开编辑器或关掉功能时刷新保存按钮。**不能无条件恢复成可用**：

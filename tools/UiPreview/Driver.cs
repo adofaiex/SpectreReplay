@@ -163,6 +163,8 @@ namespace UiPreview
             total += SessionRepairCheck.Run(ProjectDir);
             total += AsyncRepairCheck.Run();
             total += RenderRepairCheck.Run();
+            total += ReadbackLifetimeCheck.Run();
+            total += EffectEditorLifetimeCheck.Run();
             total += AudioRepairCheck.Run();
             total += ShippingCoreCheck.Run();
             total += ShippingCloudCheck.Run();

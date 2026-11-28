@@ -43,6 +43,21 @@ internal static class ManagedInput
     private static readonly int[] PressedFrame = new int[256];
     private static readonly int[] PressCountFrame = new int[256];
     private static readonly int[] ReleasedFrame = new int[256];
+    private struct TickEvent
+    {
+        internal ushort Vk;
+        internal long Tick;
+        internal bool Pressed;
+        internal bool HeldBefore;
+        internal bool HeldAfter;
+    }
+    // State actually consumed by the native queue, not the final state pumped this frame.
+    private static readonly bool[] NativeHeld = new bool[256];
+    private static readonly long[] NativeHeldTick = new long[256];
+    private static readonly List<TickEvent> InjectedEvents = new();
+    private static readonly HashSet<long> NativeFallbackTicks = new();
+    private static readonly bool[] CollisionPressSource = new bool[256];
+    private static long _nativeTickContext = long.MinValue;
 
     private static int _heldCount;
     private static bool _loggedFirstInjection;
@@ -82,12 +97,12 @@ internal static class ManagedInput
 
     private static int _takeoverFrame = -1;
     private static bool _takeover;
-
     internal static bool NativeTakeover
     {
         get
         {
             int frame = Time.frameCount;
+            if (_nativeTickContext != long.MinValue && NativeFallbackTicks.Contains(_nativeTickContext)) return false;
             if (_takeoverFrame != frame)
             {
                 _takeoverFrame = frame;
@@ -108,6 +123,7 @@ internal static class ManagedInput
     internal static bool Note(ushort vk, bool pressed, ushort source,
         out bool aggregateChanged, out ushort aggregateVk)
     {
+        int frame = Time.frameCount;
         aggregateChanged = false;
         aggregateVk = vk;
         if (vk >= Held.Length || !TrackSource(vk, pressed, source,
@@ -121,7 +137,6 @@ internal static class ManagedInput
             _heldCount += aggregatePressed ? 1 : -1;
         }
 
-        int frame = Time.frameCount;
         if (pressed)
         {
             if (PressedFrame[aggregateVk] != frame) PressCountFrame[aggregateVk] = 0;
@@ -129,6 +144,7 @@ internal static class ManagedInput
             // Count every distinct source press, even if another source currently holds
             // the same mapped VK; this is the synchronous mainPressCount equivalent.
             PressCountFrame[aggregateVk]++;
+            CollisionPressSource[source] = !aggregateChanged;
         }
         else if (aggregateChanged)
         {
@@ -145,6 +161,89 @@ internal static class ManagedInput
         if (aggregateChanged)
             API.SpectreAPI.RaiseReplayKeyChanged(aggregateVk, aggregatePressed);
         return true;
+    }
+
+    internal static void AssociateInjectedEvent(ushort source, ushort vk, bool pressed,
+        bool heldBefore, bool heldAfter, long tick)
+    {
+        if (source >= CollisionPressSource.Length || tick <= 0 || vk >= Held.Length) return;
+        InjectedEvents.Add(new TickEvent
+        {
+            Vk = vk,
+            Tick = tick,
+            Pressed = pressed,
+            HeldBefore = heldBefore,
+            HeldAfter = heldAfter
+        });
+        if (!pressed || !CollisionPressSource[source]) return;
+        NativeFallbackTicks.Add(tick);
+        _takeoverFrame = -1;
+    }
+
+    internal static void BeginNativeTick(long tick)
+    {
+        _nativeTickContext = tick;
+    }
+    internal static void EndNativeTick()
+    {
+        long tick = _nativeTickContext;
+        _nativeTickContext = long.MinValue;
+        if (tick == long.MinValue) return;
+        foreach (TickEvent edge in InjectedEvents)
+        {
+            if (edge.Tick > tick || edge.Tick < NativeHeldTick[edge.Vk]) continue;
+            NativeHeld[edge.Vk] = edge.HeldAfter;
+            NativeHeldTick[edge.Vk] = edge.Tick;
+        }
+        NativeFallbackTicks.Remove(tick);
+        InjectedEvents.RemoveAll(edge => edge.Tick <= tick);
+    }
+
+    // Injection-time timestamp validation is not a queue expiry. Retain metadata
+    // until ProcessKeyInputs consumes it or the real native queue is cleared.
+    internal static void ClearNativeEvents()
+    {
+        _nativeTickContext = long.MinValue;
+        InjectedEvents.Clear();
+        NativeFallbackTicks.Clear();
+        Array.Clear(NativeHeld, 0, NativeHeld.Length);
+        Array.Clear(NativeHeldTick, 0, NativeHeldTick.Length);
+    }
+
+    private static bool TryGetNativeTickPresses(ushort vk, out int count)
+    {
+        count = 0;
+        if (_nativeTickContext == long.MinValue || !NativeFallbackTicks.Contains(_nativeTickContext)) return false;
+        foreach (TickEvent edge in InjectedEvents)
+            if (edge.Tick == _nativeTickContext && edge.Vk == vk && edge.Pressed) count++;
+        return true;
+    }
+
+    private static bool MatchesNativeTick(ButtonState state, int vk, long tick)
+    {
+        switch (state)
+        {
+            case ButtonState.WentDown:
+                foreach (TickEvent edge in InjectedEvents)
+                    if (edge.Tick == tick && edge.Vk == vk && edge.Pressed) return true;
+                return false;
+            case ButtonState.WentUp:
+                foreach (TickEvent edge in InjectedEvents)
+                    if (edge.Tick == tick && edge.Vk == vk && !edge.Pressed) return true;
+                return false;
+            case ButtonState.IsDown:
+                long latestPastTick = NativeHeldTick[vk];
+                bool heldAtTick = NativeHeld[vk];
+                foreach (TickEvent edge in InjectedEvents)
+                {
+                    if (edge.Vk != vk || edge.Tick > tick || edge.Tick < latestPastTick) continue;
+                    latestPastTick = edge.Tick;
+                    heldAtTick = edge.HeldAfter;
+                }
+                return heldAtTick;
+            default:
+                return false;
+        }
     }
 
     // Track one source edge and report only a 0↔1 transition for its mapped VK.
@@ -207,6 +306,7 @@ internal static class ManagedInput
             return;
         if (!aggregateChanged) return;
         Held[aggregateVk] = aggregatePressed;
+        NativeHeld[aggregateVk] = aggregatePressed;
         _heldCount += aggregatePressed ? 1 : -1;
     }
 
@@ -271,6 +371,8 @@ internal static class ManagedInput
         List<ushort> released = SnapshotHeld();
         _takeoverFrame = -1;
         _takeover = false;
+        ClearNativeEvents();
+        Array.Clear(CollisionPressSource, 0, CollisionPressSource.Length);
         Array.Clear(Held, 0, Held.Length);
         Array.Clear(SourceHeld, 0, SourceHeld.Length);
         Array.Clear(SourceVk, 0, SourceVk.Length);
@@ -300,13 +402,15 @@ internal static class ManagedInput
     {
         if (keys == null) return 0;
         // 空闲段短路（仅 IsDown——不能用于 WentDown，理由见 Count）
-        if (state == ButtonState.IsDown && _heldCount == 0) { return 0; }
+        if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) { return 0; }
         int frame = Time.frameCount;
         int added = 0;
         for (int vk = 0; vk < Held.Length; vk++)
         {
-            int repetitions = state == ButtonState.WentDown && PressedFrame[vk] == frame
-                ? PressCountFrame[vk] : Matches(state, vk, frame) ? 1 : 0;
+            int repetitions = state == ButtonState.WentDown && TryGetNativeTickPresses((ushort)vk, out int tickPresses)
+                ? tickPresses
+                : state == ButtonState.WentDown && PressedFrame[vk] == frame
+                    ? PressCountFrame[vk] : Matches(state, vk, frame) ? 1 : 0;
             for (int repeat = 0; repeat < repetitions; repeat++)
             {
             // **必须是 AsyncKeyCode，不能是 KeyCode。**
@@ -328,10 +432,18 @@ internal static class ManagedInput
     /// <summary>本帧满足 <paramref name="state"/> 的回放键数量。</summary>
     internal static int Count(ButtonState state)
     {
+        if (state == ButtonState.WentDown && _nativeTickContext != long.MinValue
+            && NativeFallbackTicks.Contains(_nativeTickContext))
+        {
+            int tickCount = 0;
+            foreach (TickEvent edge in InjectedEvents)
+                if (edge.Tick == _nativeTickContext && edge.Pressed) tickCount++;
+            return tickCount;
+        }
         // 空闲段短路：IsDown 只读 Held[]，零键时必为 0。**不能对 WentDown 用
         // 同一早退**——同帧内按下又抬起会把 _heldCount 送回 0，而 PressedFrame
         // 已写入该帧，早退会吞掉这个合法的按下沿（240fps 下快节拍常见）。
-        if (state == ButtonState.IsDown && _heldCount == 0) return 0;
+        if (state == ButtonState.IsDown && _heldCount == 0 && _nativeTickContext == long.MinValue) return 0;
         int frame = Time.frameCount;
         int count = 0;
         for (int vk = 0; vk < Held.Length; vk++)
@@ -346,6 +458,9 @@ internal static class ManagedInput
 
     private static bool Matches(ButtonState state, int vk, int frame)
     {
+        if (_nativeTickContext != long.MinValue && NativeFallbackTicks.Contains(_nativeTickContext))
+            return MatchesNativeTick(state, vk, _nativeTickContext);
+
         switch (state)
         {
             case ButtonState.WentDown: return PressedFrame[vk] == frame;
